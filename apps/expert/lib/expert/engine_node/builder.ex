@@ -9,38 +9,41 @@ defmodule Expert.EngineNode.Builder do
   require Logger
 
   defmodule State do
-    defstruct [:project, :last_line, :from, :port, :mix_home, :buffer, attempts: 0]
+    defstruct [:project, :build, :owner, :key, :last_line, :port, :buffer, attempts: 0]
   end
 
   @max_attempts 1
 
-  def build_engine(project) do
-    with {:ok, pid} <- start_link(project) do
-      GenServer.call(pid, :build, :infinity)
-    end
+  def child_spec({project, build, owner, key}) do
+    %{
+      id: {__MODULE__, key},
+      start: {__MODULE__, :start_link, [{project, build, owner, key}]},
+      restart: :temporary
+    }
   end
 
-  def start_link(project) do
-    GenServer.start_link(__MODULE__, project)
-  end
-
-  @impl GenServer
-  def init(project) do
-    {:ok, %State{project: project, last_line: "", buffer: ""}}
+  def start_link({project, build, owner, key}) do
+    GenServer.start_link(__MODULE__, {project, build, owner, key})
   end
 
   @impl GenServer
-  def handle_call(:build, from, %State{} = state) do
-    state =
-      case start_build(state.project, from) do
-        {:ok, port} ->
-          %State{state | port: port}
+  def init({project, build, owner, key}) do
+    state = %State{
+      project: project,
+      build: build,
+      owner: owner,
+      key: key,
+      last_line: "",
+      buffer: ""
+    }
 
-        _ ->
-          state
-      end
+    {:ok, state, {:continue, :build}}
+  end
 
-    {:noreply, %State{state | from: from}}
+  @impl GenServer
+  def handle_continue(:build, %State{} = state) do
+    {:ok, port} = start_build(state.project, state.build)
+    {:noreply, %State{state | port: port}}
   end
 
   @impl GenServer
@@ -68,7 +71,7 @@ defmodule Expert.EngineNode.Builder do
           project: state.project
         )
 
-        GenServer.reply(state.from, {:ok, {ebin_paths(engine_path), mix_home}})
+        notify(state, {:ok, {ebin_paths(engine_path), mix_home}})
         {:stop, :normal, state}
 
       :error ->
@@ -85,14 +88,15 @@ defmodule Expert.EngineNode.Builder do
     {:noreply, state}
   end
 
+  def handle_info({:build_result, result}, state) do
+    notify(state, result)
+    {:stop, :normal, state}
+  end
+
   def handle_info({_port, {:exit_status, status}}, state) do
     Logger.error("Engine build script exited with status: #{status}", project: state.project)
 
-    GenServer.reply(
-      state.from,
-      {:error, "Build script exited with status: #{status}", state.last_line}
-    )
-
+    notify(state, {:error, "Build script exited with status: #{status}", state.last_line})
     {:stop, :normal, state}
   end
 
@@ -101,7 +105,7 @@ defmodule Expert.EngineNode.Builder do
       project: state.project
     )
 
-    GenServer.reply(state.from, {:error, reason, state.last_line})
+    notify(state, {:error, reason, state.last_line})
     {:stop, :normal, state}
   end
 
@@ -115,7 +119,7 @@ defmodule Expert.EngineNode.Builder do
     @excluded_apps [:patch, :nimble_parsec]
     @allowed_apps [:engine | Mix.Project.deps_apps()] -- @excluded_apps
 
-    def start_build(_, from, _ \\ []) do
+    def start_build(_, _build, _opts \\ []) do
       entries =
         [Mix.Project.build_path(), "**/ebin"]
         |> Forge.Path.glob()
@@ -123,7 +127,7 @@ defmodule Expert.EngineNode.Builder do
           Enum.any?(@allowed_apps, &String.contains?(entry, to_string(&1)))
         end)
 
-      GenServer.reply(from, {:ok, {entries, nil}})
+      send(self(), {:build_result, {:ok, {entries, nil}}})
       {:ok, :fake_port}
     end
 
@@ -132,22 +136,12 @@ defmodule Expert.EngineNode.Builder do
     # In dev and prod environments, the engine source code is included in the
     # Expert release, and we build it on the fly for the project elixir+opt
     # versions if it was not built yet.
-    defp start_build(%Project{} = project, from, opts \\ []) do
-      with {:ok, elixir, env} <- Expert.Port.project_executable(project, "elixir"),
-           {:ok, erl, _env} <- Expert.Port.project_executable(project, "erl") do
-        Logger.info("Using path: #{System.get_env("PATH")}", project: project)
-        Logger.info("Found elixir executable at #{elixir}", project: project)
-        Logger.info("Found erl executable at #{erl}", project: project)
+    def start_build(%Project{} = project, build, opts \\ []) do
+      elixir = Keyword.fetch!(build, :elixir)
+      env = Keyword.fetch!(build, :env)
 
-        port = launch_engine_builder(project, elixir, env, opts)
-        {:ok, port}
-      else
-        {:error, name, message} = error ->
-          Logger.error(message, project: project)
-          GenServer.reply(from, {:error, message})
-          Expert.terminate("Failed to find an #{name} executable, shutting down", 1)
-          error
-      end
+      port = launch_engine_builder(project, elixir, env, opts)
+      {:ok, port}
     end
 
     defp close_port(port), do: Port.close(port)
@@ -195,6 +189,10 @@ defmodule Expert.EngineNode.Builder do
     )
   end
 
+  defp notify(state, result) do
+    send(state.owner, {:engine_build_complete, state.key, self(), result})
+  end
+
   defp ebin_paths(base_path) do
     Forge.Path.glob([base_path, "lib/**/ebin"])
   end
@@ -207,22 +205,15 @@ defmodule Expert.EngineNode.Builder do
       )
 
       close_port(state.port)
+      state = %State{state | attempts: state.attempts + 1}
+      {:ok, port} = start_build(state.project, state.build, force: true)
 
-      state =
-        case start_build(state.project, state.from, force: true) do
-          {:ok, port} ->
-            %State{state | port: port}
-
-          _ ->
-            state
-        end
-
-      {:noreply, %State{state | attempts: state.attempts + 1}}
+      {:noreply, %State{state | port: port}}
     else
       Logger.error("Maximum build attempts reached. Failing the build.", project: state.project)
 
-      GenServer.reply(
-        state.from,
+      notify(
+        state,
         {:error, "Build failed due to dependency errors after #{@max_attempts} attempts", line}
       )
 

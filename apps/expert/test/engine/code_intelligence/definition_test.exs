@@ -43,6 +43,10 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
   end
 
   setup_all do
+    {:ok, _} =
+      start_supervised({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+
+    {:ok, _} = start_supervised(Expert.EngineBuilds)
     {:ok, _} = start_supervised({Forge.NodePortMapper, []})
     project = project(:navigations)
     start_supervised!({Document.Store, derive: [analysis: &Forge.Ast.analyze/1]})

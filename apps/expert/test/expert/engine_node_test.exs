@@ -10,6 +10,8 @@ defmodule Expert.EngineNodeTest do
 
   setup do
     project = project()
+    start_supervised!({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+    start_supervised!(Expert.EngineBuilds)
     start_supervised!(Expert.ActiveProjects)
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!({EngineSupervisor, project})
@@ -23,7 +25,7 @@ defmodule Expert.EngineNodeTest do
 
     assert project_alive?
     assert :ok = EngineNode.stop(project, 1500)
-    assert_eventually Process.whereis(EngineNode.name(project)) == nil, :timer.seconds(5)
+    assert_eventually(Process.whereis(EngineNode.name(project)) == nil, :timer.seconds(5))
   end
 
   test "it should be stopped atomically when the startup process is dead", %{project: project} do
@@ -43,7 +45,7 @@ defmodule Expert.EngineNodeTest do
 
     assert node_process_name |> Process.whereis() |> Process.alive?()
     Process.exit(linked_node_process, :kill)
-    assert_eventually Process.whereis(node_process_name) == nil, 100
+    assert_eventually(Process.whereis(node_process_name) == nil, 100)
   end
 
   test "terminates the server if no elixir is found", %{project: project} do

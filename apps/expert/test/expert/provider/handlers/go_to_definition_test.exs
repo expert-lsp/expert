@@ -15,6 +15,8 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   setup_all do
     project = project(:navigations)
 
+    start_supervised!({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+    start_supervised!(Expert.EngineBuilds)
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!(Expert.Application.document_store_child_spec())
     start_supervised!({Expert.ActiveProjects, []})
