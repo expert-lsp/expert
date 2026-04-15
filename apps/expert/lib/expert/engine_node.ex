@@ -241,7 +241,7 @@ defmodule Expert.EngineNode do
 
   defp prepare_engine(project) do
     Expert.Progress.with_progress("[#{Project.name(project)}] Preparing engine", fn _token ->
-      result = Expert.EngineNode.Builder.build_engine(project)
+      result = Expert.EngineBuilds.request_engine(project)
 
       {:done, result, "Engine is ready"}
     end)

@@ -33,6 +33,10 @@ defmodule Expert.Engine.ModulesTest do
       # Clean workspace to ensure fresh state
       project |> Project.workspace_path() |> File.rm_rf()
 
+      {:ok, _} =
+        start_supervised({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+
+      {:ok, _} = start_supervised(Expert.EngineBuilds)
       {:ok, _} = start_supervised(Forge.NodePortMapper)
       {:ok, _} = start_supervised({EngineSupervisor, project})
       {:ok, _, _} = EngineNode.start(project)

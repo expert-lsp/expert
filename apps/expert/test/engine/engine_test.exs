@@ -10,6 +10,8 @@ defmodule EngineTest do
   alias Forge.Project
 
   def start_project(%Project{} = project) do
+    start_supervised!({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+    start_supervised!(Expert.EngineBuilds)
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!({Expert.EngineSupervisor, project})
     assert {:ok, _, _} = EngineNode.start(project)
@@ -42,16 +44,20 @@ defmodule EngineTest do
 
       start_project(subapp_project)
 
-      assert_eventually engine_cwd(subapp_project) == Project.root_path(parent_project),
-                        250
+      assert_eventually(
+        engine_cwd(subapp_project) == Project.root_path(parent_project),
+        250
+      )
     end
 
     test "keeps the current directory if it's started in the parent app" do
       parent_project = project(:umbrella)
       start_project(parent_project)
 
-      assert_eventually engine_cwd(parent_project) == Project.root_path(parent_project),
-                        250
+      assert_eventually(
+        engine_cwd(parent_project) == Project.root_path(parent_project),
+        250
+      )
     end
   end
 end

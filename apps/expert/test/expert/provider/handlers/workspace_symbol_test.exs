@@ -17,6 +17,8 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbolTest do
   setup_all do
     project = Fixtures.project()
 
+    start_supervised!({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+    start_supervised!(Expert.EngineBuilds)
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!(Expert.Application.document_store_child_spec())
     start_supervised!({Expert.ActiveProjects, []})

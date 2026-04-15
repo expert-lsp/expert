@@ -11,6 +11,10 @@ defmodule Expert.Project.NodeTest do
   setup do
     project = project()
 
+    {:ok, _} =
+      start_supervised({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
+
+    {:ok, _} = start_supervised(Expert.EngineBuilds)
     {:ok, _} = start_supervised(Expert.ActiveProjects)
     {:ok, _} = start_supervised({Forge.NodePortMapper, []})
     {:ok, _} = start_supervised({DynamicSupervisor, Expert.Project.DynamicSupervisor.options()})
@@ -36,7 +40,7 @@ defmodule Expert.Project.NodeTest do
     old_pid = node_pid(project)
 
     :ok = EngineApi.stop(project)
-    assert_eventually Node.ping(node_name) == :pong, 7000
+    assert_eventually(Node.ping(node_name) == :pong, 7000)
 
     new_pid = node_pid(project)
     assert is_pid(new_pid)
@@ -49,7 +53,7 @@ defmodule Expert.Project.NodeTest do
 
     assert is_pid(supervisor_pid)
     Process.exit(supervisor_pid, :kill)
-    assert_eventually Node.ping(node_name) == :pong, 750
+    assert_eventually(Node.ping(node_name) == :pong, 750)
   end
 
   defp node_pid(project) do
