@@ -19,6 +19,9 @@ defmodule Engine.CodeIntelligence.Definition do
     with {:ok, _, analysis} <- Document.Store.fetch(document.uri, :analysis),
          {:ok, entity, _range} <- Entity.resolve(analysis, position) do
       fetch_definition(entity, analysis, position)
+    else
+      {:error, :in_string} -> {:ok, nil}
+      other -> other
     end
   end
 
