@@ -11,9 +11,10 @@ defmodule Expert.Provider.Handlers.Commands do
   require Logger
 
   @reindex_name "Reindex"
+  @connection_details_name "connectionDetails"
 
   def names do
-    [@reindex_name]
+    [@reindex_name, @connection_details_name]
   end
 
   def reindex_command(%Project{} = project) do
@@ -40,6 +41,23 @@ defmodule Expert.Provider.Handlers.Commands do
           project_names = Enum.map_join(projects, ", ", &Project.name/1)
           Logger.info("Reindex #{project_names}")
           reindex_all(projects)
+
+        @connection_details_name ->
+          {:ok, _} = Expert.Clustering.start_net_kernel()
+
+          epmd_module = Forge.EPMD
+          ebin_path = Path.dirname(to_string(:code.which(epmd_module)))
+          priv_dir = :code.priv_dir(Application.get_application(__MODULE__))
+          script_ext = if Forge.OS.windows?(), do: ".bat", else: ".sh"
+
+          %{
+            "nodeName" => to_string(Node.self()),
+            "port" => Forge.EPMD.dist_port(),
+            "cookie" => to_string(Node.get_cookie()),
+            "epmdModule" => Atom.to_string(epmd_module),
+            "epmdEbinPath" => ebin_path,
+            "debugScriptPath" => Path.join(priv_dir, "debug_shell#{script_ext}")
+          }
 
         invalid ->
           message = "#{invalid} is not a valid command"

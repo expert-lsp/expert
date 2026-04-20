@@ -186,20 +186,6 @@ defmodule Forge.Project do
     set_env_vars(project, environment_variables)
   end
 
-  def manager_node_name(%__MODULE__{} = project) do
-    workspace = Forge.Workspace.get_workspace()
-
-    workspace_name =
-      case workspace do
-        nil -> name(project)
-        %Forge.Workspace{workspace_folders: []} -> name(project)
-        _ -> Forge.Workspace.name(workspace)
-      end
-
-    sanitized = Forge.Node.sanitize(workspace_name)
-    :"expert-manager-#{sanitized}-#{entropy(project)}@127.0.0.1"
-  end
-
   @doc """
   Returns the full path to the project's expert workspace directory
 

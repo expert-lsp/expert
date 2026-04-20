@@ -5,15 +5,19 @@ defmodule Forge.Workspace do
 
   alias Forge.Document
 
-  defstruct workspace_folders: []
+  defstruct workspace_folders: [], entropy: 1
 
   @type t :: %__MODULE__{
+          entropy: non_neg_integer(),
           workspace_folders: [String.t()]
         }
 
   @spec new([String.t()]) :: t()
   def new(workspace_folders \\ []) when is_list(workspace_folders) do
-    %__MODULE__{workspace_folders: workspace_folders}
+    %__MODULE__{
+      workspace_folders: workspace_folders,
+      entropy: :rand.uniform(65_536)
+    }
   end
 
   @spec add_folders(t(), [String.t()]) :: t()
