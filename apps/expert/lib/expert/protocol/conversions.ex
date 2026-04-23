@@ -28,16 +28,24 @@ defmodule Expert.Protocol.Conversions do
     end
   end
 
-  def to_elixir(%LSPosition{} = position, %Document{} = document) do
-    to_elixir(position, document.lines)
+  def to_elixir(%LSRange{}, nil) do
+    {:error, {:invalid_document, nil}}
   end
 
   def to_elixir(%ElixirPosition{} = position, _) do
     {:ok, position}
   end
 
+  def to_elixir(%LSPosition{} = position, %Document{} = document) do
+    to_elixir(position, document.lines)
+  end
+
   def to_elixir(%LSPosition{line: line} = position, _) when line < 0 do
     {:error, {:invalid_position, position}}
+  end
+
+  def to_elixir(%LSPosition{}, nil) do
+    {:error, {:invalid_document, nil}}
   end
 
   def to_elixir(%LSPosition{} = position, %Lines{} = lines) do
@@ -67,7 +75,7 @@ defmodule Expert.Protocol.Conversions do
     end
   end
 
-  def to_elixir(%{range: %{start: start_pos, end: end_pos}}, document) do
+  def to_elixir(%{range: %{start: start_pos, end: end_pos}}, %Document{} = document) do
     # this is actually an elixir sense range... note that it's a bare map with
     # column keys rather than character keys.
     %{line: start_line, column: start_col} = start_pos
@@ -80,6 +88,10 @@ defmodule Expert.Protocol.Conversions do
       )
 
     {:ok, range}
+  end
+
+  def to_elixir(%{range: %{start: _start_pos, end: _end_pos}}, nil) do
+    {:error, {:invalid_document, nil}}
   end
 
   def to_lsp(%LSRange{start: %LSPosition{}, end: %LSPosition{}} = ls_range) do

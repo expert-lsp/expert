@@ -64,6 +64,18 @@ defmodule Expert.Protocol.ConversionsTest do
       assert {:ok, pos} = Conversions.to_elixir(lsp_position(8, 2), doc("abcde\n1234"))
       assert %ExPosition{line: 3, character: 1} = pos
     end
+
+    test "document is nil" do
+      assert Conversions.to_elixir(
+               %GenLSP.Structures.Range{end: lsp_position(0, 0), start: lsp_position(0, 0)},
+               nil
+             ) == {:error, {:invalid_document, nil}}
+
+      assert Conversions.to_elixir(lsp_position(0, 0), nil) == {:error, {:invalid_document, nil}}
+
+      assert Conversions.to_elixir(%{range: %{start: 0, end: 0}}, nil) ==
+               {:error, {:invalid_document, nil}}
+    end
   end
 
   describe "to_lsp/2 for positions" do
