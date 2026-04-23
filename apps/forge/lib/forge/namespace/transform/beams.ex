@@ -19,17 +19,18 @@ defmodule Forge.Namespace.Transform.Beams do
 
     me = self()
 
-    spawn(fn ->
-      all_beams
-      |> Task.async_stream(
-        &apply_and_update_progress(&1, me),
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.run()
-    end)
+    {_pid, monitor_ref} =
+      spawn_monitor(fn ->
+        all_beams
+        |> Task.async_stream(
+          &apply_and_update_progress(&1, me),
+          ordered: false,
+          timeout: :infinity
+        )
+        |> Stream.run()
+      end)
 
-    block_until_done(0, total_files, opts)
+    block_until_done(0, total_files, monitor_ref, opts)
   end
 
   def apply(path) do
@@ -46,7 +47,9 @@ defmodule Forge.Namespace.Transform.Beams do
   defp changed?(same, same), do: false
   defp changed?(_, _), do: true
 
-  defp block_until_done(same, same, opts) do
+  defp block_until_done(same, same, monitor_ref, opts) do
+    Process.demonitor(monitor_ref, [:flush])
+
     if !opts[:no_progress] do
       IO.write("\n")
     end
@@ -54,9 +57,13 @@ defmodule Forge.Namespace.Transform.Beams do
     Mix.Shell.IO.info("Finished namespacing .beam files")
   end
 
-  defp block_until_done(current, max, opts) do
+  defp block_until_done(current, max, monitor_ref, opts) do
     receive do
-      :progress -> :ok
+      :progress ->
+        :ok
+
+      {:DOWN, ^monitor_ref, :process, _pid, reason} ->
+        raise "Beam rewriting worker crashed: #{inspect(reason)}"
     end
 
     current = current + 1
@@ -68,7 +75,7 @@ defmodule Forge.Namespace.Transform.Beams do
       IO.write(" Applying namespace: #{percent_complete} complete")
     end
 
-    block_until_done(current, max, opts)
+    block_until_done(current, max, monitor_ref, opts)
   end
 
   defp apply_and_update_progress(beam_file, caller) do
