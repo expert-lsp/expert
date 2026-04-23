@@ -15,6 +15,15 @@ defmodule ExpertCredoTest do
     Document.new("file:///file.ex", contents, 1)
   end
 
+  test "with_stdin returns result on success" do
+    assert {:ok, :hello} = ExpertCredo.with_stdin("input", fn -> :hello end)
+  end
+
+  test "with_stdin returns error when function raises" do
+    assert {:error, {%RuntimeError{message: "boom"}, _stacktrace}} =
+             ExpertCredo.with_stdin("input", fn -> raise "boom" end)
+  end
+
   test "reports errors on documents" do
     has_inspect =
       """

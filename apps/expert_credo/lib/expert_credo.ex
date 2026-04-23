@@ -66,15 +66,25 @@ defmodule ExpertCredo do
     {:ok, stdio} = StringIO.open(stdin_contents)
     caller = self()
 
-    spawn(fn ->
-      Process.group_leader(self(), stdio)
-      result = function.()
-      send(caller, {:result, result})
-    end)
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.group_leader(self(), stdio)
+        result = function.()
+        send(caller, {:result, result})
+      end)
 
     receive do
       {:result, result} ->
+        Process.demonitor(ref, [:flush])
         {:ok, result}
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        {:error, reason}
+    after
+      30_000 ->
+        Process.demonitor(ref, [:flush])
+        Process.exit(pid, :kill)
+        {:error, :timeout}
     end
   end
 
