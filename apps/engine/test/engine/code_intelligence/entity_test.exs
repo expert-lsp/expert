@@ -1314,6 +1314,32 @@ defmodule Engine.CodeIntelligence.EntityTest do
     end
   end
 
+  describe "resolve/2 inside a string" do
+    test "does not resolve an ident inside a plain string (not interpolation)" do
+      code = ~q[
+        defmodule MyModule do
+          def my_fun do
+            "hello {wor|ld}"
+          end
+        end
+      ]
+
+      assert {:error, :in_string} = resolve(code)
+    end
+
+    test "resolves an ident inside string interpolation" do
+      code = ~S[
+        defmodule MyModule do
+          def my_fun(world) do
+            "hello #{wor|ld}"
+          end
+        end
+      ]
+
+      assert {:ok, {:variable, :world}, _} = resolve(code)
+    end
+  end
+
   describe "resolve/2 within ~H sigil when phoenix_live_view is NOT available" do
     setup do
       patch(Engine.CodeIntelligence.Heex, :phoenix_component_available?, false)

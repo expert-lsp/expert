@@ -882,6 +882,32 @@ defmodule Expert.Provider.Handlers.HoverTest do
     end
   end
 
+  describe "hover inside strings" do
+    test "returns nil inside a plain string (not interpolation)", %{project: project} do
+      hovered = ~q[
+        defmodule StringHover do
+          def foo do
+            "hello {Str|ing}"
+          end
+        end
+      ]
+
+      assert {:ok, nil} = hover(project, hovered)
+    end
+
+    test "returns a result inside string interpolation", %{project: project} do
+      hovered = ~S[
+        defmodule StringHover do
+          def foo do
+            "hello #{Str|ing}"
+          end
+        end
+      ]
+
+      assert {:ok, %Structures.Hover{}} = hover(project, hovered)
+    end
+  end
+
   defp with_indexed(project, code, fun) do
     tmp_dir = Fixtures.file_path(project, "lib/tmp")
 

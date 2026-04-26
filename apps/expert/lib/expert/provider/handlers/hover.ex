@@ -36,6 +36,9 @@ defmodule Expert.Provider.Handlers.Hover do
         {:error, :no_type} ->
           nil
 
+        {:error, :in_string} ->
+          nil
+
         :error ->
           nil
 

@@ -1,6 +1,7 @@
 defmodule Engine.CodeIntelligence.Entity do
   alias Forge.Ast
   alias Forge.Ast.Analysis
+  alias Forge.Ast.Detection
   alias Forge.Document
   alias Forge.Document.Position
   alias Forge.Document.Range
@@ -35,6 +36,7 @@ defmodule Engine.CodeIntelligence.Entity do
       |> Engine.CodeIntelligence.Heex.maybe_normalize(position)
 
     with :ok <- check_commented(analysis, position),
+         :ok <- check_in_string(analysis, position),
          {:ok, surround_context} <- Ast.surround_context(analysis, position),
          {:ok, resolved, {begin_pos, end_pos}} <-
            resolve(surround_context, analysis, position) do
@@ -66,6 +68,14 @@ defmodule Engine.CodeIntelligence.Entity do
   defp check_commented(%Analysis{} = analysis, %Position{} = position) do
     if Analysis.commented?(analysis, position) do
       :error
+    else
+      :ok
+    end
+  end
+
+  defp check_in_string(%Analysis{} = analysis, %Position{} = position) do
+    if Detection.String.detected?(analysis, position) do
+      {:error, :in_string}
     else
       :ok
     end
