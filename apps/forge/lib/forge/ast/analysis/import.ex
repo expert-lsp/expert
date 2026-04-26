@@ -89,4 +89,6 @@ defmodule Forge.Ast.Analysis.Import do
 
   defp expand_function_keywords(_ignored, acc),
     do: acc
+
+  def to_module(%__MODULE__{module: module}), do: Module.concat(module)
 end

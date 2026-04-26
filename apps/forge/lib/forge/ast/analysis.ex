@@ -5,6 +5,7 @@ defmodule Forge.Ast.Analysis do
   See `Forge.Ast.analyze/1`.
   """
 
+  alias Elixir.Features
   alias Forge.Ast.Analysis.Alias
   alias Forge.Ast.Analysis.Import
   alias Forge.Ast.Analysis.Require
@@ -17,7 +18,15 @@ defmodule Forge.Ast.Analysis do
   alias Forge.Identifier
   alias Sourceror.Zipper
 
-  defstruct [:ast, :document, :parse_error, scopes: [], comments_by_line: %{}, valid?: true]
+  defstruct [
+    :ast,
+    :document,
+    :parse_error,
+    scopes: [],
+    comments_by_line: %{},
+    valid?: true,
+    expansions: []
+  ]
 
   @type t :: %__MODULE__{}
   @scope_id :_scope_id
@@ -33,25 +42,27 @@ defmodule Forge.Ast.Analysis do
   end
 
   def new({:ok, ast, comments}, %Document{} = document) do
-    scopes = traverse(ast, document)
+    {scopes, expansions} = traverse(ast, document)
     comments_by_line = Map.new(comments, fn comment -> {comment.line, comment} end)
 
     %__MODULE__{
       ast: ast,
       document: document,
       scopes: scopes,
+      expansions: expansions,
       comments_by_line: comments_by_line
     }
   end
 
   def new({:error, ast, parse_error, comments}, %Document{} = document) do
-    scopes = traverse(ast, document)
+    {scopes, expansions} = traverse(ast, document)
     comments_by_line = Map.new(comments, fn comment -> {comment.line, comment} end)
 
     %__MODULE__{
       ast: ast,
       document: document,
       scopes: scopes,
+      expansions: expansions,
       comments_by_line: comments_by_line,
       parse_error: {:error, parse_error, comments},
       valid?: false
@@ -168,13 +179,16 @@ defmodule Forge.Ast.Analysis do
             "invariant not met, :scopes should only contain the global scope: #{inspect(state)}"
     end
 
-    state
-    # pop the final, global state
-    |> State.pop_scope()
-    |> Map.fetch!(:visited)
-    |> Map.reject(fn {_id, scope} -> Scope.empty?(scope) end)
-    |> correct_ranges(quoted, document)
-    |> Map.values()
+    scopes =
+      state
+      # pop the final, global state
+      |> State.pop_scope()
+      |> Map.fetch!(:visited)
+      |> Map.reject(fn {_id, scope} -> Scope.empty?(scope) end)
+      |> correct_ranges(quoted, document)
+      |> Map.values()
+
+    {scopes, state.expansions}
   end
 
   defp preprocess(quoted) do
@@ -419,7 +433,13 @@ defmodule Forge.Ast.Analysis do
          {:use, _meta, [{:__aliases__, _, module} | opts]} = use,
          state
        ) do
-    State.push_use(state, Use.new(state.document, use, module, opts))
+    state = State.push_use(state, Use.new(state.document, use, module, opts))
+
+    if Features.macro_env_functions_avaialable?() do
+      maybe_try_expand_macro(use, state)
+    else
+      state
+    end
   end
 
   # stab clauses: ->
@@ -437,10 +457,197 @@ defmodule Forge.Ast.Analysis do
     end
   end
 
+  # Attempt macro expansion except for:
+  # - Meta-forms (quote, unquote, defmacro)
+  # - Scoped forms (def, block, or do-blocks) to prevent
+  # internal environment changes from leaking to the caller.
+  defp analyze_node(
+         {call, _meta, args} = quoted,
+         state
+       )
+       when call not in [
+              :quote,
+              :unquote,
+              :defmacro,
+              :defmacrop,
+              :__block__,
+              :def,
+              :defp,
+              :defguard,
+              :defguardp
+            ] do
+    if has_do_block?(args) do
+      state
+    else
+      if Features.macro_env_functions_avaialable?() do
+        maybe_try_expand_macro(quoted, state)
+      else
+        state
+      end
+    end
+  end
+
   # catch-all
   defp analyze_node(_quoted, state) do
     state
   end
+
+  defp has_do_block?(args) when is_list(args) do
+    Enum.any?(args, fn
+      {{:__block__, _, [:do]}, _} -> true
+      kw when is_list(kw) -> Enum.any?(kw, &match?({{:__block__, _, [:do]}, _}, &1))
+      _ -> false
+    end)
+  end
+
+  defp has_do_block?(_), do: false
+
+  defp alias_options([element])
+       when is_atom(element) and element not in [:"@for", :"@protocol"] do
+    [as: Module.concat(Elixir, element)]
+  end
+
+  defp alias_options(_), do: []
+
+  defp import_opts(:all), do: []
+  defp import_opts(:functions), do: [only: :functions]
+  defp import_opts(:macros), do: [only: :macros]
+  defp import_opts(:sigils), do: [only: :sigils]
+  defp import_opts([only: _] = opts), do: opts
+  defp import_opts([except: _] = opts), do: opts
+  # partially-typed or otherwise unexpected selector - skip filtering
+  defp import_opts(_), do: []
+
+  defp maybe_try_expand_macro({_, _, _} = quoted, state) do
+    node_range = Sourceror.get_range(quoted, include_comments: true)
+
+    if node_range == nil or Keyword.get(node_range.start, :line) == nil or
+         State.in_expansion?(state, node_range) do
+      state
+    else
+      try_expand_macro(quoted, node_range, state)
+    end
+  end
+
+  defp try_expand_macro({_, _, _} = quoted, node_range, state) do
+    line = Keyword.get(node_range.start, :line)
+    scope = State.current_scope(state)
+    module = if scope.module != [], do: Module.concat(scope.module)
+
+    {expanded, initial_env, final_env} = do_expand(quoted, line, scope, module, state)
+
+    # Push aliases/requires/imports injected by the expansion into the current
+    # scope so that subsequent scope queries (e.g. alias resolution) see them.
+    state =
+      if initial_env && final_env do
+        apply_env_diff(state, initial_env, final_env, quoted, node_range)
+      else
+        state
+      end
+
+    # If expanded ast is the same as the original there where no expansion or it was effectively a no-op
+    if final_env == nil or strip_meta(expanded) == strip_meta(quoted) do
+      state
+    else
+      State.push_expansion(state, quoted, expanded, final_env)
+    end
+  end
+
+  defp do_expand(quoted, line, scope, module, state) do
+    # Inject prior expansion env if it was defined in the same or a parent scope
+    base_env =
+      case State.prior_expansion_env(state, module) do
+        nil -> %{Spitfire.Env.env() | module: module, file: state.document.path}
+        prior -> %{prior | module: module, file: state.document.path}
+      end
+
+    # Apply the current scope items on top
+    env =
+      scope
+      |> Scope.aliases(line)
+      |> Enum.filter(fn a ->
+        a.as != [:__MODULE__] and a.as != a.module and
+          is_list(a.module) and Enum.all?(a.module, &is_atom/1)
+      end)
+      |> Enum.reduce(base_env, fn alias, env ->
+        {:ok, env} =
+          Macro.Env.define_alias(env, [], Alias.to_module(alias), alias_options(alias.as))
+
+        env
+      end)
+
+    env =
+      scope
+      |> Scope.requires(line)
+      |> Enum.filter(fn r ->
+        r.as != [:__MODULE__] and is_list(r.module) and Enum.all?(r.module, &is_atom/1)
+      end)
+      |> Enum.reduce(env, fn req, env ->
+        {:ok, env} =
+          Macro.Env.define_require(env, [], Require.to_module(req), alias_options(req.as))
+
+        env
+      end)
+
+    env =
+      scope
+      |> Scope.imports(line)
+      |> Enum.filter(fn i -> is_list(i.module) and Enum.all?(i.module, &is_atom/1) end)
+      |> Enum.reduce(env, fn imp, env ->
+        {:ok, env} =
+          Macro.Env.define_import(env, [], Import.to_module(imp), import_opts(imp.selector))
+
+        env
+      end)
+
+    {ast, _, final_env, _} = Spitfire.Env.expand_recursive(quoted, state.document.path, env)
+    {ast, env, final_env}
+  rescue
+    # expansion may fail when the module is already compiled and
+    # Module.*_attribute/2 functions raise
+    _ -> {quoted, nil, nil}
+  end
+
+  # Diffs initial_env vs final_env and pushes newly-injected requires,
+  # and imports into the current scope so they are visible to subsequent analysis.
+  # Aliases are ignored on purpose, these are scoped differently
+  defp apply_env_diff(state, initial_env, final_env, quoted, node_range) do
+    [line: start_line, column: start_col] = node_range.start
+    [line: end_line, column: end_col] = node_range.end
+
+    range =
+      Range.new(
+        Position.new(state.document, start_line, start_col),
+        Position.new(state.document, end_line, end_col)
+      )
+
+    state =
+      Enum.reduce(final_env.requires -- initial_env.requires, state, fn mod, state ->
+        module_list = mod |> Module.split() |> Enum.map(&String.to_atom/1)
+        State.push_require(state, Require.new(state.document, quoted, module_list))
+      end)
+
+    new_imports =
+      import_env_diff(initial_env.macros, final_env.macros) ++
+        import_env_diff(initial_env.functions, final_env.functions)
+
+    Enum.reduce(new_imports, state, fn {mod, new_fns}, state ->
+      module_list = mod |> Module.split() |> Enum.map(&String.to_atom/1)
+      imp = %{Import.implicit(range, module_list) | selector: [only: new_fns]}
+      State.push_import(state, imp)
+    end)
+  end
+
+  defp import_env_diff(initial, final) do
+    initial_map = Map.new(initial)
+
+    Enum.flat_map(final, fn {mod, fns} ->
+      new_fns = fns -- Map.get(initial_map, mod, [])
+      if new_fns == [], do: [], else: [{mod, new_fns}]
+    end)
+  end
+
+  defp strip_meta(ast), do: Macro.prewalk(ast, &Macro.update_meta(&1, fn _ -> [] end))
 
   defp maybe_push_implicit_alias(
          %State{} = state,

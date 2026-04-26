@@ -21,12 +21,8 @@ defmodule Engine.Search.Indexer.Metadata do
     line = Keyword.get(keyword, :line)
     column = Keyword.get(keyword, :column)
 
-    case {line, column} do
-      {nil, nil} ->
-        nil
-
-      position ->
-        position
+    if is_number(line) and is_number(column) do
+      {line, column}
     end
   end
 

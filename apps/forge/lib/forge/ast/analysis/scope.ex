@@ -1,5 +1,7 @@
 defmodule Forge.Ast.Analysis.Scope do
   alias Forge.Ast.Analysis.Alias
+  alias Forge.Ast.Analysis.Import
+  alias Forge.Ast.Analysis.Require
   alias Forge.Document.Position
   alias Forge.Document.Range
 
@@ -67,6 +69,42 @@ defmodule Forge.Ast.Analysis.Scope do
       end
     end)
     |> Map.new(&{&1.as, &1})
+  end
+
+  def aliases(%__MODULE__{} = scope, position \\ :end) do
+    scope.aliases
+    |> Enum.sort_by(& &1.range.start.line)
+    |> Enum.take_while(fn %Alias{range: alias_range} ->
+      case position do
+        %Position{} = pos -> pos.line >= alias_range.start.line
+        line when is_integer(line) -> line >= alias_range.start.line
+        :end -> true
+      end
+    end)
+  end
+
+  def requires(%__MODULE__{} = scope, position \\ :end) do
+    scope.requires
+    |> Enum.sort_by(& &1.range.start.line)
+    |> Enum.take_while(fn %Require{range: require_range} ->
+      case position do
+        %Position{} = pos -> pos.line >= require_range.start.line
+        line when is_integer(line) -> line >= require_range.start.line
+        :end -> true
+      end
+    end)
+  end
+
+  def imports(%__MODULE__{} = scope, position \\ :end) do
+    scope.imports
+    |> Enum.sort_by(& &1.range.start.line)
+    |> Enum.take_while(fn %Import{range: import_range} ->
+      case position do
+        %Position{} = pos -> pos.line >= import_range.start.line
+        line when is_integer(line) -> line >= import_range.start.line
+        :end -> true
+      end
+    end)
   end
 
   def fetch_alias_with_prefix(%__MODULE__{} = scope, prefix) do
