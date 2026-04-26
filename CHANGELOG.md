@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.2.0](https://github.com/expert-lsp/expert/compare/v0.1.0...v0.2.0) (2026-04-26)
+
+
+### Features
+
+* allow setting Elixir source directory ([#568](https://github.com/expert-lsp/expert/issues/568)) ([6e623d2](https://github.com/expert-lsp/expert/commit/6e623d2f50a7618d59cf92b7592e2e026cbcfa15))
+* **engine:** index defmacro/defmacrop definitions ([#554](https://github.com/expert-lsp/expert/issues/554)) ([ab84d7a](https://github.com/expert-lsp/expert/commit/ab84d7ace9e563b8615745028b4780b2ed965901))
+* **expert:** allow setting file log level via configuration ([#563](https://github.com/expert-lsp/expert/issues/563)) ([eeb6628](https://github.com/expert-lsp/expert/commit/eeb6628bc43e6a99470454522a9a5bef227f0cdc)), closes [#541](https://github.com/expert-lsp/expert/issues/541)
+
+
+### Bug Fixes
+
+* don't connect to the epmd daemon ([#553](https://github.com/expert-lsp/expert/issues/553)) ([292ed7a](https://github.com/expert-lsp/expert/commit/292ed7a40ec8d2d9de035c2b516b613003223224))
+* don't infinitely loop prompting to fetch dependencies if it fails ([#548](https://github.com/expert-lsp/expert/issues/548)) ([335c68b](https://github.com/expert-lsp/expert/commit/335c68b4c87072836350d6ee11cdb10840264855))
+* eager loading for large projects ([#610](https://github.com/expert-lsp/expert/issues/610)) ([81f324f](https://github.com/expert-lsp/expert/commit/81f324f153d89a15573b437b49e1d97cda772004))
+* **engine:** respect formatter line length in Refactorex actions ([#571](https://github.com/expert-lsp/expert/issues/571)) ([f12c48a](https://github.com/expert-lsp/expert/commit/f12c48a436ad69f25619be76ace803408d3e0eea))
+* **engine:** stop double applying alias suffix when prefix is aliased ([#545](https://github.com/expert-lsp/expert/issues/545)) ([9de53c2](https://github.com/expert-lsp/expert/commit/9de53c22d2a829549356090451a122fa2d0cfd51))
+* **engine:** unify import lookup to correctly resolve local calls ([#547](https://github.com/expert-lsp/expert/issues/547)) ([728b76e](https://github.com/expert-lsp/expert/commit/728b76eaeb7495e5df7eefeac32221a533c993f5))
+* **expert:** add no-op handler for $/setTrace ([#564](https://github.com/expert-lsp/expert/issues/564)) ([4f425a2](https://github.com/expert-lsp/expert/commit/4f425a25439fa507ccfe475c0840cbeb866454c3))
+* **forge:** use `project.root_uri` for cache key in `Forge.Project.config` ([#575](https://github.com/expert-lsp/expert/issues/575)) ([deb019b](https://github.com/expert-lsp/expert/commit/deb019b867dfaabd641b0063a2dba59fe91b5b46))
+* handle LSP supported invalid configuration values ([#551](https://github.com/expert-lsp/expert/issues/551)) ([e973cfc](https://github.com/expert-lsp/expert/commit/e973cfcc85e9e19153e8d78202870fc3acf3b9b5))
+* hang at startup if .bashrc contains exec call ([#527](https://github.com/expert-lsp/expert/issues/527)) ([73b8d28](https://github.com/expert-lsp/expert/commit/73b8d288d92f319ee8920f0dde1e0206b13e4c0f))
+* improve release overlays ([#578](https://github.com/expert-lsp/expert/issues/578)) ([3ee0a1b](https://github.com/expert-lsp/expert/commit/3ee0a1b8c947d0dee5d4f11a5c44990450baef39))
+* improve startup time and module introspection ([#604](https://github.com/expert-lsp/expert/issues/604)) ([f0a788a](https://github.com/expert-lsp/expert/commit/f0a788a39141d2fbc1718ac21a6a65c49b54684d))
+* **release:** ensure start_expert works if symlinked ([#572](https://github.com/expert-lsp/expert/issues/572)) ([c11f489](https://github.com/expert-lsp/expert/commit/c11f489a2ce845240d2834b2da8d7f84e91e1eec))
+* rework workspace folders and project discovery ([#566](https://github.com/expert-lsp/expert/issues/566)) ([345aa34](https://github.com/expert-lsp/expert/commit/345aa3452540034d4b531b9cd25c1a8a387dc940))
+* skip regular files on engine clean ([#613](https://github.com/expert-lsp/expert/issues/613)) ([ce93691](https://github.com/expert-lsp/expert/commit/ce93691f9983310a79cc13122e3a65749273a73b))
+
+
+### Performance Improvements
+
+* **indexer:** cache application and available modules ([#634](https://github.com/expert-lsp/expert/issues/634)) ([9bc521d](https://github.com/expert-lsp/expert/commit/9bc521d694db52feb85c5830e93a4c15cdc271a4))
+
 ## [0.1.0](https://github.com/expert-lsp/expert/compare/v0.1.0-rc.6...v0.1.0) (2026-03-27)
 
 
