@@ -18,33 +18,45 @@ defmodule Engine.Mix do
     # already defined
 
     old_cwd = File.cwd!()
+    project_root = Project.root_path(project)
+    build_path = Project.versioned_build_path(project)
+    app = Project.atom_name(project)
+    file = Project.mix_exs_path(project)
+
+    # We bypass Mix.Project.in_project/4 so we can release
+    # Engine.Mix.StackMutation between push and fun, allowing other callers
+    # (Format, Quoted.prepare_compile) to mutate the stack while fun runs.
 
     with_lock(fn ->
       try do
-        Mix.ProjectStack.post_config(prune_code_paths: false)
+        File.cd!(project_root)
 
-        build_path = Project.versioned_build_path(project)
-        project_root = Project.root_path(project)
+        Engine.with_lock(Engine.Mix.StackMutation, fn ->
+          Mix.ProjectStack.post_config(prune_code_paths: false, build_path: build_path)
+          Mix.Project.push(project.project_module, file, app)
+        end)
 
-        project
-        |> Project.atom_name()
-        |> Mix.Project.in_project(project_root, [build_path: build_path], fun)
-      rescue
-        ex ->
-          blamed = Exception.blame(:error, ex, __STACKTRACE__)
-          {:error, {:exception, blamed, __STACKTRACE__}}
-      else
-        result ->
-          case result do
-            error when is_tuple(error) and elem(error, 0) == :error ->
-              error
+        try do
+          fun.(project.project_module)
+        rescue
+          ex ->
+            blamed = Exception.blame(:error, ex, __STACKTRACE__)
+            {:error, {:exception, blamed, __STACKTRACE__}}
+        else
+          result ->
+            case result do
+              error when is_tuple(error) and elem(error, 0) == :error ->
+                error
 
-            ok when is_tuple(ok) and elem(ok, 0) == :ok ->
-              ok
+              ok when is_tuple(ok) and elem(ok, 0) == :ok ->
+                ok
 
-            other ->
-              {:ok, other}
-          end
+              other ->
+                {:ok, other}
+            end
+        after
+          Engine.with_lock(Engine.Mix.StackMutation, fn -> Mix.Project.pop() end)
+        end
       after
         File.cd!(old_cwd)
       end
