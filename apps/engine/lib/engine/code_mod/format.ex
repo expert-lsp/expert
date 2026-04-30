@@ -246,11 +246,13 @@ defmodule Engine.CodeMod.Format do
     deps_paths = Engine.deps_paths()
 
     formatter_and_opts =
-      Mix.Tasks.Future.Format.formatter_for_file(file_path,
-        root: root_path,
-        deps_paths: deps_paths,
-        plugin_loader: fn plugins -> Enum.filter(plugins, &Code.ensure_loaded?/1) end
-      )
+      Engine.with_lock(Engine.Mix.StackMutation, fn ->
+        Mix.Tasks.Future.Format.formatter_for_file(file_path,
+          root: root_path,
+          deps_paths: deps_paths,
+          plugin_loader: fn plugins -> Enum.filter(plugins, &Code.ensure_loaded?/1) end
+        )
+      end)
 
     {:ok, formatter_and_opts}
   rescue

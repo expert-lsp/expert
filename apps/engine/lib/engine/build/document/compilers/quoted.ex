@@ -100,7 +100,9 @@ defmodule Engine.Build.Document.Compilers.Quoted do
       # `use Mix.Project` will blow up if we add the same project to the project stack
       # twice. Preemptively popping it prevents that error from occurring.
       if Path.basename(path) == "mix.exs" do
-        Mix.ProjectStack.pop()
+        Engine.with_lock(Engine.Mix.StackMutation, fn ->
+          Mix.ProjectStack.pop()
+        end)
       end
 
       Mix.Task.run(:loadconfig)
