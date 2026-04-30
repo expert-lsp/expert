@@ -9,7 +9,7 @@ defmodule Forge.Ast.Analysis.State do
   alias Forge.Document.Position
   alias Forge.Document.Range
 
-  defstruct [:document, scopes: [], visited: %{}]
+  defstruct [:document, scopes: [], visited: %{}, expansions: []]
 
   def new(%Document{} = document) do
     state = %__MODULE__{document: document}
@@ -27,6 +27,48 @@ defmodule Forge.Ast.Analysis.State do
   def current_module(%__MODULE__{} = state) do
     current_scope(state).module
   end
+
+  def push_expansion(%__MODULE__{} = state, {_, _, _} = quoted, expanded, final_env) do
+    range = Sourceror.get_range(quoted, include_comments: true)
+
+    if range do
+      scope_id = current_scope(state).id
+      Map.update!(state, :expansions, &[{range, expanded, final_env, scope_id} | &1])
+    else
+      state
+    end
+  end
+
+  def in_expansion?(%__MODULE__{} = state, range) do
+    Enum.any?(state.expansions, fn {expansion_range, _, _, _} ->
+      contained_in?(range, expansion_range)
+    end)
+  end
+
+  # Returns the final_env of the most recently recorded expansion if it was
+  # produced in the same or a parent scope, nil otherwise
+  def prior_expansion_env(%__MODULE__{expansions: [{_, _, env, scope_id} | _]} = state, _) do
+    if Enum.any?(state.scopes, &(&1.id == scope_id)), do: env
+  end
+
+  def prior_expansion_env(%__MODULE__{expansions: []}, _), do: nil
+
+  def contained_in?(inner, outer) when is_map(inner) and is_map(outer) do
+    inner_start = extract_pos(inner.start)
+    inner_end = extract_pos(inner.end)
+    outer_start = extract_pos(outer.start)
+    outer_end = extract_pos(outer.end)
+
+    pos_gte?(inner_start, outer_start) and pos_gte?(outer_end, inner_end)
+  end
+
+  def contained_in?(_, _), do: false
+
+  defp extract_pos(pos) do
+    {Keyword.get(pos, :line) || 0, Keyword.get(pos, :column) || 0}
+  end
+
+  defp pos_gte?({l1, c1}, {l2, c2}), do: l1 > l2 or (l1 == l2 and c1 >= c2)
 
   def push_scope(%__MODULE__{} = state, %Scope{} = scope) do
     Map.update!(state, :scopes, &[scope | &1])

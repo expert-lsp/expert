@@ -15,4 +15,6 @@ defmodule Forge.Ast.Analysis.Require do
     range = Ast.Range.get(ast, document)
     %__MODULE__{module: module, as: as || module, range: range}
   end
+
+  def to_module(%__MODULE__{module: module}), do: Module.concat(module)
 end

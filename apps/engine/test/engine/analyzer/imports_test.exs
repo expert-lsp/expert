@@ -42,12 +42,25 @@ defmodule ShadowsKernel do
   def to_string(x), do: x
 end
 
+defmodule ImportViaUse.Source do
+  def injected_fn, do: :ok
+end
+
+defmodule ImportViaUse.Injector do
+  defmacro __using__(_opts) do
+    quote do
+      import ImportViaUse.Source
+    end
+  end
+end
+
 defmodule Engine.Ast.Analysis.ImportsTest do
   use ExUnit.Case
 
   import Forge.Test.CodeSigil
   import Forge.Test.CursorSupport
 
+  alias Elixir.Features
   alias Engine.Analyzer
   alias Forge.Ast
   alias Parent.Child.ImportedModule
@@ -408,6 +421,19 @@ defmodule Engine.Ast.Analysis.ImportsTest do
           |
         end
       ], :does_not_exist_function, 0)
+    end
+
+    @tag skip: !Features.macro_env_functions_avaialable?()
+    test "resolves imports injected via use macro" do
+      assert {:ok, ImportViaUse.Source} = module_for_cursor(~q[
+        defmodule MyMod do
+          use ImportViaUse.Injector
+
+          def test() do
+            |
+          end
+        end
+      ], :injected_fn, 0)
     end
   end
 
