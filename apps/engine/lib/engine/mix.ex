@@ -18,6 +18,7 @@ defmodule Engine.Mix do
     # already defined
 
     old_cwd = File.cwd!()
+    fun = in_project_fun(fun)
 
     with_lock(fn ->
       try do
@@ -54,4 +55,7 @@ defmodule Engine.Mix do
   defp with_lock(fun) do
     Engine.with_lock(__MODULE__, fun)
   end
+
+  defp in_project_fun(fun) when is_function(fun, 0), do: fn _ -> fun.() end
+  defp in_project_fun(fun) when is_function(fun, 1), do: fun
 end

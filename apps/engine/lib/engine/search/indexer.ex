@@ -28,12 +28,12 @@ defmodule Engine.Search.Indexer do
     :ok = ApplicationCache.clear()
 
     ProcessCache.with_cleanup do
-      deps_dir = deps_dir(project)
+      deps_roots = dependency_roots(project)
 
       entries =
         project
         |> indexable_files()
-        |> async_chunks(&index_path(&1, deps_dir))
+        |> async_chunks(&index_path(&1, deps_roots))
 
       {:ok, entries}
     end
@@ -82,14 +82,15 @@ defmodule Engine.Search.Indexer do
     paths_to_delete = Enum.map(paths_to_delete, &elem(&1, 0))
 
     paths_to_reindex = changed_paths ++ Enum.to_list(new_paths)
+    deps_roots = dependency_roots(project)
 
-    entries = async_chunks(paths_to_reindex, &index_path(&1, deps_dir(project)))
+    entries = async_chunks(paths_to_reindex, &index_path(&1, deps_roots))
 
     {:ok, entries, paths_to_delete}
   end
 
-  defp index_path(path, deps_dir) do
-    in_deps? = is_binary(deps_dir) and Forge.Path.contains?(path, deps_dir)
+  defp index_path(path, deps_roots) do
+    in_deps? = Enum.any?(deps_roots, &Forge.Path.contains?(path, &1))
     extractors = if in_deps?, do: @deps_extractors
 
     with {:ok, contents} <- File.read(path),
@@ -204,21 +205,49 @@ defmodule Engine.Search.Indexer do
   end
 
   def indexable_files(%Project{} = project) do
-    root_dir = Project.root_path(project)
-    build_dir = build_dir(project)
+    roots = index_roots(project)
+    excluded_roots = excluded_index_roots(project)
 
-    [root_dir, "**", @indexable_extensions]
-    |> Forge.Path.glob()
-    |> Enum.reject(&Forge.Path.contains?(&1, build_dir))
+    roots
+    |> Enum.flat_map(&Forge.Path.glob([&1, "**", @indexable_extensions]))
+    |> Enum.uniq()
+    |> Enum.reject(fn path -> Enum.any?(excluded_roots, &Forge.Path.contains?(path, &1)) end)
   end
+
+  defp index_roots(%Project{} = project) do
+    [Project.root_path(project) | dependency_roots(project)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp excluded_index_roots(%Project{kind: :mix} = project) do
+    {runtime_build_path, configured_build_root} = build_paths(project)
+    relative_build_root = Path.relative_to(configured_build_root, Project.root_path(project))
+
+    project
+    |> index_roots()
+    |> Enum.map(&Path.expand(relative_build_root, &1))
+    |> then(&[runtime_build_path, configured_build_root | &1])
+    |> Enum.uniq()
+  end
+
+  defp excluded_index_roots(%Project{}), do: []
 
   # stat(path) is here for testing so it can be mocked
   defp stat(path) do
     File.stat(path)
   end
 
-  defp deps_dir(%Project{kind: :mix}) do
-    case Engine.Mix.in_project(&Mix.Project.deps_path/0) do
+  defp dependency_roots(%Project{kind: :mix} = project) do
+    [deps_dir(project) | path_dependency_roots(project)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp dependency_roots(%Project{}), do: []
+
+  defp deps_dir(%Project{kind: :mix} = project) do
+    case Engine.Mix.in_project(project, &Mix.Project.deps_path/0) do
       {:ok, path} -> path
       _ -> Mix.Project.deps_path()
     end
@@ -226,14 +255,95 @@ defmodule Engine.Search.Indexer do
 
   defp deps_dir(%Project{}), do: nil
 
-  defp build_dir(%Project{kind: :mix}) do
-    case Engine.Mix.in_project(&Mix.Project.build_path/0) do
-      {:ok, path} -> path
-      _ -> Mix.Project.build_path()
+  defp path_dependency_roots(%Project{} = project) do
+    case Engine.Mix.in_project(project, fn _ ->
+           path_dependency_roots(Mix.Project.config(), Mix.env())
+         end) do
+      {:ok, roots} -> Enum.flat_map(roots, &mix_source_roots/1)
+      _ -> []
     end
   end
 
-  defp build_dir(%Project{} = project) do
-    Path.join(Project.root_path(project), "_build")
+  defp path_dependency_roots(config, env) do
+    config
+    |> Keyword.get(:deps, [])
+    |> Enum.flat_map(&path_dependency_root(&1, env))
+  end
+
+  defp path_dependency_root({_app, opts}, env) when is_list(opts) do
+    path_dependency_root_from_opts(opts, env)
+  end
+
+  defp path_dependency_root({_app, _requirement, opts}, env) when is_list(opts) do
+    path_dependency_root_from_opts(opts, env)
+  end
+
+  defp path_dependency_root(_dep, _env), do: []
+
+  defp path_dependency_root_from_opts(opts, env) do
+    with true <- dependency_active?(opts, env),
+         path when is_binary(path) <- Keyword.get(opts, :path) do
+      [Path.expand(path, File.cwd!())]
+    else
+      _ -> []
+    end
+  end
+
+  defp dependency_active?(opts, env) do
+    only_active?(Keyword.get(opts, :only), env) and
+      not except_active?(Keyword.get(opts, :except), env)
+  end
+
+  defp only_active?(nil, _env), do: true
+  defp only_active?(only, env) when is_atom(only), do: only == env
+  defp only_active?(only, env) when is_list(only), do: env in only
+
+  defp except_active?(nil, _env), do: false
+  defp except_active?(except, env) when is_atom(except), do: except == env
+  defp except_active?(except, env) when is_list(except), do: env in except
+
+  defp mix_source_roots(root) do
+    project = root |> Forge.Document.Path.to_uri() |> Project.new()
+
+    source_paths =
+      case Engine.Mix.in_project(project, fn _ ->
+             Keyword.get(Mix.Project.config(), :elixirc_paths, ["lib"])
+           end) do
+        {:ok, paths} -> paths
+        _ -> ["lib"]
+      end
+
+    Enum.map(source_paths, &Path.expand(&1, root))
+  end
+
+  defp build_paths(%Project{kind: :mix} = project) do
+    case Engine.Mix.in_project(project, fn project_module ->
+           {Mix.Project.build_path(), configured_build_root(project, project_module.project())}
+         end) do
+      {:ok, paths} -> paths
+      _ -> {Mix.Project.build_path(), configured_build_root(project, [])}
+    end
+  end
+
+  defp configured_build_root(%Project{} = project, config) do
+    config = Keyword.put_new(config, :build_per_environment, true)
+    mix_build_path = System.get_env("MIX_BUILD_PATH")
+    System.delete_env("MIX_BUILD_PATH")
+
+    try do
+      project
+      |> Project.root_path()
+      |> File.cd!(fn ->
+        config
+        |> Mix.Project.build_path()
+        |> Path.dirname()
+      end)
+    after
+      if is_binary(mix_build_path) do
+        System.put_env("MIX_BUILD_PATH", mix_build_path)
+      else
+        System.delete_env("MIX_BUILD_PATH")
+      end
+    end
   end
 end
