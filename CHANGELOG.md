@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.4](https://github.com/expert-lsp/expert/compare/v0.1.3...v0.1.4) (2026-05-02)
+
+
+### Bug Fixes
+
+* **engine:** fix interpreting words inside strings as identifiers ([#648](https://github.com/expert-lsp/expert/issues/648)) ([0c0bd96](https://github.com/expert-lsp/expert/commit/0c0bd9607a5de06940092e51de5fcc840351b0bb))
+* **forge:** normalize Erlang release candidate versions ([#644](https://github.com/expert-lsp/expert/issues/644)) ([db8858f](https://github.com/expert-lsp/expert/commit/db8858f1cd6d235e256951b5de28197137ea0c47))
+* **refactorex:** use field-level comparison for cursor detection ([#647](https://github.com/expert-lsp/expert/issues/647)) ([f88336f](https://github.com/expert-lsp/expert/commit/f88336fc4f5a7dfb28c891a741ed29ec340bd6a5))
+
 ## [0.1.3](https://github.com/expert-lsp/expert/compare/v0.1.2...v0.1.3) (2026-04-26)
 
 
