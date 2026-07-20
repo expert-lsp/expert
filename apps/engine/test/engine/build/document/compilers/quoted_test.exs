@@ -1,12 +1,48 @@
 defmodule Engine.Build.Document.Compilers.QuotedTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case
 
   import Forge.Test.CodeSigil
 
   alias Engine.Build.Document.Compilers.Quoted
+  alias Forge.Document
 
   defp parse!(code) do
     Code.string_to_quoted!(code, columns: true, token_metadata: true)
+  end
+
+  describe "compile/3" do
+    @tag :tmp_dir
+    test "does not compile mix.exs or mutate the current Mix project", %{tmp_dir: tmp_dir} do
+      File.write!(Path.join(tmp_dir, "mix.exs"), """
+      defmodule CurrentMixProject do
+        use Mix.Project
+
+        def project do
+          [app: :current_mix_project, version: "0.1.0"]
+        end
+      end
+      """)
+
+      Mix.Project.in_project(:current_mix_project, tmp_dir, fn current_project ->
+        quoted =
+          """
+          defmodule QuotedCompileSkip.MixProject do
+            use Mix.Project
+
+            def project do
+              [app: :quoted_compile_skip, version: "0.1.0"]
+            end
+          end
+          """
+          |> parse!()
+
+        document = Document.new("file:///tmp/project/mix.exs", Macro.to_string(quoted), 0)
+
+        assert {:ok, []} = Quoted.compile(document, quoted, "Elixir")
+        assert Mix.Project.get() == current_project
+        refute Code.ensure_loaded?(QuotedCompileSkip.MixProject)
+      end)
+    end
   end
 
   describe "wrap_top_level_forms/1" do

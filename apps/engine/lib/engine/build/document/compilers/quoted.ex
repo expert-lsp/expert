@@ -8,6 +8,18 @@ defmodule Engine.Build.Document.Compilers.Quoted do
   alias Forge.Document
 
   def compile(%Document{} = document, quoted_ast, compiler_name) do
+    # mix.exs has already been parsed by this point. Do not compile it as a
+    # document: `use Mix.Project` registers an after-compile callback that pushes
+    # the project onto Mix.ProjectStack, and failed redefinition can delete the
+    # module Engine.Mix needs to enter the project context for later compiles.
+    if mix_project_file?(document.path) do
+      {:ok, []}
+    else
+      compile_quoted_document(document, quoted_ast, compiler_name)
+    end
+  end
+
+  defp compile_quoted_document(%Document{} = document, quoted_ast, compiler_name) do
     prepare_compile(document.path)
 
     quoted_ast =
@@ -25,6 +37,10 @@ defmodule Engine.Build.Document.Compilers.Quoted do
       end
 
     {status, Enum.map(diagnostics, &replace_source(&1, compiler_name))}
+  end
+
+  defp mix_project_file?(path) when is_binary(path) do
+    Path.basename(path) == "mix.exs"
   end
 
   defp do_compile(quoted_ast, document) do
@@ -98,17 +114,8 @@ defmodule Engine.Build.Document.Compilers.Quoted do
     end
   end
 
-  defp prepare_compile(path) do
+  defp prepare_compile(_path) do
     if Engine.Mix.loaded?() do
-      # If we're compiling a mix.exs file, the after compile callback from
-      # `use Mix.Project` will blow up if we add the same project to the project stack
-      # twice. Preemptively popping it prevents that error from occurring.
-      if Path.basename(path) == "mix.exs" do
-        Engine.with_lock(Engine.Mix.StackMutation, fn ->
-          Mix.ProjectStack.pop()
-        end)
-      end
-
       Mix.Task.run(:loadconfig)
     else
       :ok
