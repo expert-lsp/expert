@@ -93,7 +93,7 @@ defmodule Expert.EngineNodeTest do
   end
 
   @tag :tmp_dir
-  test "starts the engine as a bare project when mix.exs does not compile", %{tmp_dir: tmp_dir} do
+  test "cleans up state after an invalid Mix project load", %{tmp_dir: tmp_dir} do
     source = """
       defmodule Broken.BootstrapHelper do
         def loop(parent) do
@@ -146,7 +146,6 @@ defmodule Expert.EngineNodeTest do
              Enum.find(diagnostics, &(&1.severity == :warning and &1.message =~ "unused"))
 
     refute position == 1
-
     assert Enum.any?(diagnostics, &(&1.severity == :error and &1.message =~ "bootstrap boom"))
   end
 
@@ -162,6 +161,34 @@ defmodule Expert.EngineNodeTest do
 
     assert Enum.any?(diagnostics, &(&1.severity == :error and &1.message =~ "does not define"))
     refute EngineApi.call(project, Code, :ensure_loaded?, [OnlyBootstrapHelper])
+  end
+
+  @tag :tmp_dir
+  test "reports a bootstrap exit without a stacktrace", %{tmp_dir: tmp_dir} do
+    {project, _log} = start_invalid_project(tmp_dir, "exit(1)")
+
+    assert [diagnostic] = initial_project_diagnostics(project)
+    assert diagnostic.message == "mix.exs compilation exited: 1"
+    assert diagnostic.severity == :error
+    assert diagnostic.uri == Document.Path.to_uri(Path.join(tmp_dir, "mix.exs"))
+  end
+
+  @tag :tmp_dir
+  test "reports a bootstrap throw without a stacktrace", %{tmp_dir: tmp_dir} do
+    {project, _log} = start_invalid_project(tmp_dir, "throw(:bootstrap_failure)")
+
+    assert [diagnostic] = initial_project_diagnostics(project)
+    assert diagnostic.message == "mix.exs compilation threw: :bootstrap_failure"
+  end
+
+  @tag :tmp_dir
+  test "cleans up modules when the bootstrap compiler is killed", %{tmp_dir: tmp_dir} do
+    source = "defmodule KilledBootstrapHelper do\nend\nProcess.exit(self(), :kill)"
+    {project, _log} = start_invalid_project(tmp_dir, source)
+
+    assert [diagnostic] = initial_project_diagnostics(project)
+    assert diagnostic.message == "mix.exs compilation exited: :killed"
+    refute EngineApi.call(project, Code, :ensure_loaded?, [KilledBootstrapHelper])
   end
 
   test "passes isolated engine tooling env when starting project node", %{project: project} do
@@ -234,7 +261,7 @@ defmodule Expert.EngineNodeTest do
 
     assert {{:ok, _node_name, _node_pid}, log} = with_log(fn -> EngineNode.start(project) end)
 
-    assert %Project{kind: :bare, project_module: nil} =
+    assert %Project{kind: :mix, project_module: nil} =
              EngineApi.call(project, Engine, :get_project)
 
     {project, log}

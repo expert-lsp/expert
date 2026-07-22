@@ -6,9 +6,6 @@ defmodule Engine.Bootstrap do
   the project's code paths, which are then added to the code paths from the language server. At this
   point, it's safe to start the project, as we should have all the code present to compile the system.
   """
-  alias Engine.Build
-  alias Engine.Build.Isolation
-  alias Forge.Document
   alias Forge.LogFilter
   alias Forge.Project
 
@@ -33,29 +30,26 @@ defmodule Engine.Bootstrap do
          {:ok, _} <- Application.ensure_all_started(:elixir),
          {:ok, _} <- Application.ensure_all_started(:mix),
          {:ok, _} <- Application.ensure_all_started(:logger) do
-      project = maybe_load_mix_exs(project)
-
       with :ok <- Project.ensure_workspace(project) do
         Engine.set_project(project)
         Engine.set_manager_node(manager_node)
         Mix.env(:test)
         set_mix_build_path(project)
-
-        maybe_load_project_config(project)
+        load_project(project)
 
         ExUnit.start()
         start_logger(project)
-        maybe_change_directory(project)
+        maybe_change_directory(Engine.get_project())
         :ok
       end
     end
   end
 
-  defp maybe_load_project_config(%Project{kind: :mix} = project) do
-    Engine.Mix.in_project(project, fn _ -> Mix.Task.run(:loadconfig) end)
+  defp load_project(%Project{kind: :mix} = project) do
+    Engine.Mix.reload_project(project)
   end
 
-  defp maybe_load_project_config(%Project{}) do
+  defp load_project(%Project{}) do
     :ok
   end
 
@@ -107,6 +101,8 @@ defmodule Engine.Bootstrap do
     LogFilter.hook_into_logger()
   end
 
+  defp maybe_change_directory(%Project{project_module: nil}), do: :ok
+
   defp maybe_change_directory(%Project{kind: :mix} = project) do
     current_dir = File.cwd!()
 
@@ -130,119 +126,5 @@ defmodule Engine.Bootstrap do
 
   defp maybe_change_directory(%Project{}) do
     :ok
-  end
-
-  defp maybe_load_mix_exs(%Project{} = project) do
-    # The reason this function exists is to support projects that have the same name as
-    # one of their dependencies. Prior to this, the project name was based off the directory
-    # name of the project, and if that's the same as a dependency, the mix project stack will
-    # raise an error during `deps.safe_compile`, as a project with the same name was already defined.
-    # Mix itself uses the name of the module that the mix.exs defines as the project name, and I figured
-    # this was a safe default.
-
-    case Project.mix_exs_path(project) do
-      path when is_binary(path) ->
-        compiler_options = Code.compiler_options()
-        target = Mix.target()
-
-        {compile_result, diagnostics} =
-          case Isolation.invoke(fn -> compile_mix_exs(path) end) do
-            {:ok, result} -> result
-            {:error, reason} -> {{:error, reason}, []}
-          end
-
-        # We've found the mix project module, but it's now been added to the
-        # project stack. We need to clear the stack because we use `in_mix_project`, and
-        # that will fail if the current project is already in the project stack.
-        # Restarting mix will clear the stack without using private APIs.
-        Application.stop(:mix)
-        Application.ensure_all_started(:mix)
-
-        case compile_result do
-          {:ok, compiled} ->
-            case find_mix_project_module(compiled) do
-              nil ->
-                reject_mix_project(
-                  project,
-                  path,
-                  compiler_options,
-                  target,
-                  diagnostics,
-                  :no_mix_project
-                )
-
-              project_module ->
-                project = Project.set_project_module(project, project_module)
-                Engine.Mix.accept_project(project, compiled)
-                project
-            end
-
-          {:error, reason} ->
-            reject_mix_project(project, path, compiler_options, target, diagnostics, reason)
-        end
-
-      nil ->
-        project
-    end
-  end
-
-  defp compile_mix_exs(path) do
-    Code.with_diagnostics(fn -> do_compile_mix_exs(path) end)
-  end
-
-  defp do_compile_mix_exs(path) do
-    {:ok, Code.compile_file(path)}
-  rescue
-    exception -> {:error, {:error, exception, __STACKTRACE__}}
-  catch
-    kind, reason -> {:error, {kind, reason, __STACKTRACE__}}
-  end
-
-  defp ensure_diagnostics(diagnostics, path, reason) do
-    if Enum.any?(diagnostics, &match?(%{severity: :error}, &1)) do
-      diagnostics
-    else
-      diagnostics ++ [error_diagnostic(path, reason)]
-    end
-  end
-
-  defp error_diagnostic(path, reason) do
-    message =
-      case reason do
-        :no_mix_project -> "mix.exs does not define a Mix project"
-        {:error, exception, _stack} -> Exception.message(exception)
-        other -> "mix.exs compilation failed: #{inspect(other)}"
-      end
-
-    %{file: path, source: path, position: 1, severity: :error, message: message}
-  end
-
-  defp reject_mix_project(
-         %Project{} = project,
-         path,
-         compiler_options,
-         target,
-         diagnostics,
-         reason
-       ) do
-    document = Document.new(Document.Path.to_uri(path), File.read!(path), 0)
-
-    diagnostics =
-      document
-      |> Build.Error.diagnostics_from_mix(ensure_diagnostics(diagnostics, path, reason))
-      |> Build.Error.refine_diagnostics()
-
-    Engine.Mix.put_initial_project_diagnostics(diagnostics)
-    Code.compiler_options(compiler_options)
-    Mix.target(target)
-    Engine.Mix.discard_project_modules(path)
-    %Project{project | kind: :bare, project_module: nil}
-  end
-
-  defp find_mix_project_module(modules) do
-    case Enum.find(modules, fn {module, _bytecode} -> function_exported?(module, :project, 0) end) do
-      {module, _bytecode} -> module
-      nil -> nil
-    end
   end
 end
