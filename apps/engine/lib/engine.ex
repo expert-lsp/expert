@@ -65,8 +65,6 @@ defmodule Engine do
 
   defdelegate resolve_entity(analysis, position), to: CodeIntelligence.Entity, as: :resolve
 
-  defdelegate struct_definitions, to: CodeIntelligence.Structs, as: :for_project
-
   defdelegate document_symbols(document), to: CodeIntelligence.Symbols, as: :for_document
 
   defdelegate workspace_symbols(query), to: CodeIntelligence.Symbols, as: :for_workspace

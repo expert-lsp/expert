@@ -7,7 +7,9 @@ defmodule Expert.Project.IntelligenceTest do
 
   alias Expert.EngineApi
   alias Expert.Project.Intelligence
+  alias Expert.Search.Store
   alias Expert.Test.DispatchFake
+  alias Forge.Search.Indexer.Entry
   alias Forge.Test.Fixtures
 
   setup do
@@ -43,6 +45,18 @@ defmodule Expert.Project.IntelligenceTest do
 
     Process.sleep(50)
     :ok
+  end
+
+  test "refreshes struct definitions from the project index", %{project: project} do
+    struct_module = Module.concat(__MODULE__, IndexedStruct)
+
+    patch(Store, :exact, fn ^project, :_, [type: :struct, subtype: :definition] ->
+      {:ok, [%Entry{subject: struct_module}]}
+    end)
+
+    send(Process.whereis(Intelligence.name(project)), project_index_ready(project: project))
+
+    assert Intelligence.collect_struct_modules(project, struct_module) == [inspect(struct_module)]
   end
 
   describe "defines_struct?/2" do
