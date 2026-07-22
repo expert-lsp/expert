@@ -6,35 +6,9 @@ defmodule Engine.Mix do
   require Logger
 
   @modules_key {__MODULE__, :root_modules}
-  @initial_project_diagnostics_key {__MODULE__, :initial_project_diagnostics}
 
   def loaded? do
     not is_nil(Mix.Project.get())
-  end
-
-  @doc false
-  def accept_project(%Project{}, modules) do
-    :persistent_term.put(@modules_key, Enum.map(modules, &elem(&1, 0)))
-    :ok
-  end
-
-  @doc false
-  def put_initial_project_diagnostics(diagnostics) do
-    :persistent_term.put(@initial_project_diagnostics_key, diagnostics)
-  end
-
-  @doc false
-  def take_initial_project_diagnostics do
-    diagnostics = :persistent_term.get(@initial_project_diagnostics_key, [])
-    :persistent_term.erase(@initial_project_diagnostics_key)
-    diagnostics
-  end
-
-  @doc false
-  def discard_project_modules(path) do
-    path
-    |> modules_loaded_from()
-    |> unload_modules()
   end
 
   def project_file?(path) do
