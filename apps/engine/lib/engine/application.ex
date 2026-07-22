@@ -17,6 +17,7 @@ defmodule Engine.Application do
           Engine.Dispatch,
           Engine.ModuleMappings,
           Engine.Compilation.Tracer,
+          {Task.Supervisor, name: Engine.TaskSupervisor},
           Engine.Build,
           Engine.ModuleStore,
           Engine.Build.CaptureServer

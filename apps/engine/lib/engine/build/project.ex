@@ -26,7 +26,10 @@ defmodule Engine.Build.Project do
   end
 
   def compile(%Project{}, _initial?, _force?) do
-    :ok
+    case Engine.Mix.take_initial_project_diagnostics() do
+      [] -> :ok
+      diagnostics -> {:error, diagnostics}
+    end
   end
 
   def fetch_deps(%Project{kind: :mix} = project) do
