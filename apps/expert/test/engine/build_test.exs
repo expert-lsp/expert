@@ -99,6 +99,36 @@ defmodule Engine.BuildTest do
   end
 
   describe "compiling an umbrella project" do
+    test "unsaved child mix.exs edits leave the loaded child project intact" do
+      {:ok, project} = with_project(:umbrella)
+      EngineApi.schedule_compile(project, true)
+      assert_receive project_compiled(status: :success), @project_compile_timeout
+      assert_receive project_diagnostics(diagnostics: [])
+
+      mix_path = Path.join([Project.root_path(project), "apps", "first", "mix.exs"])
+      mix_uri = Document.Path.to_uri(mix_path)
+      source = File.read!(mix_path)
+      original = EngineApi.call(project, Umbrella.First.MixProject, :project)
+
+      bad_source = String.replace(source, "def project do", "def project do\n    foo()")
+      compile_document(project, mix_path, bad_source)
+
+      assert_receive file_compiled(status: :success, uri: ^mix_uri)
+      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: [])
+      assert EngineApi.call(project, Umbrella.First.MixProject, :project) == original
+
+      changed_source = String.replace(source, "0.1.0", "0.2.0")
+      compile_document(project, mix_path, changed_source)
+
+      assert_receive file_compiled(status: :success, uri: ^mix_uri)
+      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: [])
+      assert EngineApi.call(project, Umbrella.First.MixProject, :project) == original
+
+      EngineApi.schedule_compile(project, true)
+      assert_receive project_compiled(status: :success), @project_compile_timeout
+      assert_receive project_diagnostics(diagnostics: [])
+    end
+
     test "it sends a message when compilation is complete" do
       {:ok, project} = with_project(:umbrella)
       EngineApi.schedule_compile(project, true)
@@ -218,14 +248,15 @@ defmodule Engine.BuildTest do
       mix_uri = Document.Path.to_uri(mix_path)
       compile_document(project, mix_path, bad_mix_exs)
 
-      assert_receive file_compiled(status: :error, uri: ^mix_uri)
-      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: diagnostics)
-      assert Enum.any?(diagnostics, &String.contains?(&1.message, "undefined function <~>/2"))
+      assert_receive file_compiled(status: :success, uri: ^mix_uri)
+      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: [])
 
       compile_document(project, "defmodule AfterBadMix do\n  def ok, do: :ok\nend\n")
 
       assert_receive file_compiled(status: :success, uri: after_bad_mix_uri)
       assert_receive file_diagnostics(uri: ^after_bad_mix_uri, diagnostics: [])
+
+      assert EngineApi.call(project, Code, :ensure_loaded?, [ProjectMetadata.MixProject])
 
       assert EngineApi.call(project, Kernel, :function_exported?, [
                ProjectMetadata.MixProject,

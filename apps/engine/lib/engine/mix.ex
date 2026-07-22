@@ -1,80 +1,20 @@
 defmodule Engine.Mix do
+  alias Engine.Build.Isolation
   alias Forge.Internet
   alias Forge.Project
 
   require Logger
 
-  @accepted_project_key {__MODULE__, :accepted_project}
+  @modules_key {__MODULE__, :root_modules}
   @initial_project_diagnostics_key {__MODULE__, :initial_project_diagnostics}
 
   def loaded? do
     not is_nil(Mix.Project.get())
   end
 
-  def accept_project(%Project{} = project, modules) when is_list(modules) do
-    :persistent_term.put(@accepted_project_key, %{
-      modules: modules,
-      path: project |> Project.mix_exs_path() |> Path.expand()
-    })
-
-    :ok
-  end
-
-  def project_file?(path) do
-    path = Path.expand(path)
-
-    case :persistent_term.get(@accepted_project_key, nil) do
-      %{path: ^path} ->
-        true
-
-      _ ->
-        case Engine.get_project() do
-          %Project{} = project ->
-            project_path = Project.mix_exs_path(project)
-            is_binary(project_path) and path == Path.expand(project_path)
-
-          nil ->
-            false
-        end
-    end
-  end
-
-  def compile_project(path, quoted_ast, compile) when is_function(compile, 0) do
-    Engine.with_lock(Engine.Mix.StackMutation, fn ->
-      env = Mix.env()
-      target = Mix.target()
-      compiler_options = Code.compiler_options()
-      code_paths = :code.get_path()
-
-      try do
-        Mix.ProjectStack.on_clean_slate(fn ->
-          path = Path.expand(path)
-
-          case :persistent_term.get(@accepted_project_key, nil) do
-            %{path: ^path} = accepted ->
-              Enum.each(accepted.modules, fn {module, _binary} -> purge_old_code(module) end)
-              compile_accepted_project(accepted, quoted_ast, compile)
-
-            _ ->
-              compile_unaccepted_project(path, quoted_ast, compile)
-          end
-        end)
-      after
-        Code.compiler_options(compiler_options)
-        Mix.env(env)
-        Mix.target(target)
-        Code.delete_paths(:code.get_path() -- code_paths)
-
-        if :code.get_path() != code_paths do
-          true = :code.set_path(code_paths)
-        end
-      end
-    end)
-  end
-
   @doc false
-  def clear_accepted_project do
-    :persistent_term.erase(@accepted_project_key)
+  def accept_project(%Project{}, modules) do
+    :persistent_term.put(@modules_key, Enum.map(modules, &elem(&1, 0)))
     :ok
   end
 
@@ -94,11 +34,148 @@ defmodule Engine.Mix do
   def discard_project_modules(path) do
     path
     |> modules_loaded_from()
-    |> Enum.each(fn module ->
+    |> unload_modules()
+  end
+
+  def project_file?(path) do
+    path = Path.expand(path)
+
+    Path.basename(path) == "mix.exs" or
+      case Engine.get_project() do
+        %Project{} = project ->
+          project_path = Project.mix_exs_path(project)
+          is_binary(project_path) and Path.expand(project_path) == path
+
+        nil ->
+          false
+      end
+  end
+
+  @doc "Reloads the saved Mix project and runs the build before releasing the project lock."
+  def reload_project(%Project{} = project, fun \\ fn _project -> {:ok, []} end) do
+    with_lock(fn ->
+      File.cd!(Project.root_path(project), fn ->
+        case load_project(project) do
+          {:ok, loaded, diagnostics} ->
+            Engine.set_project(loaded)
+            Project.put_config(loaded, Mix.Project.config())
+            {status, build_diagnostics} = fun.(loaded)
+
+            {status, diagnostics ++ build_diagnostics}
+
+          {:error, diagnostics} ->
+            mark_project_unavailable(project)
+            {:error, diagnostics}
+        end
+      end)
+    end)
+  end
+
+  defp load_project(project) do
+    clear_project()
+    Project.put_config(project, [])
+    path = Project.mix_exs_path(project)
+    env = Mix.env()
+    target = Mix.target()
+    compiler_options = Code.compiler_options()
+
+    try do
+      Code.compiler_options(
+        tracers: [],
+        ignore_module_conflict: true,
+        no_warn_undefined: :all,
+        relative_paths: false
+      )
+
+      Mix.ProjectStack.post_config(
+        build_path: Project.versioned_build_path(project),
+        prune_code_paths: false
+      )
+
+      case Isolation.with_diagnostics(path, fn -> compile_project_file(project, path) end) do
+        {:ok, loaded, diagnostics} ->
+          {:ok, loaded, diagnostics}
+
+        {:error, diagnostics} ->
+          unload_modules(modules_loaded_from(path))
+          clear_project()
+          {:error, diagnostics}
+      end
+    after
+      Code.compiler_options(compiler_options)
+      Mix.env(env)
+      Mix.target(target)
+    end
+  end
+
+  defp compile_project_file(project, path) do
+    Code.compile_file(path)
+    :persistent_term.put(@modules_key, modules_loaded_from(path))
+    module = Mix.Project.get()
+    file = Mix.Project.project_file()
+
+    if is_nil(module) or not is_binary(file) or Path.expand(file) != Path.expand(path) do
+      Mix.raise("mix.exs does not define a Mix project")
+    end
+
+    Mix.Task.run(:loadconfig)
+    Project.set_project_module(project, module)
+  end
+
+  defp clear_project do
+    for {app, values} <- Mix.State.read_cache(Mix.Tasks.Loadconfig) || [],
+        app == :logger or app not in Engine.required_apps(),
+        {key, _value} <- values do
+      Application.delete_env(app, key, persistent: true)
+    end
+
+    # Mix caches each dependency's project module and source path. Collect these
+    # before clearing the cache, including children from a failed dependency load.
+    children =
+      for {{Mix.State, {:app, _app}}, {module, _file}} <- :persistent_term.get(),
+          is_atom(module) and not is_nil(module),
+          do: module
+
+    modules = pop_projects(:persistent_term.get(@modules_key, []) ++ children)
+    Mix.ProjectStack.clear_stack()
+    Mix.State.clear_cache()
+    Mix.Task.clear()
+    :persistent_term.erase(@modules_key)
+    unload_modules(Enum.uniq(modules))
+  end
+
+  defp pop_projects(modules) do
+    case Mix.Project.pop() do
+      nil -> modules
+      %{name: nil} -> pop_projects(modules)
+      %{name: module} -> pop_projects([module | modules])
+    end
+  end
+
+  defp unload_modules(modules) do
+    Enum.each(modules, fn module ->
       :code.purge(module)
       :code.delete(module)
       :code.purge(module)
     end)
+
+    if Process.whereis(Engine.Module.Loader) do
+      Engine.Module.Loader.forget(modules)
+    end
+  end
+
+  defp modules_loaded_from(path) do
+    path = Path.expand(path)
+
+    for {module, []} <- :code.all_loaded(),
+        source when not is_nil(source) <- [module.module_info(:compile)[:source]],
+        Path.expand(to_string(source)) == path,
+        do: module
+  end
+
+  defp mark_project_unavailable(%Project{} = project) do
+    Engine.set_project(Project.set_project_module(project, nil))
+    Project.put_config(project, [])
   end
 
   def ensure_hex_and_rebar do
@@ -127,7 +204,28 @@ defmodule Engine.Mix do
   end
 
   def in_project(%Project{kind: :mix} = project, fun) do
-    with_lock(fn -> run_and_normalize(fn -> in_loaded_project(project, fun) end) end)
+    with_lock(fn ->
+      case Engine.get_project() do
+        %Project{root_uri: root_uri, entropy: entropy, project_module: nil}
+        when root_uri == project.root_uri and entropy == project.entropy ->
+          {:error, :project_not_loaded}
+
+        _ ->
+          project = current_project(project)
+          run_and_normalize(fn -> in_loaded_project(project, fun) end)
+      end
+    end)
+  end
+
+  defp current_project(project) do
+    case Engine.get_project() do
+      %Project{root_uri: root_uri, entropy: entropy} = current
+      when root_uri == project.root_uri and entropy == project.entropy ->
+        current
+
+      _ ->
+        project
+    end
   end
 
   def deps_paths do
@@ -270,9 +368,18 @@ defmodule Engine.Mix do
   defp release_project(:pushed), do: Mix.Project.pop()
 
   defp pushed_module(%Project{} = project) do
-    if Mix.Project.project_file() == Project.mix_exs_path(project) do
+    project_file = Mix.Project.project_file()
+
+    if is_binary(project_file) and
+         normalize_path(project_file) == normalize_path(Project.mix_exs_path(project)) do
       Mix.Project.get()
     end
+  end
+
+  defp normalize_path(path) do
+    path
+    |> Forge.Path.normalize()
+    |> Path.expand()
   end
 
   defp push_project(%Project{} = project) do
@@ -321,88 +428,5 @@ defmodule Engine.Mix do
 
   defp with_lock(fun) do
     Engine.with_lock(__MODULE__, fun)
-  end
-
-  defp compile_accepted_project(accepted, quoted_ast, compile) do
-    result = compile_in_task(compile, quoted_ast)
-    rollback_project(accepted)
-    result
-  end
-
-  defp compile_unaccepted_project(path, quoted_ast, compile) do
-    result = compile_in_task(compile, quoted_ast)
-    discard_project_modules(path)
-    result
-  end
-
-  defp rollback_project(accepted) do
-    accepted_modules = MapSet.new(accepted.modules, &elem(&1, 0))
-
-    for module <- modules_loaded_from(accepted.path), module not in accepted_modules do
-      unload_module(module)
-    end
-
-    for {module, binary} <- accepted.modules do
-      purge_old_code(module)
-      {:module, ^module} = :code.load_binary(module, String.to_charlist(accepted.path), binary)
-      purge_old_code(module)
-    end
-  end
-
-  defp compile_in_task(compile, quoted_ast) do
-    task =
-      Task.Supervisor.async_nolink(Engine.TaskSupervisor, fn ->
-        result =
-          try do
-            {:ok, compile.()}
-          catch
-            kind, reason -> {:error, kind, reason, __STACKTRACE__}
-          end
-
-        result
-      end)
-
-    case Task.yield(task, :infinity) do
-      {:ok, {:ok, result}} -> result
-      {:ok, {:error, kind, reason, stack}} -> compile_failure(kind, reason, stack, quoted_ast)
-      {:exit, reason} -> compile_failure(:exit, reason, [], quoted_ast)
-    end
-  end
-
-  defp compile_failure(kind, reason, stack, quoted_ast) do
-    exception = RuntimeError.exception("mix.exs compilation #{failure_message(kind, reason)}")
-    {{:exception, exception, stack, quoted_ast}, []}
-  end
-
-  defp failure_message(:throw, reason), do: "threw: #{inspect(reason)}"
-  defp failure_message(:exit, reason), do: "exited: #{inspect(reason)}"
-  defp failure_message(:error, reason), do: "failed: #{inspect(reason)}"
-
-  defp modules_loaded_from(path) do
-    uri = Forge.Document.Path.to_uri(path)
-
-    for {module, _file} <- :code.all_loaded(),
-        compile when is_list(compile) <- [module.module_info(:compile)],
-        source when not is_nil(source) <- [compile[:source]],
-        Forge.Document.Path.to_uri(to_string(source)) == uri,
-        do: module
-  end
-
-  defp unload_module(module) do
-    purge_old_code(module)
-
-    if :code.delete(module) do
-      purge_old_code(module)
-    end
-  end
-
-  defp purge_old_code(module) do
-    # Let in-flight calls leave old code instead of terminating their processes.
-    if :code.soft_purge(module) do
-      :ok
-    else
-      Process.sleep(1)
-      purge_old_code(module)
-    end
   end
 end

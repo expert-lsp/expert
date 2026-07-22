@@ -78,7 +78,8 @@ defmodule Engine.Build.StateTest do
   end
 
   def with_patched_compilation(_) do
-    patch(Build.Document, :compile, :ok)
+    patch(Engine.Mix, :in_project, fn fun -> fun.(nil) end)
+    patch(Build.Document, :compile, {:ok, []})
     patch(Build.Project, :compile, :ok)
     :ok
   end

@@ -14,6 +14,8 @@ defmodule Engine do
   @excluded_apps [:patch, :nimble_parsec]
   @allowed_apps [:engine | Mix.Project.deps_apps()] -- @excluded_apps
 
+  def required_apps, do: [:elixir, :mix, :logger, :kernel, :stdlib | @allowed_apps]
+
   defdelegate schedule_compile(force?), to: Proxy
 
   defdelegate compile_document(document), to: Proxy

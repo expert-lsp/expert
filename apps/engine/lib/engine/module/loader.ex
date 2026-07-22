@@ -60,6 +60,10 @@ defmodule Engine.Module.Loader do
     match?({:module, ^module_name}, ensure_loaded(module_name))
   end
 
+  def forget(module_names) do
+    Agent.update(__MODULE__, &Map.drop(&1, module_names))
+  end
+
   def loaded?(module_name) do
     Agent.get(__MODULE__, fn
       %{^module_name => {:module, _}} ->
