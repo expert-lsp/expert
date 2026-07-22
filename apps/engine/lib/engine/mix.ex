@@ -83,8 +83,8 @@ defmodule Engine.Mix do
   end
 
   defp compile_project_file(project, path) do
-    Code.compile_file(path)
-    :persistent_term.put(@modules_key, modules_loaded_from(path))
+    modules = for {module, _binary} <- Code.compile_file(path), do: module
+    :persistent_term.put(@modules_key, modules)
     module = Mix.Project.get()
     file = Mix.Project.project_file()
 
