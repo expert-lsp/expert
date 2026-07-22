@@ -59,4 +59,8 @@ defmodule Engine.Module.Loader do
   def ensure_loaded?(module_name) do
     match?({:module, ^module_name}, ensure_loaded(module_name))
   end
+
+  def forget(module_names) do
+    Agent.update(__MODULE__, &Map.drop(&1, module_names))
+  end
 end
