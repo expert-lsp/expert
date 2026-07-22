@@ -8,15 +8,23 @@ defmodule Engine.Build.Document.Compilers.Quoted do
   alias Forge.Document
 
   def compile(%Document{} = document, quoted_ast, compiler_name) do
-    # mix.exs has already been parsed by this point. Do not compile it as a
-    # document: `use Mix.Project` registers an after-compile callback that pushes
-    # the project onto Mix.ProjectStack, and failed redefinition can delete the
-    # module Engine.Mix needs to enter the project context for later compiles.
-    if mix_project_file?(document.path) do
-      {:ok, []}
-    else
-      compile_quoted_document(document, quoted_ast, compiler_name)
+    # Only the configured root project file can safely mutate Mix.ProjectStack.
+    cond do
+      Engine.Mix.project_file?(document.path) ->
+        compile_mix_project(document, quoted_ast, compiler_name)
+
+      mix_project_file?(document.path) ->
+        {:ok, []}
+
+      true ->
+        compile_quoted_document(document, quoted_ast, compiler_name)
     end
+  end
+
+  defp compile_mix_project(document, quoted_ast, compiler_name) do
+    quoted_ast
+    |> do_compile(document, false, &compile_mix_project_with_diagnostics/2)
+    |> replace_sources(compiler_name)
   end
 
   defp compile_quoted_document(%Document{} = document, quoted_ast, compiler_name) do
@@ -29,24 +37,29 @@ defmodule Engine.Build.Document.Compilers.Quoted do
         quoted_ast
       end
 
-    {status, diagnostics} =
+    result =
       if Features.with_diagnostics?() do
         do_compile(quoted_ast, document)
       else
         do_compile_and_capture_io(quoted_ast, document)
       end
 
-    {status, Enum.map(diagnostics, &replace_source(&1, compiler_name))}
+    replace_sources(result, compiler_name)
   end
 
   defp mix_project_file?(path) when is_binary(path) do
     Path.basename(path) == "mix.exs"
   end
 
-  defp do_compile(quoted_ast, document) do
-    old_modules = ModuleMappings.modules_in_file(document.path)
+  defp do_compile(
+         quoted_ast,
+         document,
+         track_modules? \\ true,
+         compiler \\ &compile_quoted_with_diagnostics/2
+       ) do
+    old_modules = if track_modules?, do: ModuleMappings.modules_in_file(document.path), else: []
 
-    case compile_quoted_with_diagnostics(quoted_ast, document.path) do
+    case compiler.(quoted_ast, document.path) do
       {{:ok, modules}, []} ->
         purge_removed_modules(old_modules, modules)
         {:ok, []}
@@ -130,6 +143,17 @@ defmodule Engine.Build.Document.Compilers.Quoted do
     apply(Code, :with_diagnostics, [fn -> safe_compile_quoted(quoted_ast, path) end])
   end
 
+  defp compile_mix_project_with_diagnostics(quoted_ast, path) do
+    Engine.Mix.compile_project(
+      path,
+      quoted_ast,
+      fn ->
+        Code.compiler_options(ignore_module_conflict: true, tracers: [])
+        Code.with_diagnostics(fn -> safe_compile_quoted(quoted_ast, path) end)
+      end
+    )
+  end
+
   defp safe_compile_quoted(quoted_ast, path) do
     {:ok, Code.compile_quoted(quoted_ast, path)}
   rescue
@@ -150,8 +174,8 @@ defmodule Engine.Build.Document.Compilers.Quoted do
     end)
   end
 
-  defp replace_source(result, source) do
-    Map.put(result, :source, source)
+  defp replace_sources({status, diagnostics}, source) do
+    {status, Enum.map(diagnostics, &Map.put(&1, :source, source))}
   end
 
   @doc false

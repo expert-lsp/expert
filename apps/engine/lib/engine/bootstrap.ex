@@ -6,6 +6,9 @@ defmodule Engine.Bootstrap do
   the project's code paths, which are then added to the code paths from the language server. At this
   point, it's safe to start the project, as we should have all the code present to compile the system.
   """
+  alias Engine.Build
+  alias Engine.Build.Isolation
+  alias Forge.Document
   alias Forge.LogFilter
   alias Forge.Project
 
@@ -137,32 +140,109 @@ defmodule Engine.Bootstrap do
     # Mix itself uses the name of the module that the mix.exs defines as the project name, and I figured
     # this was a safe default.
 
-    with path when is_binary(path) <- Project.mix_exs_path(project),
-         compiled = Code.compile_file(path),
-         {:ok, project_module} <- find_mix_project_module(compiled) do
-      # We've found the mix project module, but it's now been added to the
-      # project stack. We need to clear the stack because we use `in_mix_project`, and
-      # that will fail if the current project is already in the project stack.
-      # Restarting mix will clear the stack without using private APIs.
-      Application.stop(:mix)
-      Application.ensure_all_started(:mix)
-      Project.set_project_module(project, project_module)
-    else
-      _ ->
+    case Project.mix_exs_path(project) do
+      path when is_binary(path) ->
+        compiler_options = Code.compiler_options()
+        target = Mix.target()
+
+        {compile_result, diagnostics} =
+          case Isolation.invoke(fn -> compile_mix_exs(path) end) do
+            {:ok, result} -> result
+            {:error, reason} -> {{:error, reason}, []}
+          end
+
+        # We've found the mix project module, but it's now been added to the
+        # project stack. We need to clear the stack because we use `in_mix_project`, and
+        # that will fail if the current project is already in the project stack.
+        # Restarting mix will clear the stack without using private APIs.
+        Application.stop(:mix)
+        Application.ensure_all_started(:mix)
+
+        case compile_result do
+          {:ok, compiled} ->
+            case find_mix_project_module(compiled) do
+              nil ->
+                reject_mix_project(
+                  project,
+                  path,
+                  compiler_options,
+                  target,
+                  diagnostics,
+                  :no_mix_project
+                )
+
+              project_module ->
+                project = Project.set_project_module(project, project_module)
+                Engine.Mix.accept_project(project, compiled)
+                project
+            end
+
+          {:error, reason} ->
+            reject_mix_project(project, path, compiler_options, target, diagnostics, reason)
+        end
+
+      nil ->
         project
     end
   end
 
-  defp find_mix_project_module(module_list) do
-    case Enum.find(module_list, &project_module?/1) do
-      {module, _bytecode} -> {:ok, module}
-      nil -> :error
+  defp compile_mix_exs(path) do
+    Code.with_diagnostics(fn -> do_compile_mix_exs(path) end)
+  end
+
+  defp do_compile_mix_exs(path) do
+    {:ok, Code.compile_file(path)}
+  rescue
+    exception -> {:error, {:error, exception, __STACKTRACE__}}
+  catch
+    kind, reason -> {:error, {kind, reason, __STACKTRACE__}}
+  end
+
+  defp ensure_diagnostics(diagnostics, path, reason) do
+    if Enum.any?(diagnostics, &match?(%{severity: :error}, &1)) do
+      diagnostics
+    else
+      diagnostics ++ [error_diagnostic(path, reason)]
     end
   end
 
-  defp project_module?({module, _bytecode}) do
-    function_exported?(module, :project, 0)
+  defp error_diagnostic(path, reason) do
+    message =
+      case reason do
+        :no_mix_project -> "mix.exs does not define a Mix project"
+        {:error, exception, _stack} -> Exception.message(exception)
+        other -> "mix.exs compilation failed: #{inspect(other)}"
+      end
+
+    %{file: path, source: path, position: 1, severity: :error, message: message}
   end
 
-  defp project_module?(_), do: false
+  defp reject_mix_project(
+         %Project{} = project,
+         path,
+         compiler_options,
+         target,
+         diagnostics,
+         reason
+       ) do
+    document = Document.new(Document.Path.to_uri(path), File.read!(path), 0)
+
+    diagnostics =
+      document
+      |> Build.Error.diagnostics_from_mix(ensure_diagnostics(diagnostics, path, reason))
+      |> Build.Error.refine_diagnostics()
+
+    Engine.Mix.put_initial_project_diagnostics(diagnostics)
+    Code.compiler_options(compiler_options)
+    Mix.target(target)
+    Engine.Mix.discard_project_modules(path)
+    %Project{project | kind: :bare, project_module: nil}
+  end
+
+  defp find_mix_project_module(modules) do
+    case Enum.find(modules, fn {module, _bytecode} -> function_exported?(module, :project, 0) end) do
+      {module, _bytecode} -> module
+      nil -> nil
+    end
+  end
 end

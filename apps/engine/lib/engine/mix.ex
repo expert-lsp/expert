@@ -4,8 +4,101 @@ defmodule Engine.Mix do
 
   require Logger
 
+  @accepted_project_key {__MODULE__, :accepted_project}
+  @initial_project_diagnostics_key {__MODULE__, :initial_project_diagnostics}
+
   def loaded? do
     not is_nil(Mix.Project.get())
+  end
+
+  def accept_project(%Project{} = project, modules) when is_list(modules) do
+    :persistent_term.put(@accepted_project_key, %{
+      modules: modules,
+      path: project |> Project.mix_exs_path() |> Path.expand()
+    })
+
+    :ok
+  end
+
+  def project_file?(path) do
+    path = Path.expand(path)
+
+    case :persistent_term.get(@accepted_project_key, nil) do
+      %{path: ^path} ->
+        true
+
+      _ ->
+        case Engine.get_project() do
+          %Project{} = project ->
+            project_path = Project.mix_exs_path(project)
+            is_binary(project_path) and path == Path.expand(project_path)
+
+          nil ->
+            false
+        end
+    end
+  end
+
+  def compile_project(path, quoted_ast, compile) when is_function(compile, 0) do
+    Engine.with_lock(Engine.Mix.StackMutation, fn ->
+      env = Mix.env()
+      target = Mix.target()
+      compiler_options = Code.compiler_options()
+      code_paths = :code.get_path()
+
+      try do
+        Mix.ProjectStack.on_clean_slate(fn ->
+          path = Path.expand(path)
+
+          case :persistent_term.get(@accepted_project_key, nil) do
+            %{path: ^path} = accepted ->
+              Enum.each(accepted.modules, fn {module, _binary} -> purge_old_code(module) end)
+              compile_accepted_project(accepted, quoted_ast, compile)
+
+            _ ->
+              compile_unaccepted_project(path, quoted_ast, compile)
+          end
+        end)
+      after
+        Code.compiler_options(compiler_options)
+        Mix.env(env)
+        Mix.target(target)
+        Code.delete_paths(:code.get_path() -- code_paths)
+
+        if :code.get_path() != code_paths do
+          true = :code.set_path(code_paths)
+        end
+      end
+    end)
+  end
+
+  @doc false
+  def clear_accepted_project do
+    :persistent_term.erase(@accepted_project_key)
+    :ok
+  end
+
+  @doc false
+  def put_initial_project_diagnostics(diagnostics) do
+    :persistent_term.put(@initial_project_diagnostics_key, diagnostics)
+  end
+
+  @doc false
+  def take_initial_project_diagnostics do
+    diagnostics = :persistent_term.get(@initial_project_diagnostics_key, [])
+    :persistent_term.erase(@initial_project_diagnostics_key)
+    diagnostics
+  end
+
+  @doc false
+  def discard_project_modules(path) do
+    path
+    |> modules_loaded_from()
+    |> Enum.each(fn module ->
+      :code.purge(module)
+      :code.delete(module)
+      :code.purge(module)
+    end)
   end
 
   def ensure_hex_and_rebar do
@@ -228,5 +321,88 @@ defmodule Engine.Mix do
 
   defp with_lock(fun) do
     Engine.with_lock(__MODULE__, fun)
+  end
+
+  defp compile_accepted_project(accepted, quoted_ast, compile) do
+    result = compile_in_task(compile, quoted_ast)
+    rollback_project(accepted)
+    result
+  end
+
+  defp compile_unaccepted_project(path, quoted_ast, compile) do
+    result = compile_in_task(compile, quoted_ast)
+    discard_project_modules(path)
+    result
+  end
+
+  defp rollback_project(accepted) do
+    accepted_modules = MapSet.new(accepted.modules, &elem(&1, 0))
+
+    for module <- modules_loaded_from(accepted.path), module not in accepted_modules do
+      unload_module(module)
+    end
+
+    for {module, binary} <- accepted.modules do
+      purge_old_code(module)
+      {:module, ^module} = :code.load_binary(module, String.to_charlist(accepted.path), binary)
+      purge_old_code(module)
+    end
+  end
+
+  defp compile_in_task(compile, quoted_ast) do
+    task =
+      Task.Supervisor.async_nolink(Engine.TaskSupervisor, fn ->
+        result =
+          try do
+            {:ok, compile.()}
+          catch
+            kind, reason -> {:error, kind, reason, __STACKTRACE__}
+          end
+
+        result
+      end)
+
+    case Task.yield(task, :infinity) do
+      {:ok, {:ok, result}} -> result
+      {:ok, {:error, kind, reason, stack}} -> compile_failure(kind, reason, stack, quoted_ast)
+      {:exit, reason} -> compile_failure(:exit, reason, [], quoted_ast)
+    end
+  end
+
+  defp compile_failure(kind, reason, stack, quoted_ast) do
+    exception = RuntimeError.exception("mix.exs compilation #{failure_message(kind, reason)}")
+    {{:exception, exception, stack, quoted_ast}, []}
+  end
+
+  defp failure_message(:throw, reason), do: "threw: #{inspect(reason)}"
+  defp failure_message(:exit, reason), do: "exited: #{inspect(reason)}"
+  defp failure_message(:error, reason), do: "failed: #{inspect(reason)}"
+
+  defp modules_loaded_from(path) do
+    uri = Forge.Document.Path.to_uri(path)
+
+    for {module, _file} <- :code.all_loaded(),
+        compile when is_list(compile) <- [module.module_info(:compile)],
+        source when not is_nil(source) <- [compile[:source]],
+        Forge.Document.Path.to_uri(to_string(source)) == uri,
+        do: module
+  end
+
+  defp unload_module(module) do
+    purge_old_code(module)
+
+    if :code.delete(module) do
+      purge_old_code(module)
+    end
+  end
+
+  defp purge_old_code(module) do
+    # Let in-flight calls leave old code instead of terminating their processes.
+    if :code.soft_purge(module) do
+      :ok
+    else
+      Process.sleep(1)
+      purge_old_code(module)
+    end
   end
 end

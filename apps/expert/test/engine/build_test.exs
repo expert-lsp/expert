@@ -215,18 +215,17 @@ defmodule Engine.BuildTest do
         |> File.read!()
         |> String.replace("deps: deps()", "deps: deps() <~> []")
 
+      mix_uri = Document.Path.to_uri(mix_path)
       compile_document(project, mix_path, bad_mix_exs)
 
-      assert_receive file_compiled(status: :success, uri: mix_uri)
-      assert mix_uri == Document.Path.to_uri(mix_path)
-      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: [])
+      assert_receive file_compiled(status: :error, uri: ^mix_uri)
+      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: diagnostics)
+      assert Enum.any?(diagnostics, &String.contains?(&1.message, "undefined function <~>/2"))
 
       compile_document(project, "defmodule AfterBadMix do\n  def ok, do: :ok\nend\n")
 
       assert_receive file_compiled(status: :success, uri: after_bad_mix_uri)
       assert_receive file_diagnostics(uri: ^after_bad_mix_uri, diagnostics: [])
-
-      assert EngineApi.call(project, Code, :ensure_loaded?, [ProjectMetadata.MixProject])
 
       assert EngineApi.call(project, Kernel, :function_exported?, [
                ProjectMetadata.MixProject,
@@ -248,7 +247,7 @@ defmodule Engine.BuildTest do
 
       assert_receive file_compiled(status: :error, uri: mix_uri)
       assert mix_uri == Document.Path.to_uri(mix_path)
-      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: [%Diagnostic.Result{} | _])
+      assert_receive file_diagnostics(uri: ^mix_uri, diagnostics: [%Diagnostic{} | _])
 
       compile_document(project, "defmodule AfterBadSyntaxMix do\n  def ok, do: :ok\nend\n")
 

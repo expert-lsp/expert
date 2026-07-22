@@ -1,47 +1,245 @@
 defmodule Engine.Build.Document.Compilers.QuotedTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: false
 
   import Forge.Test.CodeSigil
 
   alias Engine.Build.Document.Compilers.Quoted
   alias Forge.Document
+  alias Forge.Project
+
+  @compile {:no_warn_undefined, CurrentMixProject}
+  @compile {:no_warn_undefined, TransactionHelper}
+
+  def trace(_event, _env), do: :ok
+
+  setup do
+    start_supervised!({Task.Supervisor, name: Engine.TaskSupervisor})
+    :ok
+  end
 
   defp parse!(code) do
     Code.string_to_quoted!(code, columns: true, token_metadata: true)
   end
 
+  defp project_version, do: CurrentMixProject.project()[:version]
+  defp transaction_value, do: TransactionHelper.value()
+
+  defp current_project(tmp_dir) do
+    path = Path.join(tmp_dir, "mix.exs")
+    env = Mix.env()
+    target = Mix.target()
+    compiler_options = Code.compiler_options()
+
+    source = """
+    defmodule TransactionHelper do
+      def value, do: :original
+    end
+
+    defmodule CurrentMixProject do
+      use Mix.Project
+      def project, do: [app: :current_mix_project, version: "0.1.0"]
+    end
+    """
+
+    File.write!(path, source)
+    modules = Code.compile_file(path)
+
+    project =
+      tmp_dir
+      |> Document.Path.to_uri()
+      |> Project.new()
+      |> Project.set_project_module(CurrentMixProject)
+
+    Engine.Mix.accept_project(project, modules)
+
+    on_exit(fn ->
+      Code.compiler_options(compiler_options)
+      Mix.env(env)
+      Mix.target(target)
+      Engine.Mix.clear_accepted_project()
+
+      if Mix.Project.get() == CurrentMixProject do
+        Mix.Project.pop()
+      end
+
+      for module <- [
+            CurrentMixProject,
+            TransactionHelper,
+            ReplacementMixProject,
+            Child.MixProject
+          ] do
+        :code.purge(module)
+        :code.delete(module)
+        :code.purge(module)
+      end
+    end)
+
+    {project, path}
+  end
+
+  defp unaccepted_project(tmp_dir, source, filename) do
+    path = Path.join(tmp_dir, filename)
+    File.write!(path, source)
+    previous_project = Engine.get_project()
+
+    project = %Project{
+      Project.new(Document.Path.to_uri(tmp_dir))
+      | kind: :bare,
+        mix_exs_uri: Document.Path.to_uri(path)
+    }
+
+    Engine.Mix.clear_accepted_project()
+    Engine.set_project(project)
+
+    on_exit(fn ->
+      Engine.Mix.discard_project_modules(path)
+
+      case previous_project do
+        %Project{} -> Engine.set_project(previous_project)
+        nil -> :persistent_term.erase({Engine, :project})
+      end
+    end)
+
+    path
+  end
+
   describe "compile/3" do
     @tag :tmp_dir
-    test "does not compile mix.exs or mutate the current Mix project", %{tmp_dir: tmp_dir} do
-      File.write!(Path.join(tmp_dir, "mix.exs"), """
+    test "reports diagnostics for an unaccepted custom MIX_EXS path", %{tmp_dir: tmp_dir} do
+      source = """
+      defmodule UnacceptedCustomHelper do
+      end
+
+      defmodule UnacceptedCustomMixProject do
+        use Mix.Project
+        Enum.test()
+        def project, do: [app: :unaccepted_custom]
+      end
+      """
+
+      path = unaccepted_project(tmp_dir, source, "project.exs")
+      document = Document.new(Document.Path.to_uri(path), source, 0)
+
+      assert {:error, diagnostics} = Quoted.compile(document, parse!(source), "Elixir")
+      assert Enum.any?(diagnostics, &String.contains?(&1.message, "Enum.test/0"))
+      refute Code.ensure_loaded?(UnacceptedCustomHelper)
+      refute Code.ensure_loaded?(UnacceptedCustomMixProject)
+    end
+
+    @tag :tmp_dir
+    test "rolls back a valid mix.exs edit", %{tmp_dir: tmp_dir} do
+      {_project, path} = current_project(tmp_dir)
+      code_paths = :code.get_path()
+
+      source = """
+      defmodule ReplacementMixProject do
+        use Mix.Project
+        Code.prepend_path(#{inspect(tmp_dir)})
+        def project, do: [app: :replacement]
+      end
+      """
+
+      document = Document.new(Document.Path.to_uri(path), source, 0)
+
+      assert {:ok, []} = Quoted.compile(document, parse!(source), "Elixir")
+      assert :code.get_path() == code_paths
+      assert Mix.Project.get() == CurrentMixProject
+      assert project_version() == "0.1.0"
+      refute Code.ensure_loaded?(ReplacementMixProject)
+    end
+
+    @tag :tmp_dir
+    test "reports diagnostics without applying mix.exs edits", %{tmp_dir: tmp_dir} do
+      {_project, path} = current_project(tmp_dir)
+      code_paths = :code.get_path()
+
+      source = """
+      defmodule TransactionHelper do
+        def value, do: :changed
+      end
+
       defmodule CurrentMixProject do
         use Mix.Project
-
-        def project do
-          [app: :current_mix_project, version: "0.1.0"]
-        end
+        Code.prepend_path(#{inspect(tmp_dir)})
+        Enum.test()
+        def project, do: [app: :current_mix_project, version: "0.2.0"]
       end
-      """)
+      """
 
-      Mix.Project.in_project(:current_mix_project, tmp_dir, fn current_project ->
-        quoted =
-          """
-          defmodule QuotedCompileSkip.MixProject do
-            use Mix.Project
+      document = Document.new(Document.Path.to_uri(path), source, 0)
 
-            def project do
-              [app: :quoted_compile_skip, version: "0.1.0"]
-            end
-          end
-          """
-          |> parse!()
+      assert {:error, diagnostics} = Quoted.compile(document, parse!(source), "Elixir")
+      assert Enum.any?(diagnostics, &String.contains?(&1.message, "Enum.test/0"))
+      assert Mix.Project.get() == CurrentMixProject
+      assert project_version() == "0.1.0"
+      assert transaction_value() == :original
 
-        document = Document.new("file:///tmp/project/mix.exs", Macro.to_string(quoted), 0)
+      corrected = String.replace(source, "Enum.test()", ":ok")
+      corrected_document = Document.new(Document.Path.to_uri(path), corrected, 1)
 
-        assert {:ok, []} = Quoted.compile(document, quoted, "Elixir")
-        assert Mix.Project.get() == current_project
-        refute Code.ensure_loaded?(QuotedCompileSkip.MixProject)
-      end)
+      assert {:ok, []} = Quoted.compile(corrected_document, parse!(corrected), "Elixir")
+      assert Mix.Project.get() == CurrentMixProject
+      assert project_version() == "0.1.0"
+      assert transaction_value() == :original
+      assert :code.get_path() == code_paths
+    end
+
+    @tag :tmp_dir
+    test "restores compiler settings and modules when the compiler process is killed", %{
+      tmp_dir: tmp_dir
+    } do
+      {_project, path} = current_project(tmp_dir)
+      env = Mix.env()
+      target = Mix.target()
+      code_paths = :code.get_path()
+      Code.put_compiler_option(:tracers, [__MODULE__])
+
+      source = """
+      defmodule TransactionHelper do
+        def value, do: :changed
+      end
+
+      defmodule CurrentMixProject do
+        use Mix.Project
+        Mix.env(:prod)
+        Mix.target(:rejected_target)
+        Code.prepend_path(#{inspect(tmp_dir)})
+        Process.exit(self(), :kill)
+        def project, do: [app: :current_mix_project, version: "broken"]
+      end
+      """
+
+      document = Document.new(Document.Path.to_uri(path), source, 0)
+
+      assert {:error, diagnostics} = Engine.Build.Document.compile(document)
+      assert Enum.any?(diagnostics, &String.contains?(&1.message, "exited: :killed"))
+      assert Code.compiler_options().tracers == [__MODULE__]
+      assert Mix.env() == env
+      assert Mix.target() == target
+      assert :code.get_path() == code_paths
+      assert project_version() == "0.1.0"
+      assert transaction_value() == :original
+    end
+
+    @tag :tmp_dir
+    test "does not use the root project transaction for a nested mix.exs", %{tmp_dir: tmp_dir} do
+      current_project(tmp_dir)
+
+      source = """
+      defmodule Child.MixProject do
+        use Mix.Project
+        Enum.test()
+        def project, do: [app: :child]
+      end
+      """
+
+      nested_path = Path.join([tmp_dir, "apps", "child", "mix.exs"])
+      document = Document.new(Document.Path.to_uri(nested_path), source, 0)
+
+      assert {:ok, []} = Quoted.compile(document, parse!(source), "Elixir")
+      assert Mix.Project.get() == CurrentMixProject
+      assert project_version() == "0.1.0"
+      refute Code.ensure_loaded?(Child.MixProject)
     end
   end
 
