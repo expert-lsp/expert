@@ -9,6 +9,7 @@ defmodule Forge.Ast.Analysis.Scope do
     module: [],
     aliases: [],
     imports: [],
+    latest_expanded_use: nil,
     requires: [],
     uses: []
   ]
@@ -37,6 +38,7 @@ defmodule Forge.Ast.Analysis.Scope do
       id: id,
       aliases: parent_scope.aliases,
       imports: parent_scope.imports,
+      latest_expanded_use: parent_scope.latest_expanded_use,
       requires: parent_scope.requires,
       module: module,
       range: range,

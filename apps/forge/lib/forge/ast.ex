@@ -116,11 +116,11 @@ defmodule Forge.Ast do
   @doc """
   Analyzes a document.
   """
-  @spec analyze(Document.t()) :: Analysis.t()
-  def analyze(%Document{} = document) do
+  @spec analyze(Document.t(), keyword()) :: Analysis.t()
+  def analyze(%Document{} = document, opts \\ []) do
     document
     |> from()
-    |> Analysis.new(document)
+    |> Analysis.new(document, opts)
   end
 
   @doc """
