@@ -24,16 +24,18 @@ defmodule Forge.Ast.Analysis do
 
   @block_keywords [:do, :else, :rescue, :catch, :after]
   @clauses [:->]
+  @use_expansion_timeout 5_000
 
   @doc false
-  def new(parse_result, document)
+  def new(parse_result, document, opts \\ [])
 
-  def new({:ok, ast}, %Document{} = document) do
-    new({:ok, ast, []}, document)
+  def new({:ok, ast}, %Document{} = document, opts) do
+    new({:ok, ast, []}, document, opts)
   end
 
-  def new({:ok, ast, comments}, %Document{} = document) do
-    scopes = traverse(ast, document)
+  def new({:ok, ast, comments}, %Document{} = document, opts) do
+    use_imports = expand_use_imports(ast, document, opts)
+    scopes = traverse(ast, document, use_imports)
     comments_by_line = Map.new(comments, fn comment -> {comment.line, comment} end)
 
     %__MODULE__{
@@ -44,8 +46,8 @@ defmodule Forge.Ast.Analysis do
     }
   end
 
-  def new({:error, ast, parse_error, comments}, %Document{} = document) do
-    scopes = traverse(ast, document)
+  def new({:error, ast, parse_error, comments}, %Document{} = document, _opts) do
+    scopes = traverse(ast, document, %{})
     comments_by_line = Map.new(comments, fn comment -> {comment.line, comment} end)
 
     %__MODULE__{
@@ -58,7 +60,7 @@ defmodule Forge.Ast.Analysis do
     }
   end
 
-  def new(error, document) do
+  def new(error, document, _opts) do
     %__MODULE__{
       document: document,
       parse_error: error,
@@ -136,13 +138,13 @@ defmodule Forge.Ast.Analysis do
     end)
   end
 
-  defp traverse(quoted, %Document{} = document) do
+  defp traverse(quoted, %Document{} = document, use_imports) do
     quoted = preprocess(quoted)
 
     {_, state} =
       Macro.traverse(
         quoted,
-        State.new(document),
+        State.new(document, use_imports),
         fn quoted, state ->
           case analyze_node(quoted, state) do
             {new_quoted, new_state} ->
@@ -180,6 +182,87 @@ defmodule Forge.Ast.Analysis do
   defp preprocess(quoted) do
     Macro.prewalk(quoted, &with_scope_id/1)
   end
+
+  defp expand_use_imports(ast, document, opts) do
+    if Keyword.get(opts, :expand_uses, false) do
+      do_expand_use_imports(ast, document.path)
+    else
+      %{}
+    end
+  end
+
+  defp do_expand_use_imports(ast, path) do
+    case instrument_uses(ast) do
+      {_instrumented, 0} ->
+        %{}
+
+      {instrumented, _count} ->
+        instrumented
+        |> expand_cursor_envs(path)
+        |> imports_from_cursor_envs()
+    end
+  end
+
+  defp imports_from_cursor_envs({:ok, cursor_envs}) do
+    Map.new(cursor_envs, fn {id, cursor_env} ->
+      {id, imported_mfas(cursor_env)}
+    end)
+  end
+
+  defp imports_from_cursor_envs({:error, _reason}), do: %{}
+
+  defp expand_cursor_envs(ast, path) do
+    {:ok, supervisor} = Task.Supervisor.start_link()
+
+    try do
+      task =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Spitfire.Env.expand_with_cursor_envs(ast, path, Future.Macro.Env)
+        end)
+
+      case Task.yield(task, @use_expansion_timeout) do
+        {:ok, {_, _, _, cursor_envs}} ->
+          {:ok, cursor_envs}
+
+        {:exit, reason} ->
+          {:error, reason}
+
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          {:error, :timeout}
+      end
+    after
+      Supervisor.stop(supervisor)
+    end
+  end
+
+  defp instrument_uses(ast) do
+    Macro.postwalk(ast, 0, fn
+      {:use, meta, [{:__aliases__, _, _} | _]} = use, count ->
+        case use_id(meta) do
+          {line, column} = id when is_integer(line) and is_integer(column) ->
+            cursor = {:__cursor__, [cursor_id: id], []}
+            {{:__block__, [], [use, cursor]}, count + 1}
+
+          _ ->
+            {use, count}
+        end
+
+      node, count ->
+        {node, count}
+    end)
+  end
+
+  defp imported_mfas(%{module: current_module, functions: functions, macros: macros}) do
+    for {module, functions} <- functions ++ macros,
+        module != current_module,
+        {function, arity} <- functions,
+        uniq: true do
+      {module, function, arity}
+    end
+  end
+
+  defp use_id(meta), do: {Keyword.get(meta, :line), Keyword.get(meta, :column)}
 
   defp correct_ranges(scopes, quoted, document) do
     {_zipper, scopes} =
@@ -416,10 +499,11 @@ defmodule Forge.Ast.Analysis do
 
   # use MyModule
   defp analyze_node(
-         {:use, _meta, [{:__aliases__, _, module} | opts]} = use,
+         {:use, meta, [{:__aliases__, _, module} | opts]} = use,
          state
        ) do
-    State.push_use(state, Use.new(state.document, use, module, opts))
+    imported_mfas = Map.get(state.use_imports, use_id(meta))
+    State.push_use(state, Use.new(state.document, use, module, opts, imported_mfas))
   end
 
   # stab clauses: ->

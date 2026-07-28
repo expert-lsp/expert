@@ -9,10 +9,10 @@ defmodule Forge.Ast.Analysis.State do
   alias Forge.Document.Position
   alias Forge.Document.Range
 
-  defstruct [:document, scopes: [], visited: %{}]
+  defstruct [:document, scopes: [], use_imports: %{}, visited: %{}]
 
-  def new(%Document{} = document) do
-    state = %__MODULE__{document: document}
+  def new(%Document{} = document, use_imports \\ %{}) do
+    state = %__MODULE__{document: document, use_imports: use_imports}
 
     scope =
       document
@@ -98,7 +98,13 @@ defmodule Forge.Ast.Analysis.State do
 
   def push_use(%__MODULE__{} = state, %Use{} = use) do
     update_current_scope(state, fn %Scope{} = scope ->
-      Map.update!(scope, :uses, &[use | &1])
+      scope = Map.update!(scope, :uses, &[use | &1])
+
+      if is_list(use.imported_mfas) do
+        %{scope | latest_expanded_use: use}
+      else
+        scope
+      end
     end)
   end
 

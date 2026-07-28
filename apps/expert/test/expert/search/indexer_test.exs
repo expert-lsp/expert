@@ -94,6 +94,10 @@ defmodule Expert.Search.IndexerTest do
       Engine.Mix.project_configuration(configured_project)
     end)
 
+    patch(EngineApi, :analyze, fn _project, document, opts ->
+      Forge.Ast.analyze(document, opts)
+    end)
+
     patch(EngineApi, :call, fn
       _project, Engine.ApplicationCache, :clear, [] ->
         Engine.ApplicationCache.clear()

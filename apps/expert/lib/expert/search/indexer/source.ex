@@ -1,4 +1,5 @@
 defmodule Expert.Search.Indexer.Source do
+  alias Expert.EngineApi
   alias Expert.Search.Indexer
   alias Forge.Ast
   alias Forge.Document
@@ -17,13 +18,13 @@ defmodule Expert.Search.Indexer.Source do
 
   def index_document(%Document{} = document, extractors \\ nil) do
     document
-    |> Ast.analyze()
+    |> Ast.analyze(expand_uses: true)
     |> Indexer.Quoted.index(extractors)
   end
 
   def index_document(%Document{} = document, extractors, project) do
-    document
-    |> Ast.analyze()
+    project
+    |> EngineApi.analyze(document, expand_uses: true)
     |> Indexer.Quoted.index(extractors, project)
   end
 end
