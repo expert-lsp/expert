@@ -8,6 +8,8 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
+  alias Forge.Document.Changes
+  alias Forge.Document.Edit
   alias Forge.Document.Position
   alias Forge.Project
   alias GenLSP.Enumerations.CompletionTriggerKind
@@ -42,11 +44,11 @@ defmodule Expert.CodeIntelligence.Completion do
           end
 
         hex_items = hex_items_for_context(hex_context, project, env)
-        regular_items = completions(project, env, context)
+        {regular_items, contextual_incomplete?} = completions(project, env, context)
         all = hex_items ++ regular_items
         log_candidates(all)
 
-        if hex_context do
+        if not is_nil(hex_context) or contextual_incomplete? do
           %CompletionList{items: all, is_incomplete: true}
         else
           maybe_to_completion_list(all)
@@ -80,6 +82,49 @@ defmodule Expert.CodeIntelligence.Completion do
   end
 
   defp completions(%Project{} = project, %Env{} = env, %CompletionContext{} = context) do
+    case EngineApi.contextual_completion(project, env) do
+      {:override, candidates, incomplete?, _transforms} ->
+        {translate_contextual_candidates(candidates, env), incomplete?}
+
+      {:augment, candidates, incomplete?, transforms} ->
+        contextual_items = translate_contextual_candidates(candidates, env)
+        ordinary_items = project |> ordinary_completions(env, context) |> transform(transforms)
+        augment(contextual_items, ordinary_items, incomplete?)
+
+      :ignore ->
+        {ordinary_completions(project, env, context), false}
+    end
+  end
+
+  defp translate_contextual_candidates(candidates, env) do
+    Enum.flat_map(candidates, fn {candidate, transforms} ->
+      case Translatable.translate(candidate, Builder, env) do
+        :skip -> []
+        items -> items |> List.wrap() |> transform(transforms)
+      end
+    end)
+  end
+
+  defp transform(items, transforms) do
+    Enum.reduce(transforms, items, fn
+      :wrap_list, items -> Enum.map(items, &wrap_list_item/1)
+    end)
+  end
+
+  defp wrap_list_item(
+         %CompletionItem{text_edit: %Changes{edits: %Edit{text: text} = edit} = changes} = item
+       ) do
+    %CompletionItem{item | text_edit: %Changes{changes | edits: %Edit{edit | text: "[#{text}]"}}}
+  end
+
+  defp wrap_list_item(item), do: item
+
+  defp augment(items, ordinary_items, incomplete?) do
+    items = Enum.map(items, &Builder.set_sort_scope(&1, "000"))
+    {Enum.uniq_by(items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
+  end
+
+  defp ordinary_completions(project, env, context) do
     prefix_tokens = Env.prefix_tokens(env, 1)
 
     cond do

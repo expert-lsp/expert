@@ -91,6 +91,14 @@ defmodule Expert.EngineApi do
     call(project, Engine, :complete, [env])
   end
 
+  def contextual_completion(%Project{} = project, %Env{} = env) do
+    call(project, Engine, :contextual_completion, [env])
+  end
+
+  def index_beam(%Project{} = project, binary, metadata, source_path) do
+    call(project, Engine, :index_beam, [binary, metadata, source_path])
+  end
+
   def complete_struct_fields(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
     call(project, Engine, :complete_struct_fields, [
       analysis,

@@ -221,7 +221,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[8]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[9]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -1266,6 +1266,47 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
         actual = Sqlite.find_by_prefix(project, "Unicode.#{prefix}", :_, :_)
         assert Enum.sort_by(actual, & &1.id) == Enum.sort_by(expected, & &1.id)
       end
+    end
+  end
+
+  describe "integration entries" do
+    setup %{project: project, runtime_versions: runtime_versions} do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+
+      path = Path.join(System.tmp_dir!(), "integration.ex")
+      entry = Entry.integration(path, "test", :dsl, Integration.Owner, %{option: "value"})
+
+      {:ok, entry: entry}
+    end
+
+    test "are found by subject and prefix only as integrations", %{
+      project: project,
+      entry: entry
+    } do
+      prefix = Entry.integration_subject_prefix("test", :dsl)
+
+      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries([entry]))
+
+      assert [entry] == Sqlite.find_by_subject(project, entry.subject, :metadata, :integration)
+      assert [entry] == Sqlite.find_by_prefix(project, prefix, :metadata, :integration)
+      assert [] == Sqlite.find_by_subject(project, entry.subject, :_, :definition)
+      assert [] == Sqlite.find_by_subject(project, entry.subject, :_, :reference)
+    end
+
+    test "are replaced with the rest of their file", %{project: project, entry: entry} do
+      assert :ok = Sqlite.replace_all(project, [entry])
+      assert %{} = paths = Sqlite.path_to_ids(project)
+      assert Map.has_key?(paths, entry.path)
+
+      assert {:ok, _deleted_ids} = Sqlite.apply_index_update(project, [], [entry.path])
+
+      assert [] == Sqlite.find_by_subject(project, entry.subject, :metadata, :integration)
     end
   end
 end
