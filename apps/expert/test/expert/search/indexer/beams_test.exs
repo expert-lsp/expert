@@ -4,8 +4,11 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
   import Forge.Test.RangeSupport
 
+  alias Expert.EngineApi
   alias Expert.Search.Indexer.Beams
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Formats
+  alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
   @moduletag :tmp_dir
@@ -145,6 +148,30 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert start_pos.valid?
       assert start_pos.document_line_count >= start_pos.line
       assert start_pos.context_line != nil
+    end
+
+    test "indexes integration entries on the project node", %{tmp_dir: tmp_dir} do
+      module = unique_module("Integration")
+      project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
+
+      %{beam_paths: [beam_path], source_path: source_path} =
+        compile_source!(tmp_dir, "defmodule #{inspect(module)}, do: nil",
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      integration_entry = Entry.integration(source_path, "test", :metadata, module, %{})
+
+      patch(EngineApi, :index_beam, fn ^project, binary, %{module: ^module}, ^source_path ->
+        assert is_binary(binary)
+        [integration_entry]
+      end)
+
+      patch(ModuleRegistry, :put, fn ^project, ^module, ^beam_path, nil, _exports -> :ok end)
+
+      {entries, _manifest_entries} = index_beams([beam_path], project: project)
+
+      assert ^integration_entry = Enum.find(entries, &(&1 == integration_entry))
     end
 
     test "synthesizes contextual ranges for macro-generated definitions from beam metadata", %{
@@ -588,9 +615,9 @@ defmodule Expert.Search.Indexer.BeamsTest do
     |> Map.put(:manifest_entries, manifest_entries)
   end
 
-  defp index_beams(paths) do
+  defp index_beams(paths, opts \\ []) do
     paths
-    |> Beams.stream()
+    |> Beams.stream(opts)
     |> Enum.reduce({[], []}, fn
       {nil, manifest_entries}, {entries, manifests} ->
         {entries, [manifest_entries | manifests]}
