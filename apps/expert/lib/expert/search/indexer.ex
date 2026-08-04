@@ -25,6 +25,14 @@ defmodule Expert.Search.Indexer do
     end
   end
 
+  def integrations_changed?(%Project{} = project) do
+    ManifestStore.integrations_changed?(project, EngineApi.indexer_module_names(project))
+  end
+
+  def record_integrations(%Project{} = project) do
+    ManifestStore.record_integrations(project, EngineApi.indexer_module_names(project))
+  end
+
   def document(%Project{} = project, uri) do
     with {:ok, document, analysis} <- Forge.Document.Store.fetch(uri, :analysis),
          {:ok, entries} <-
@@ -57,8 +65,15 @@ defmodule Expert.Search.Indexer do
     try do
       case ManifestStore.load(project) do
         {:ok, %Manifest{} = manifest} ->
+          indexer_module_names = EngineApi.indexer_module_names(project)
+
+          integrations_changed? =
+            ManifestStore.integrations_changed?(project, manifest, indexer_module_names)
+
           with :ok <- ManifestStore.invalidate(project) do
-            refresh_index(project, manifest, path_to_ids, opts)
+            if integrations_changed?,
+              do: replace_index(project, path_to_ids, opts),
+              else: refresh_index(project, manifest, path_to_ids, opts)
           end
 
         :missing ->

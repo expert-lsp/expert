@@ -8,6 +8,7 @@ defmodule Expert.Search.Indexer.ManifestStore do
   alias Forge.Project
 
   @file_name "index_manifest.etf"
+  @integrations_file_name "integrations.etf"
 
   @doc false
   def load(%Project{} = project) do
@@ -33,8 +34,44 @@ defmodule Expert.Search.Indexer.ManifestStore do
     end
   end
 
+  def integrations_changed?(%Project{} = project, indexer_module_names)
+      when is_list(indexer_module_names) do
+    case load(project) do
+      {:ok, %Manifest{} = manifest} ->
+        integrations_changed?(project, manifest, indexer_module_names)
+
+      :missing ->
+        true
+    end
+  end
+
+  def integrations_changed?(%Project{} = project, %Manifest{}, indexer_module_names)
+      when is_list(indexer_module_names) do
+    with {:ok, binary} <- File.read(integrations_path(project)),
+         {:ok, recorded_names} when is_list(recorded_names) <- safe_binary_to_term(binary) do
+      recorded_names != indexer_module_names
+    else
+      _ -> true
+    end
+  end
+
+  def record_integrations(%Project{} = project, indexer_module_names)
+      when is_list(indexer_module_names) do
+    path = integrations_path(project)
+
+    with :ok <- File.mkdir_p(Path.dirname(path)) do
+      write_file(path, :erlang.term_to_binary(indexer_module_names))
+    end
+  end
+
   def invalidate(%Project{} = project) do
-    case File.rm(manifest_path(project)) do
+    with :ok <- remove_file(manifest_path(project)) do
+      remove_file(integrations_path(project))
+    end
+  end
+
+  defp remove_file(path) do
+    case File.rm(path) do
       :ok -> :ok
       {:error, :enoent} -> :ok
       {:error, _} = error -> error
@@ -135,6 +172,9 @@ defmodule Expert.Search.Indexer.ManifestStore do
   end
 
   defp manifest_path(%Project{} = project), do: Path.join(root_path(project), @file_name)
+
+  defp integrations_path(%Project{} = project),
+    do: Path.join(root_path(project), @integrations_file_name)
 
   defp root_path(%Project{} = project) do
     Project.workspace_path(project, ["indexes", "manifest"])
