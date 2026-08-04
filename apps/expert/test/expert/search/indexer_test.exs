@@ -98,6 +98,12 @@ defmodule Expert.Search.IndexerTest do
       Forge.Ast.analyze(document, opts)
     end)
 
+    patch(EngineApi, :indexer_module_names, fn _project ->
+      ["Engine.Integrations.Spark.Indexer"]
+    end)
+
+    patch(EngineApi, :index_beam, fn _project, _binary, _metadata, _source_path -> [] end)
+
     patch(EngineApi, :call, fn
       _project, Engine.ApplicationCache, :clear, [] ->
         Engine.ApplicationCache.clear()
@@ -153,6 +159,7 @@ defmodule Expert.Search.IndexerTest do
   defp create_index(project) do
     FakeBackend.reset_calls()
     assert :ok = Indexer.create_index(project)
+    assert :ok = Indexer.record_integrations(project)
     inserted_entries(FakeBackend.calls())
   end
 
@@ -160,6 +167,7 @@ defmodule Expert.Search.IndexerTest do
     previous_paths = FakeBackend.entries() |> Enum.map(& &1.path) |> Enum.uniq()
     FakeBackend.reset_calls()
     assert :ok = Indexer.update_index(project)
+    assert :ok = Indexer.record_integrations(project)
     calls = FakeBackend.calls()
     entries = inserted_entries(calls)
     paths_to_clear = cleared_paths(calls, previous_paths)
@@ -820,6 +828,7 @@ defmodule Expert.Search.IndexerTest do
       path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
       {:ok, manifest_entry} = ManifestEntry.source(path)
       assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
+      assert :ok = Indexer.record_integrations(project)
       File.touch!(path, {{2100, 1, 1}, {0, 0, 0}})
 
       entries =
@@ -857,6 +866,7 @@ defmodule Expert.Search.IndexerTest do
       path = write_file!(Path.join(tmp_dir, "changed.ex"), "defmodule Changed do\nend")
       {:ok, manifest_entry} = ManifestEntry.source(path)
       assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
+      assert :ok = Indexer.record_integrations(project)
       File.touch!(path, {{2100, 1, 1}, {0, 0, 0}})
 
       old_entry = %Entry{
@@ -1080,6 +1090,13 @@ defmodule Expert.Search.IndexerTest do
 
     test "sees the ephemeral file", %{entries: entries} do
       assert Enum.any?(entries, fn entry -> Path.basename(entry.path) == @ephemeral_file_name end)
+    end
+
+    test "replaces the full index when enabled integrations change", %{project: project} do
+      patch(EngineApi, :indexer_module_names, fn ^project -> ["New.Indexer"] end)
+
+      assert {entries, _paths_to_clear} = update_index(project)
+      assert [_ | _] = entries
     end
 
     test "returns the file paths of deleted files", %{project: project, file_path: file_path} do
@@ -1460,5 +1477,16 @@ defmodule Expert.Search.IndexerTest do
     path_segments
     |> Path.join()
     |> Forge.Path.native()
+  end
+
+  test "integration state uses the engine indexer registry", %{project: project} do
+    names = ["Custom.Indexer"]
+    patch(EngineApi, :indexer_module_names, fn ^project -> names end)
+
+    assert :ok = ManifestStore.commit(project, Manifest.new([]))
+    assert :ok = Indexer.record_integrations(project)
+    refute Indexer.integrations_changed?(project)
+
+    assert_called(EngineApi.indexer_module_names(project))
   end
 end

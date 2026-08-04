@@ -152,14 +152,54 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
     end
   end
 
-  describe "invalidate/1" do
-    test "removes the committed manifest", %{tmp_dir: tmp_dir} do
+  describe "integration indexers" do
+    test "reports changes before indexer names are recorded", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+      names = ["Engine.Integrations.Spark.Indexer"]
+
+      :ok = ManifestStore.commit(project, manifest(tmp_dir))
+
+      assert ManifestStore.integrations_changed?(project, names)
+    end
+
+    test "reports no changes after current indexer names are recorded", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+      names = ["Engine.Integrations.Spark.Indexer"]
+
+      :ok = ManifestStore.commit(project, manifest(tmp_dir))
+      :ok = ManifestStore.record_integrations(project, names)
+
+      refute ManifestStore.integrations_changed?(project, names)
+    end
+
+    test "reports changes when recorded indexer names differ", %{tmp_dir: tmp_dir} do
       project = project(tmp_dir)
 
       :ok = ManifestStore.commit(project, manifest(tmp_dir))
+      :ok = ManifestStore.record_integrations(project, ["Old.Indexer"])
+
+      assert ManifestStore.integrations_changed?(project, ["New.Indexer"])
+    end
+
+    test "reports changes when the manifest is missing", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+      :ok = ManifestStore.record_integrations(project, ["Engine.Integrations.Spark.Indexer"])
+
+      assert ManifestStore.integrations_changed?(project, ["Engine.Integrations.Spark.Indexer"])
+    end
+  end
+
+  describe "invalidate/1" do
+    test "removes the committed manifest", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+      names = ["Engine.Integrations.Spark.Indexer"]
+
+      :ok = ManifestStore.commit(project, manifest(tmp_dir))
+      :ok = ManifestStore.record_integrations(project, names)
       :ok = ManifestStore.invalidate(project)
 
       assert ManifestStore.load(project) == :missing
+      assert ManifestStore.integrations_changed?(project, manifest(tmp_dir), names)
     end
 
     test "returns an error when the manifest cannot be removed", %{tmp_dir: tmp_dir} do

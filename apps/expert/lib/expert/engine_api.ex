@@ -99,6 +99,10 @@ defmodule Expert.EngineApi do
     call(project, Engine, :index_beam, [binary, metadata, source_path])
   end
 
+  def indexer_module_names(%Project{} = project) do
+    call(project, Engine.Integrations, :indexer_module_names, [])
+  end
+
   def complete_struct_fields(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
     call(project, Engine, :complete_struct_fields, [
       analysis,

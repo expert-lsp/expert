@@ -7,6 +7,9 @@ defmodule Engine.Integrations do
 
   @beam_indexers [Engine.Integrations.Spark.Indexer]
   @completion_providers [Engine.Integrations.Spark.Completion]
+  @indexer_module_names @beam_indexers |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+
+  def indexer_module_names, do: @indexer_module_names
 
   def index_beam(binary, metadata, source_path) do
     Enum.flat_map(@beam_indexers, & &1.index(binary, metadata, source_path))
