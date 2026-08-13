@@ -345,6 +345,154 @@ defmodule Forge.Ast do
   end
 
   @doc """
+  Returns the index and value of the first argument containing a cursor node.
+  """
+  @spec cursor_argument([Macro.t()]) :: {:ok, non_neg_integer(), Macro.t()} | :error
+  def cursor_argument(arguments) when is_list(arguments) do
+    arguments
+    |> Enum.with_index()
+    |> Enum.find_value(:error, fn {argument, index} ->
+      if contains_cursor?(argument), do: {:ok, index, argument}
+    end)
+  end
+
+  @doc """
+  Returns the enclosing local call whose arguments contain the cursor.
+
+  The result includes the call name, cursor argument index, cursor argument,
+  and all call arguments.
+  """
+  @spec local_call_at_cursor([Macro.t()]) ::
+          {:ok, String.t(), non_neg_integer(), Macro.t(), [Macro.t()]} | :error
+  def local_call_at_cursor(cursor_path) when is_list(cursor_path) do
+    Enum.find_value(cursor_path, :error, fn
+      {name, _, arguments}
+      when is_atom(name) and is_list(arguments) and
+             name not in [:__cursor__, :__block__, :defmodule, :use, :|>] ->
+        case cursor_argument(arguments) do
+          {:ok, index, argument} -> {:ok, to_string(name), index, argument, arguments}
+          :error -> nil
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  @doc """
+  Returns the enclosing remote call whose arguments contain the cursor.
+
+  The result includes the module AST, function name, arity, cursor argument
+  index, and cursor argument. For piped calls, the arity and argument index
+  include the implicit first argument.
+  """
+  @spec remote_call_at_cursor([Macro.t()]) ::
+          {:ok, Macro.t(), atom(), non_neg_integer(), non_neg_integer(), Macro.t()} | :error
+  def remote_call_at_cursor(cursor_path) when is_list(cursor_path) do
+    Enum.find_value(cursor_path, fn
+      {:|>, _, [_left, call]} -> remote_call_at_cursor(call, 1)
+      _ -> nil
+    end) || Enum.find_value(cursor_path, :error, &remote_call_at_cursor(&1, 0))
+  end
+
+  @doc """
+  Returns enclosing local call names from outermost to innermost.
+  """
+  @spec enclosing_local_call_names([Macro.t()]) :: [String.t()]
+  def enclosing_local_call_names(cursor_path) when is_list(cursor_path) do
+    cursor_path
+    |> Enum.flat_map(fn
+      {name, _, arguments}
+      when is_atom(name) and is_list(arguments) and
+             name not in [:__cursor__, :__block__, :defmodule, :use] ->
+        [to_string(name)]
+
+      _ ->
+        []
+    end)
+    |> Enum.reverse()
+  end
+
+  @doc """
+  Returns whether the given AST contains a cursor node.
+  """
+  @spec contains_cursor?(Macro.t()) :: boolean()
+  def contains_cursor?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        {:__cursor__, _, _} = node, _ -> {node, true}
+        node, found? -> {node, found?}
+      end)
+
+    found?
+  end
+
+  @doc """
+  Returns the nested keyword keys leading to the cursor.
+
+  Keys are ordered from outermost to innermost.
+  """
+  @spec keyword_path_at_cursor(Macro.t()) :: {:ok, [String.t() | nil]} | :error
+  def keyword_path_at_cursor(ast), do: keyword_path_at_cursor(ast, [])
+
+  defp keyword_path_at_cursor({:__block__, _, [value]}, path),
+    do: keyword_path_at_cursor(value, path)
+
+  defp keyword_path_at_cursor(options, path) when is_list(options) do
+    Enum.find_value(options, :error, fn
+      {key, value} ->
+        if contains_cursor?(value) do
+          keyword_path_at_cursor(value, path ++ [keyword_key(key)])
+        end
+
+      {:__cursor__, _, _} ->
+        {:ok, path}
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp keyword_path_at_cursor({:__cursor__, _, _}, path), do: {:ok, path}
+  defp keyword_path_at_cursor(_ast, _path), do: :error
+
+  defp keyword_key(key) when is_atom(key), do: to_string(key)
+  defp keyword_key({:__block__, _, [key]}) when is_atom(key), do: to_string(key)
+  defp keyword_key(_key), do: nil
+
+  @doc """
+  Returns whether the cursor path is inside a function or macro definition.
+  """
+  @spec inside_definition?([Macro.t()]) :: boolean()
+  def inside_definition?(cursor_path) when is_list(cursor_path) do
+    Enum.any?(cursor_path, &match?({kind, _, _} when kind in [:def, :defp, :defmacro], &1))
+  end
+
+  @doc """
+  Returns whether the cursor path contains a remote call.
+  """
+  @spec remote_call?([Macro.t()]) :: boolean()
+  def remote_call?(cursor_path) when is_list(cursor_path) do
+    Enum.any?(cursor_path, fn
+      {{:., _, _}, _, arguments} when is_list(arguments) -> true
+      _ -> false
+    end)
+  end
+
+  defp remote_call_at_cursor({{:., _, [module_ast, name]}, _, arguments}, offset)
+       when is_atom(name) and is_list(arguments) do
+    case cursor_argument(arguments) do
+      {:ok, index, argument} ->
+        {:ok, module_ast, name, length(arguments) + offset, index + offset, argument}
+
+      :error ->
+        nil
+    end
+  end
+
+  defp remote_call_at_cursor(_ast, _offset), do: nil
+
+  @doc """
   Returns a zipper for the document AST focused at the given position.
   """
   @spec zipper_at(Document.t(), Position.t()) :: {:ok, Zipper.t()} | {:error, parse_error()}
