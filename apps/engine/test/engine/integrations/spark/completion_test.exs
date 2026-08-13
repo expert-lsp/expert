@@ -243,10 +243,7 @@ defmodule Engine.Integrations.Spark.CompletionTest do
         default_extension_kinds: %{"data_layer" => ["Elixir.My.DefaultDataLayer"]},
         extension_kinds: ["extensions", "data_layer"],
         single_extension_kinds: ["data_layer"],
-        options: [
-          option("otp_app", :atom, "OTP application"),
-          option("enabled?", :boolean, "Enabled", false)
-        ]
+        options: [option("otp_app", :atom), option("enabled?", :boolean, "", false)]
       }),
       Entry.integration(path, "spark", :extension, Ash.Resource.Extension, %{
         added_extensions: ["Elixir.My.AttributeExtension"],
@@ -256,7 +253,7 @@ defmodule Engine.Integrations.Spark.CompletionTest do
             entity(
               "read",
               [%{name: "name", optional?: false}],
-              [option("name", :atom), option("description", :string, "Description")],
+              [option("name", :atom), option("description", :string)],
               "A read action"
             ),
             entity("configure", [], [
@@ -319,7 +316,7 @@ defmodule Engine.Integrations.Spark.CompletionTest do
       }),
       relation(path, :type, "Elixir.My.Type", "Elixir.App.TypedChange"),
       Entry.integration(path, "spark", :function, "Ash.create/2/1", [
-        option("upsert?", :boolean, "Upsert", false)
+        option("upsert?", :boolean, "", false)
       ]),
       indexed_callable("My.Builtins.set_attribute/2", {:function, :public}),
       indexed_callable("My.Builtins.matches/1", {:macro, :public}),

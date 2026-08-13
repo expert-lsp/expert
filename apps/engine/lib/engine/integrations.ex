@@ -1,13 +1,26 @@
 defmodule Engine.Integrations do
   @moduledoc """
-  Registers dependency BEAM indexers and contextual completion providers.
+  Registers third party integrations.
   """
 
-  @callback index(binary(), map(), String.t()) :: [Forge.Search.Indexer.Entry.t()]
+  alias Forge.Ast.Env
+  alias Forge.Document.Range
+  alias Forge.Search.Indexer.Entry
+
+  @callback index(binary(), map(), String.t()) :: [Entry.t()]
+
+  @callback complete(Env.t()) ::
+              {:augment | :override, [{struct(), [atom()]}], boolean(), [atom()]} | :ignore
+
+  @callback hover(Env.t()) :: [{String.t(), Range.t()}]
+
+  @optional_callbacks index: 3, complete: 1, hover: 1
 
   @beam_indexers [Engine.Integrations.Spark.Indexer]
-  @completion_providers [Engine.Integrations.Spark.Completion]
   @indexer_module_names @beam_indexers |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+
+  @completion_providers [Engine.Integrations.Spark.Completion]
+  @hover_providers [Engine.Integrations.Spark.Hover]
 
   def indexer_module_names, do: @indexer_module_names
 
@@ -22,5 +35,9 @@ defmodule Engine.Integrations do
         result -> result
       end
     end)
+  end
+
+  def hover(env) do
+    Enum.flat_map(@hover_providers, & &1.hover(env))
   end
 end
