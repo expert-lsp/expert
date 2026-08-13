@@ -103,6 +103,10 @@ defmodule Expert.EngineApi do
     call(project, Engine.Integrations, :indexer_module_names, [])
   end
 
+  def contextual_hover(%Project{} = project, %Env{} = env) do
+    call(project, Engine, :contextual_hover, [env])
+  end
+
   def complete_struct_fields(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
     call(project, Engine, :complete_struct_fields, [
       analysis,

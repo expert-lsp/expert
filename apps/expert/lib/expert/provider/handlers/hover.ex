@@ -8,6 +8,7 @@ defmodule Expert.Provider.Handlers.Hover do
   alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Analysis
+  alias Forge.Ast.Env
   alias Forge.CodeIntelligence.Docs
   alias Forge.Document
   alias Forge.Document.Position
@@ -26,27 +27,63 @@ defmodule Expert.Provider.Handlers.Hover do
     maybe_hover =
       with {:ok, _document, %Ast.Analysis{} = analysis} <-
              Document.Store.fetch(document.uri, :analysis),
-           nil <- hex_hover(document, analysis, params.position, project),
-           {:ok, entity, range} <- resolve_entity(project, analysis, params.position),
-           {:ok, markdown} <- hover_content(entity, project) do
-        content = Markdown.to_content(markdown)
-        %Structures.Hover{contents: content, range: range}
+           nil <- hex_hover(document, analysis, params.position, project) do
+        integration_hovers = integration_hovers(project, analysis, params.position)
+        generic_hover = generic_hover(project, document, analysis, params.position)
+        combine_hovers(integration_hovers, generic_hover)
       else
         %Structures.Hover{} = hover ->
           hover
 
-        {:error, reason} when reason in [:no_code, :no_doc, :no_type] ->
-          nil
-
-        :error ->
-          nil
-
         _ ->
-          try_elixir_sense(project, document, params.position)
+          combine_hovers([], elixir_sense_hover(project, document, params.position))
       end
 
     {:ok, maybe_hover}
   end
+
+  defp integration_hovers(project, analysis, position) do
+    case Env.new(project, analysis, position) do
+      {:ok, env} -> EngineApi.contextual_hover(project, env)
+      _ -> []
+    end
+  end
+
+  defp generic_hover(project, document, analysis, position) do
+    with {:ok, entity, range} <- resolve_entity(project, analysis, position),
+         {:ok, markdown} <- hover_content(entity, project) do
+      {:ok, markdown, range}
+    else
+      {:error, reason} when reason in [:no_code, :no_doc, :no_type] -> nil
+      :error -> nil
+      _ -> elixir_sense_hover(project, document, position)
+    end
+  end
+
+  defp combine_hovers(integration_hovers, generic_hover) do
+    hovers =
+      integration_hovers
+      |> prepend_hover(generic_hover)
+      |> Enum.uniq_by(&elem(&1, 0))
+
+    case hovers do
+      [] ->
+        nil
+
+      [{markdown, range}] ->
+        %Structures.Hover{contents: Markdown.to_content(markdown), range: range}
+
+      hovers ->
+        markdown =
+          hovers |> Enum.map(&elem(&1, 0)) |> Markdown.join_sections(Markdown.separator())
+
+        range = hovers |> List.first() |> elem(1)
+        %Structures.Hover{contents: Markdown.to_content(markdown), range: range}
+    end
+  end
+
+  defp prepend_hover(hovers, {:ok, markdown, range}), do: [{markdown, range} | hovers]
+  defp prepend_hover(hovers, nil), do: hovers
 
   defp hex_hover(%Document{} = document, analysis, %Position{} = position, project) do
     with true <- Hex.project_file?(project, document),
@@ -61,14 +98,10 @@ defmodule Expert.Provider.Handlers.Hover do
     EngineApi.resolve_entity(project, analysis, position)
   end
 
-  defp try_elixir_sense(project, document, position) do
+  defp elixir_sense_hover(project, document, position) do
     case EngineApi.hover(project, document, position) do
-      {:ok, markdown, range} ->
-        content = Markdown.to_content(markdown)
-        %Structures.Hover{contents: content, range: range}
-
-      {:error, _} ->
-        nil
+      {:ok, markdown, range} -> {:ok, markdown, range}
+      {:error, _} -> nil
     end
   end
 
