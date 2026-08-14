@@ -10,3 +10,6 @@
 ## Enable deployment without epmd
 ## (requires changing both vm.args and remote.vm.args)
 -start_epmd false -epmd_module Elixir.XPForge.EPMD
+
+# Alternative user_drv
+-user Elixir.XPExpert.Stdio.User
