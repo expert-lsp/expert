@@ -93,13 +93,22 @@ defmodule Expert.Stdio.UserTest do
     refute merged =~ "STILL_RUNNING"
   end
 
+  @tag :tmp_dir
+  test "preserves multibyte characters split across stdin reads", %{tmp_dir: tmp_dir} do
+    # A 4-byte character offset by one ASCII byte straddles the driver's 1024-byte reads.
+    payload = "a" <> String.duplicate("😀", 1_250)
+
+    round_tripped = round_trip(payload, tmp_dir)
+
+    assert byte_size(round_tripped) == byte_size(payload)
+    assert round_tripped == payload
+  end
+
   # `-user` names the module as a string that nothing compiles or type checks, and the release
   # runs it under the `XP` namespace. A rename would silently leave the release booting
   # `user_drv` and sharing stdout again, so pin the two together here.
   test "the release boot flag names the namespaced module" do
-    vm_args = __DIR__ |> Path.join("../../../rel/vm.args.eex") |> File.read!()
-
-    assert vm_args =~ "-user Elixir.XP#{inspect(Expert.Stdio.User)}"
+    assert release_vm_args() =~ "-user Elixir.XP#{inspect(Expert.Stdio.User)}"
   end
 
   # Debugging a `--port` server or a console needs Erlang's shell, which only exists if
@@ -116,18 +125,29 @@ defmodule Expert.Stdio.UserTest do
     File.write!(path, script)
     on_exit(fn -> File.rm(path) end)
 
-    erl_flags =
+    code_paths =
       [Mix.Project.build_path(), "lib", "*", "ebin"]
       |> Path.join()
       |> Path.wildcard()
       |> Enum.map_join(" ", &"-pa #{&1}")
-      |> Kernel.<>(" -user #{Atom.to_string(Expert.Stdio.User)}")
+
+    erl_flags =
+      [
+        code_paths,
+        release_standard_io_flags(),
+        "-user #{Atom.to_string(Expert.Stdio.User)}"
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(" ")
 
     # `start/0` only reserves stdout when the stdio transport was asked for, so pass it
     # through the same way the release does.
     args = ["--erl", erl_flags, path] ++ if(opts[:stdio] == false, do: [], else: ["--stdio"])
 
     port_opts = [:binary, :exit_status]
+
+    port_opts =
+      if env = opts[:env], do: [{:env, env} | port_opts], else: port_opts
 
     port_opts =
       if opts[:stderr] == :merge, do: [:stderr_to_stdout | port_opts], else: port_opts
@@ -149,6 +169,18 @@ defmodule Expert.Stdio.UserTest do
 
   defp elixir, do: System.find_executable("elixir")
 
+  defp release_standard_io_flags do
+    release_vm_args()
+    |> String.split("\n")
+    |> Stream.map(&String.trim/1)
+    |> Stream.filter(&Regex.match?(~r/^-kernel[ \t]+standard_io_encoding(?:[ \t]+|$)/, &1))
+    |> Enum.join(" ")
+  end
+
+  defp release_vm_args do
+    __DIR__ |> Path.join("../../../rel/vm.args.eex") |> File.read!()
+  end
+
   defp collect(port, acc) do
     receive do
       {^port, {:data, data}} -> collect(port, acc <> data)
@@ -157,5 +189,35 @@ defmodule Expert.Stdio.UserTest do
     after
       30_000 -> flunk("child timed out, output so far:\n#{acc}")
     end
+  end
+
+  defp round_trip(bytes, tmp_dir) do
+    received_path = Path.join(tmp_dir, "stdio_roundtrip.bin")
+
+    run(
+      """
+      :ok = Expert.Stdio.User.subscribe()
+
+      expected = #{byte_size(bytes)}
+
+      gather = fn gather, acc ->
+        if byte_size(acc) >= expected do
+          acc
+        else
+          receive do
+            {:lsp_stdin, bytes} -> gather.(gather, acc <> bytes)
+          after
+            5_000 -> acc
+          end
+        end
+      end
+
+      File.write!(#{inspect(received_path)}, gather.(gather, ""))
+      """,
+      stdin: bytes,
+      env: [{~c"LANG", ~c"C"}, {~c"LC_ALL", ~c"C"}, {~c"LC_CTYPE", ~c"C"}]
+    )
+
+    File.read!(received_path)
   end
 end
