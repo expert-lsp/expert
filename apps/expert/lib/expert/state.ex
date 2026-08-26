@@ -413,6 +413,7 @@ defmodule Expert.State do
         completion_provider: completion_options,
         declaration_provider: true,
         definition_provider: true,
+        implementation_provider: true,
         document_formatting_provider: true,
         document_symbol_provider: true,
         execute_command_provider: command_options,
