@@ -555,6 +555,9 @@ defmodule Expert do
       %Requests.TextDocumentDefinition{} ->
         {:ok, Handlers.GoToDefinition}
 
+      %Requests.TextDocumentImplementation{} ->
+        {:ok, Handlers.GoToImplementation}
+
       %Requests.TextDocumentHover{} ->
         {:ok, Handlers.Hover}
 
