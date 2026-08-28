@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.10](https://github.com/expert-lsp/expert/compare/v0.1.9...v0.1.10) (2026-08-28)
+
+
+### Bug Fixes
+
+* **forge:** handle bitstrings in interpolation ([#867](https://github.com/expert-lsp/expert/issues/867)) ([2857497](https://github.com/expert-lsp/expert/commit/28574972dcd9bda48c333bc4f624ab551cdd1b5c))
+* relax Hex connectivity timeout ([#859](https://github.com/expert-lsp/expert/issues/859)) ([26e76f5](https://github.com/expert-lsp/expert/commit/26e76f5355a57e0ebfb539fdae3bb6081a2f791c))
+
 ## [0.1.9](https://github.com/expert-lsp/expert/compare/v0.1.8...v0.1.9) (2026-08-14)
 
 
