@@ -93,6 +93,10 @@ defmodule Expert.EngineApi do
     ])
   end
 
+  def declaration(%Project{} = project, %Document{} = document, %Position{} = position) do
+    call(project, Engine, :declaration, [document, position])
+  end
+
   def definition(%Project{} = project, %Document{} = document, %Position{} = position) do
     call(project, Engine, :definition, [document, position])
   end

@@ -549,6 +549,9 @@ defmodule Expert do
       %Requests.TextDocumentCompletion{} ->
         {:ok, Handlers.Completion}
 
+      %Requests.TextDocumentDeclaration{} ->
+        {:ok, Handlers.GoToDeclaration}
+
       %Requests.TextDocumentDefinition{} ->
         {:ok, Handlers.GoToDefinition}
 
