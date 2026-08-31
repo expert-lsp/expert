@@ -48,6 +48,10 @@ defmodule Engine do
 
   defdelegate hover(document, position), to: CodeIntelligence.Hover
 
+  defdelegate signature_help(document, position),
+    to: CodeIntelligence.SignatureHelp,
+    as: :signature
+
   defdelegate modules_with_prefix(prefix), to: Engine.Modules, as: :with_prefix
 
   defdelegate modules_with_prefix(prefix, predicate), to: Engine.Modules, as: :with_prefix

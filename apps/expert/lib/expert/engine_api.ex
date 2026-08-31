@@ -105,6 +105,10 @@ defmodule Expert.EngineApi do
     call(project, Engine, :hover, [document, position])
   end
 
+  def signature_help(%Project{} = project, %Document{} = document, %Position{} = position) do
+    call(project, Engine, :signature_help, [document, position])
+  end
+
   def modules_with_prefix(%Project{} = project, prefix)
       when is_binary(prefix) or is_atom(prefix) do
     call(project, Engine, :modules_with_prefix, [prefix])
