@@ -103,7 +103,7 @@ defmodule Engine.CodeIntelligence.DeclarationTest do
     """
 
     assert {:ok, %Location{} = location} = declaration(source, 3, 8)
-    assert location.document.path == __ENV__.file
+    assert normalize_path(location.document.path) == normalize_path(__ENV__.file)
     assert location_line(location) =~ "@callback remote"
   end
 
@@ -147,5 +147,11 @@ defmodule Engine.CodeIntelligence.DeclarationTest do
   defp location_line(%Location{document: document, range: range}) do
     {:ok, line} = Document.fetch_text_at(document, range.start.line)
     line
+  end
+
+  defp normalize_path(path) do
+    path
+    |> String.replace("\\", "/")
+    |> Path.expand()
   end
 end
