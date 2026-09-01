@@ -1,5 +1,6 @@
 defmodule Engine.CodeIntelligence.Implementations do
   alias ElixirSense.Providers.Location, as: ElixirSenseLocation
+  alias Forge.Ast
   alias Forge.Document
   alias Forge.Document.Location
   alias Forge.Document.Position
@@ -35,10 +36,28 @@ defmodule Engine.CodeIntelligence.Implementations do
             Position.new(document, end_line, end_column)
           )
 
+        range = normalize_range(range, document)
+
         {:ok, Location.new(range, document)}
 
       _ ->
         {:error, "Could not open implementation source file: #{inspect(file)}"}
+    end
+  end
+
+  # NOTE(doorgan): In Elixir 1.16, ElixirSense returns implementation locations
+  # where the start position is the same as the end position, producing empty
+  # ranges.
+  defp normalize_range(range, document) do
+    if Version.match?(System.version(), "~> 1.16.0") and range.start == range.end do
+      with {:ok, zipper} <- Ast.zipper_at(document, range.start),
+           {:ok, range} <- Ast.Range.fetch(zipper.node, document) do
+        range
+      else
+        _ -> range
+      end
+    else
+      range
     end
   end
 
