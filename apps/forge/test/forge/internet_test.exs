@@ -4,10 +4,10 @@ defmodule Forge.InternetTest do
 
   alias Forge.Internet
 
-  test "returns true when hex.pm resolves within five seconds" do
-    patch(:inet_res, :getbyname, fn host, family, timeout ->
+  test "returns true when the OS resolver finds hex.pm within five seconds" do
+    patch(:inet, :gethostbyname, fn host, family, timeout ->
       assert host == ~c"hex.pm"
-      assert family == :a
+      assert family == :inet
       assert timeout == 5_000
 
       {:ok, :hostent}
@@ -16,10 +16,10 @@ defmodule Forge.InternetTest do
     assert Internet.connected_to_internet?()
   end
 
-  test "returns false when hex.pm resolution fails" do
-    patch(:inet_res, :getbyname, fn host, family, timeout ->
+  test "returns false when OS resolution fails" do
+    patch(:inet, :gethostbyname, fn host, family, timeout ->
       assert host == ~c"hex.pm"
-      assert family == :a
+      assert family == :inet
       assert timeout == 5_000
 
       {:error, :timeout}

@@ -4,7 +4,7 @@ defmodule Forge.Internet do
     # it seems reasonable to gate pulling dependencies on a resolution check for hex.pm.
     # Yes, it's entirely possible that the DNS server is local, and that the entry is in cache,
     # but that's an edge case, and the build will just time out anyways.
-    case :inet_res.getbyname(~c"hex.pm", :a, 5_000) do
+    case :inet.gethostbyname(~c"hex.pm", :inet, 5_000) do
       {:ok, _} -> true
       _ -> false
     end
