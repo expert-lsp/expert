@@ -32,47 +32,6 @@ defmodule Engine.CodeMod.Format.Cache do
 
   require Logger
 
-  defmodule Entry do
-    @moduledoc false
-
-    defstruct [:id, :formatter, :opts, :extension, :path]
-    @type id :: non_neg_integer()
-
-    @type t :: %__MODULE__{
-            id: id(),
-            formatter: Engine.CodeMod.Format.formatter_function(),
-            opts: keyword(),
-            extension: String.t(),
-            path: Path.t()
-          }
-
-    @spec new(Format.formatter_function(), keyword(), Path.t()) :: t()
-    def new(formatter, opts, file_path) do
-      extension = Path.extname(file_path)
-
-      %__MODULE__{
-        id: :erlang.unique_integer([:positive]),
-        formatter: formatter,
-        opts: opts,
-        extension: extension,
-        path: file_path
-      }
-    end
-
-    @spec applies_to?(t(), Path.t()) :: boolean()
-    def applies_to?(%__MODULE__{} = entry, file_path) do
-      root = Keyword.get(entry.opts, :root)
-      inputs = Keyword.get(entry.opts, :inputs)
-
-      entry.extension == Path.extname(file_path) and
-        is_binary(root) and
-        is_list(inputs) and
-        Enum.any?(inputs, fn glob ->
-          PathGlob.match?(file_path, Path.join(root, glob), match_dot: true)
-        end)
-    end
-  end
-
   # -- State -------------------------------------------------------------------
 
   defmodule State do
@@ -98,46 +57,40 @@ defmodule Engine.CodeMod.Format.Cache do
     end
   end
 
-  # -- ETS tables --------------------------------------------------------------
+  # -- ETS table --------------------------------------------------------------
 
-  @entries_table :"#{__MODULE__}.Entries"
-  @paths_table :"#{__MODULE__}.Paths"
-
+  @formatters_table :"#{__MODULE__}.Formatters"
   # keypos: 2 — records are {tag, field1, field2, ...} so field1 is at position 2
-  @entries_table_opts [:named_table, :public, :set, read_concurrency: true, keypos: 2]
-  @paths_table_opts [:named_table, :public, :set, read_concurrency: true, keypos: 2]
+  @table_opts [:named_table, :public, :set, read_concurrency: true, keypos: 2]
 
   @default_refresh_interval :timer.seconds(10)
 
   # -- Records (ETS row formats) -----------------------------------------------
 
-  defrecordp :entry_row, id: nil, entry: nil
-  defrecordp :path_row, path: nil, entry_id: nil
+  defrecordp :formatter_row, path: nil, formatter: nil, opts: nil
 
-  @type entry_row :: record(:entry_row, id: Entry.id(), entry: Entry.t())
-  @type path_row :: record(:path_row, path: Path.t(), entry_id: non_neg_integer())
+  @type formatter_row ::
+          record(:formatter_row,
+            path: Path.t(),
+            formatter: Format.formatter_function(),
+            opts: keyword()
+          )
 
   # -- Public API --------------------------------------------------------------
 
   @spec fetch_formatter(Project.t(), Path.t()) ::
           {:ok, Format.formatter_function(), keyword()} | :error
   def fetch_formatter(%Project{} = project, file_path) do
-    with {:ok, entry_id} <- fetch_path(file_path),
-         {:ok, entry} <- fetch_entry(entry_id) do
-      Logger.debug("formatter cache hit for #{file_path}")
-      {:ok, entry.formatter, entry.opts}
-    else
+    case fetch(file_path) do
+      {:ok, _, _} = result ->
+        Logger.debug("formatter cache hit for #{file_path}")
+        result
+
       :error ->
         Logger.debug("formatter cache miss for #{file_path}")
 
         timed_log("formatter cache miss (call + resolve) for #{file_path}", fn ->
-          case GenServer.call(__MODULE__, {:resolve, project, file_path}) do
-            {:ok, %Entry{} = entry} ->
-              {:ok, entry.formatter, entry.opts}
-
-            :error ->
-              :error
-          end
+          GenServer.call(__MODULE__, {:resolve, project, file_path})
         end)
     end
   end
@@ -150,8 +103,7 @@ defmodule Engine.CodeMod.Format.Cache do
 
   @impl GenServer
   def init(opts) do
-    :ets.new(@entries_table, @entries_table_opts)
-    :ets.new(@paths_table, @paths_table_opts)
+    :ets.new(@formatters_table, @table_opts)
     project = Keyword.get_lazy(opts, :project, &Engine.get_project/0)
     interval = Keyword.get(opts, :refresh_interval, @default_refresh_interval)
     schedule_refresh(interval)
@@ -179,8 +131,7 @@ defmodule Engine.CodeMod.Format.Cache do
           end)
 
         Logger.info("formatter config changed, clearing cache")
-        :ets.delete_all_objects(@entries_table)
-        :ets.delete_all_objects(@paths_table)
+        :ets.delete_all_objects(@formatters_table)
 
         State.put_dot_formatters(state, dot_formatters)
       else
@@ -195,50 +146,27 @@ defmodule Engine.CodeMod.Format.Cache do
 
   # -- Private -----------------------------------------------------------------
 
-  @spec find_or_resolve(Project.t(), Path.t()) :: {:ok, Entry.t()} | :error
+  @spec find_or_resolve(Project.t(), Path.t()) ::
+          {:ok, Format.formatter_function(), keyword()} | :error
   defp find_or_resolve(%Project{} = project, file_path) do
-    case fetch_path(file_path) do
-      {:ok, entry_id} ->
-        fetch_entry(entry_id)
-
-      :error ->
-        case find_matching_entry(file_path) do
-          {:ok, %Entry{} = entry} ->
-            :ets.insert(@paths_table, path_row(path: file_path, entry_id: entry.id))
-            {:ok, entry}
-
-          :error ->
-            resolve_and_store(project, file_path)
-        end
+    case fetch(file_path) do
+      {:ok, _, _} = result -> result
+      :error -> resolve_and_store(project, file_path)
     end
   end
 
-  @spec find_matching_entry(Path.t()) :: {:ok, Entry.t()} | :error
-  defp find_matching_entry(file_path) do
-    extension = Path.extname(file_path)
-
-    @entries_table
-    |> :ets.select([{entry_row(id: :_, entry: :_), [], [:"$_"]}])
-    |> Enum.find_value(:error, fn
-      entry_row(entry: %Entry{extension: ^extension} = entry) ->
-        if Entry.applies_to?(entry, file_path) do
-          {:ok, entry}
-        end
-
-      _ ->
-        false
-    end)
-  end
-
-  @spec resolve_and_store(Project.t(), Path.t()) :: {:ok, Entry.t()} | :error
+  @spec resolve_and_store(Project.t(), Path.t()) ::
+          {:ok, Format.formatter_function(), keyword()} | :error
   defp resolve_and_store(%Project{} = project, file_path) do
     {formatter, opts} = Resolver.resolve(project, file_path)
-    entry = Entry.new(formatter, opts, file_path)
 
-    true = :ets.insert(@entries_table, entry_row(id: entry.id, entry: entry))
-    true = :ets.insert(@paths_table, path_row(path: file_path, entry_id: entry.id))
+    true =
+      :ets.insert(
+        @formatters_table,
+        formatter_row(path: file_path, formatter: formatter, opts: opts)
+      )
 
-    {:ok, entry}
+    {:ok, formatter, opts}
   rescue
     exception ->
       formatted_stack = Exception.format(:error, exception, __STACKTRACE__)
@@ -247,21 +175,15 @@ defmodule Engine.CodeMod.Format.Cache do
       :error
   end
 
-  @spec fetch_entry(Entry.id()) :: {:ok, Entry.t()} | :error
-  defp fetch_entry(entry_id) do
-    fetch(@entries_table, entry_id, entry_row(:entry))
-  end
+  @spec fetch(Path.t()) :: {:ok, Format.formatter_function(), keyword()} | :error
+  defp fetch(file_path) do
+    case :ets.lookup(@formatters_table, file_path) do
+      [formatter_row(formatter: formatter, opts: opts)] ->
+        {:ok, formatter, opts}
 
-  @spec fetch_path(Path.t()) :: {:ok, Entry.id()} | :error
-  defp fetch_path(file_path) do
-    fetch(@paths_table, file_path, path_row(:entry_id))
-  end
-
-  @spec fetch(atom(), term(), non_neg_integer()) :: {:ok, term()} | :error
-  defp fetch(table, key, field) do
-    # Record field indices are 1-based from the first field; ETS positions are
-    # also 1-based but include the record tag at position 1, so we add 1 to skip it.
-    {:ok, :ets.lookup_element(table, key, field + 1)}
+      [] ->
+        :error
+    end
   rescue
     ArgumentError -> :error
   end
@@ -330,18 +252,12 @@ defmodule Engine.CodeMod.Format.Cache do
   end
 
   defp clean_closed_entries do
-    closed_entries =
-      @entries_table
-      |> :ets.tab2list()
-      |> Enum.reject(fn entry_row(entry: %Entry{} = entry) ->
-        entry.path
-        |> Document.Path.to_uri()
-        |> Document.Store.open?()
-      end)
-
-    Enum.each(closed_entries, fn entry_row(entry: %Entry{} = entry) ->
-      true = :ets.delete(@entries_table, entry.id)
-      true = :ets.delete(@paths_table, entry.path)
+    @formatters_table
+    |> :ets.tab2list()
+    |> Enum.each(fn formatter_row(path: path) ->
+      if not (path |> Document.Path.to_uri() |> Document.Store.open?()) do
+        true = :ets.delete(@formatters_table, path)
+      end
     end)
   end
 end
