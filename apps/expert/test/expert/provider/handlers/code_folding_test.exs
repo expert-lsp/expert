@@ -10,6 +10,12 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
   alias GenLSP.Structures.TextDocumentIdentifier
 
   defp fold(source) do
+    source
+    |> fold_in_order()
+    |> Enum.sort_by(&{&1.start_line, &1.end_line})
+  end
+
+  defp fold_in_order(source) do
     uri = "file:///fold_test.ex"
     document = Document.new(uri, source, 1)
 
@@ -23,7 +29,7 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
     context = %Context{uri: uri, document: document, project: nil}
 
     {:ok, ranges} = CodeFolding.handle(request, context)
-    Enum.sort_by(ranges, &{&1.start_line, &1.end_line})
+    ranges
   end
 
   defp range(start_line, end_line) do
@@ -32,6 +38,37 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
 
   defp comment_range(start_line, end_line) do
     %FoldingRange{start_line: start_line, end_line: end_line, kind: "comment"}
+  end
+
+  test "preserves block, string, and comment ordering in mixed documents" do
+    source = ~S'''
+    defmodule Mixed do
+      @moduledoc """
+      Module docs.
+      More docs.
+      """
+      # first
+      # second
+      def run do
+        callback = fn ->
+          ~s"""
+          first
+          second
+          """
+        end
+        callback.()
+      end
+    end
+    '''
+
+    assert fold_in_order(source) == [
+             range(8, 12),
+             range(7, 14),
+             range(0, 15),
+             range(9, 11),
+             range(1, 3),
+             comment_range(5, 6)
+           ]
   end
 
   describe "do/end blocks" do
