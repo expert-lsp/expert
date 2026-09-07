@@ -324,6 +324,44 @@ defmodule Forge.AstTest do
       ]
       assert %Analysis{} = analyze(code)
     end
+
+    test "creates an analysis with expanded aliases in a keyword-do implementation" do
+      code = ~q[
+        defmodule Outer do
+          alias Example.Action
+          alias Example.Record
+          defimpl Action, for: Record, do: (
+            |__MODULE__
+          )
+        end
+      ]
+
+      {position, document} = pop_cursor(code, as: :document)
+      analysis = Ast.analyze(document)
+      assert analysis.valid?
+      assert [scope | _] = Analysis.scopes_at(analysis, position)
+      assert scope.module == [:Example, :Action, :Example, :Record]
+
+      aliases = Analysis.Scope.alias_map(scope)
+      assert aliases[[:__MODULE__]].module == [:Example, :Action, :Example, :Record]
+      assert aliases[[:"@protocol"]].module == [:Example, :Action]
+      assert aliases[[:"@for"]].module == [:Example, :Record]
+    end
+
+    test "ends a keyword-do implementation scope before the next expression" do
+      code = ~q[
+        defmodule Outer do
+          defimpl Action, for: Atom, do: :ok; |__MODULE__
+        end
+      ]
+
+      {position, document} = pop_cursor(code, as: :document)
+      analysis = Ast.analyze(document)
+      assert analysis.valid?
+      assert [scope | _] = Analysis.scopes_at(analysis, position)
+      assert scope.module == [:Outer]
+      assert Analysis.Scope.alias_map(scope)[[:__MODULE__]].module == [:Outer]
+    end
   end
 
   describe "parser crash logging" do
