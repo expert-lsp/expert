@@ -22,6 +22,21 @@ defmodule Expert.Search.Store.StateTest do
 
     def find_by_subject(_project, :_, :module, :definition), do: [entry(1)]
     def find_by_subject(_project, _subject, _type, _subtype), do: []
+    def find_by_subjects(_project, ["QueryBackend.Result"], :module, :definition), do: [entry(4)]
+    def find_by_subjects(_project, ["error"], :_, :_), do: {:error, :busy}
+    def find_by_subjects(_project, _subjects, _type, _subtype), do: []
+
+    def find_by_caller(
+          _project,
+          "QueryBackend.Result",
+          "/query_backend.ex",
+          :module,
+          :definition
+        ),
+        do: [entry(5)]
+
+    def find_by_caller(_project, "error", _path, :_, :_), do: {:error, :busy}
+    def find_by_caller(_project, _caller, _path, _type, _subtype), do: []
     def find_by_prefix(_project, _prefix, _type, _subtype), do: []
     def find_by_ids(_project, [2], :module, :definition), do: [entry(2)]
     def find_by_ids(_project, _ids, _type, _subtype), do: []
@@ -60,6 +75,8 @@ defmodule Expert.Search.Store.StateTest do
       do: {:ok, []}
 
     def find_by_subject(_project, _subject, _type, _subtype), do: []
+    def find_by_subjects(_project, _subjects, _type, _subtype), do: []
+    def find_by_caller(_project, _caller, _path, _type, _subtype), do: []
     def find_by_prefix(_project, _prefix, _type, _subtype), do: []
     def find_by_ids(_project, _ids, _type, _subtype), do: []
     def find_by_paths(_project, _paths, _type, _subtype), do: []
@@ -80,6 +97,36 @@ defmodule Expert.Search.Store.StateTest do
 
     assert {{:error, :not_started}, log} = with_log(fn -> State.load(state) end)
     assert log =~ "Could not initialize index backend"
+  end
+
+  test "exact_many forwards filters, wraps entries, and preserves backend errors" do
+    state = State.new(project(), QueryBackend)
+
+    assert {:error, :loading} = State.exact_many(state, ["QueryBackend.Result"], [])
+
+    state = %{state | loaded?: true}
+
+    assert {:ok, [%Entry{id: 4}]} =
+             State.exact_many(state, ["QueryBackend.Result"], type: :module, subtype: :definition)
+
+    assert {:ok, []} = State.exact_many(state, [], [])
+    assert {:error, :busy} = State.exact_many(state, ["error"], [])
+  end
+
+  test "by_caller forwards caller, path, and filters and preserves errors" do
+    state = State.new(project(), QueryBackend)
+    caller = "QueryBackend.Result"
+    path = "/query_backend.ex"
+
+    assert {:error, :loading} = State.by_caller(state, caller, path, [])
+
+    state = %{state | loaded?: true}
+
+    assert {:ok, [%Entry{id: 5}]} =
+             State.by_caller(state, caller, path, type: :module, subtype: :definition)
+
+    assert {:ok, []} = State.by_caller(state, caller, "/other.ex", [])
+    assert {:error, :busy} = State.by_caller(state, "error", path, [])
   end
 
   test "all reduces backend entries and fuzzy uses in-memory ids" do

@@ -95,6 +95,30 @@ defmodule Expert.Search.Store.State do
     end
   end
 
+  def exact_many(%__MODULE__{loaded?: false}, _subjects, _constraints), do: {:error, :loading}
+
+  def exact_many(%__MODULE__{} = state, subjects, constraints) do
+    type = Keyword.get(constraints, :type, :_)
+    subtype = Keyword.get(constraints, :subtype, :_)
+
+    case state.backend.find_by_subjects(state.project, subjects, type, subtype) do
+      l when is_list(l) -> {:ok, l}
+      error -> error
+    end
+  end
+
+  def by_caller(%__MODULE__{loaded?: false}, _caller, _path, _constraints), do: {:error, :loading}
+
+  def by_caller(%__MODULE__{} = state, caller, path, constraints) do
+    type = Keyword.get(constraints, :type, :_)
+    subtype = Keyword.get(constraints, :subtype, :_)
+
+    case state.backend.find_by_caller(state.project, caller, path, type, subtype) do
+      l when is_list(l) -> {:ok, l}
+      error -> error
+    end
+  end
+
   def prefix(%__MODULE__{loaded?: false}, _prefix, _constraints), do: {:error, :loading}
 
   def prefix(%__MODULE__{} = state, prefix, constraints) do
