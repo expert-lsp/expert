@@ -103,6 +103,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @impl Backend
+  def find_by_subjects(%Project{} = project, subjects, type, subtype) when is_list(subjects) do
+    GenServer.call(name(project), {:find_by_subjects, subjects, type, subtype}, :infinity)
+  end
+
+  @impl Backend
+  def find_by_caller(%Project{} = project, caller, path, type, subtype)
+      when is_binary(caller) and is_binary(path) do
+    GenServer.call(name(project), {:find_by_caller, caller, path, type, subtype}, :infinity)
+  end
+
+  @impl Backend
   def find_by_prefix(%Project{} = project, prefix, type, subtype) do
     GenServer.call(name(project), {:find_by_prefix, prefix, type, subtype}, :infinity)
   end
@@ -228,6 +239,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   def handle_call({:find_by_subject, subject, type, subtype}, _from, %State{} = state),
     do: reply(do_find_by_subject(state, subject, type, subtype), state)
+
+  def handle_call({:find_by_subjects, subjects, type, subtype}, _from, %State{} = state),
+    do: reply(do_find_by_subjects(state, subjects, type, subtype), state)
+
+  def handle_call({:find_by_caller, caller, path, type, subtype}, _from, %State{} = state),
+    do: reply(do_find_by_caller(state, caller, path, type, subtype), state)
 
   def handle_call({:find_by_prefix, prefix, type, subtype}, _from, %State{} = state),
     do: reply(do_find_by_prefix(state, prefix, type, subtype), state)
@@ -380,6 +397,39 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     |> entries_result()
   end
 
+  def do_find_by_subjects(%State{} = state, subjects, type, subtype) when is_list(subjects) do
+    result =
+      subjects
+      |> Enum.map(&subject_key/1)
+      |> Enum.uniq()
+      |> Stream.chunk_every(query_chunk_size(type, subtype))
+      |> Enum.reduce_while([], fn subjects, batches ->
+        {where, args} =
+          constraints(["subject IN (#{placeholders(subjects)})"], subjects, type, subtype)
+
+        state
+        |> query_entries(where_clause(where), args)
+        |> entries_result()
+        |> case do
+          entries when is_list(entries) -> {:cont, [entries | batches]}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+
+    case result do
+      {:error, _} = error -> error
+      batches -> batches |> Enum.reverse() |> List.flatten()
+    end
+  end
+
+  def do_find_by_caller(%State{} = state, caller, path, type, subtype) do
+    {where, args} = constraints(["caller = ? AND path = ?"], [caller, path], type, subtype)
+
+    state
+    |> query_entries(where_clause(where), args)
+    |> entries_result()
+  end
+
   def do_find_by_prefix(%State{} = state, prefix, type, subtype) do
     {clauses, args} = prefix_constraint(prefix)
     {where, args} = constraints(clauses, args, type, subtype)
@@ -405,6 +455,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
                    entries.id,
                    entries.path,
                    entries.subject,
+                   entries.caller,
                    entries.type,
                    entries.subtype,
                    entries.block_id,
@@ -434,7 +485,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     result =
       paths
       |> Enum.uniq()
-      |> Stream.chunk_every(path_chunk_size(type, subtype))
+      |> Stream.chunk_every(query_chunk_size(type, subtype))
       |> Enum.reduce_while([], fn paths, batches ->
         case find_by_path_chunk(state, paths, type, subtype) do
           entries when is_list(entries) -> {:cont, [entries | batches]}
@@ -464,6 +515,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              entries.id,
              entries.path,
              entries.subject,
+             entries.caller,
              entries.type,
              entries.subtype,
              entries.block_id,
@@ -620,6 +672,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       id INTEGER NOT NULL,
       path TEXT NOT NULL,
       subject TEXT NOT NULL,
+      caller TEXT,
       type BLOB NOT NULL,
       subtype TEXT NOT NULL,
       block_id INTEGER NOT NULL
@@ -650,6 +703,11 @@ defmodule Expert.Search.Store.Backends.Sqlite do
            exec(
              state,
              "CREATE INDEX IF NOT EXISTS entries_subject_idx ON entries (subject, type, subtype)"
+           ),
+         :ok <-
+           exec(
+             state,
+             "CREATE INDEX IF NOT EXISTS entries_caller_idx ON entries (caller, path, type, subtype)"
            ),
          :ok <-
            exec(state, "CREATE INDEX IF NOT EXISTS entries_block_idx ON entries (block_id, path)"),
@@ -725,8 +783,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp insert_entry_rows(%State{} = state, rows) do
     sql = """
-    INSERT INTO entries (entry_key, id, path, subject, type, subtype, block_id)
-    VALUES #{row_placeholders(rows, 7)}
+    INSERT INTO entries (entry_key, id, path, subject, caller, type, subtype, block_id)
+    VALUES #{row_placeholders(rows, 8)}
     """
 
     args = Enum.flat_map(rows, &entry_args/1)
@@ -774,6 +832,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       entry.id,
       entry.path,
       subject_key(entry.subject),
+      entry.caller,
       blob(entry.type),
       subtype_key(entry.subtype),
       block_id_key(entry.block_id)
@@ -841,6 +900,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         entries.id,
         entries.path,
         entries.subject,
+        entries.caller,
         entries.type,
         entries.subtype,
         entries.block_id,
@@ -862,7 +922,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     |> entries_result()
   end
 
-  defp path_chunk_size(type, subtype) do
+  defp query_chunk_size(type, subtype) do
     @sqlite_variable_limit - Enum.count([type, subtype], &(&1 != :_))
   end
 
@@ -1132,7 +1192,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     })
   end
 
-  defp decode_entry([id, path, subject_key, type_blob, subtype, block_id, entry_blob]) do
+  defp decode_entry([id, path, subject_key, caller, type_blob, subtype, block_id, entry_blob]) do
     {subject_override, application, block_range, range, metadata} = decode_term(entry_blob)
 
     subject =
@@ -1149,6 +1209,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       path: path,
       range: expand_range(range),
       subject: subject,
+      caller: caller,
       subtype: String.to_existing_atom(subtype),
       type: decode_term(type_blob),
       metadata: metadata
