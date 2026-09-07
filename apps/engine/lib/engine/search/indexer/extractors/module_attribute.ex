@@ -42,7 +42,7 @@ defmodule Engine.Search.Indexer.Extractors.ModuleAttribute do
   end
 
   # Finds module attribute definitions @foo 3
-  def extract({:@, _, [{attr_name, _, _attr_value}]} = attr, %Reducer{} = reducer) do
+  def extract({:@, _, [{attr_name, _, attr_value}]} = attr, %Reducer{} = reducer) do
     block = Reducer.current_block(reducer)
 
     case Analyzer.current_module(reducer.analysis, Reducer.position(reducer)) do
@@ -57,7 +57,20 @@ defmodule Engine.Search.Indexer.Extractors.ModuleAttribute do
             Engine.ApplicationCache.application(current_module)
           )
 
-        {:ok, definition}
+        value =
+          if attr_name in [:spec, :type, :typep, :opaque, :callback, :macrocallback] do
+            Macro.prewalk(attr_value, fn
+              {name, meta, args} when name not in [:__aliases__, :__MODULE__, :__block__] ->
+                {name, Reducer.skip(meta), args}
+
+              ast ->
+                ast
+            end)
+          else
+            attr_value
+          end
+
+        {:ok, definition, value}
 
       _ ->
         :ignored

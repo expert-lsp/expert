@@ -31,6 +31,27 @@ defmodule Engine.Search.Indexer.Extractors.ProtocolTest do
   end
 
   describe "indexing protocol implementations" do
+    test "keyword-do implementations have declaration and block ranges without the following expression" do
+      source = ~q[
+      defimpl Action, for: Atom, do: Target.run(); Target.after_implementation()
+      ]
+
+      assert {:ok, entries, document} = index_everything(source)
+      definitions = Enum.filter(entries, &(&1.subtype == :definition))
+      assert [implementation, module] = definitions
+      assert implementation.type == {:protocol, :implementation}
+      assert implementation.subject == Action
+      assert module.type == :module
+      assert module.subject == Action.Atom
+      assert extract(document, implementation.range) == "defimpl Action, for: Atom, do:"
+
+      assert extract(document, implementation.block_range) ==
+               "defimpl Action, for: Atom, do: Target.run()"
+
+      assert module.range == implementation.range
+      assert module.block_range == implementation.block_range
+    end
+
     test "works" do
       {:ok, [protocol], doc} =
         ~q[

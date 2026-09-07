@@ -29,7 +29,8 @@ defmodule Engine.Search.Indexer.Source.Reducer do
     %__MODULE__{
       analysis: analysis,
       block_hierarchy: %{root: %{}},
-      blocks: [Block.root()],
+      # Top-level calls belong to the source file.
+      blocks: [%{Block.root() | caller: analysis.document.path}],
       entries: [],
       extractors: extractors || @extractors,
       position: {0, 0}
@@ -124,7 +125,7 @@ defmodule Engine.Search.Indexer.Source.Reducer do
 
   defp push_block(%__MODULE__{} = reducer, %Block{} = block) do
     parent = current_block(reducer)
-    block = %Block{block | parent_id: parent.id}
+    block = %Block{block | parent_id: parent.id, caller: parent.caller}
     id_path = Enum.reduce(reducer.blocks, [], fn block, acc -> [block.id | acc] end)
 
     hierarchy =
@@ -170,10 +171,37 @@ defmodule Engine.Search.Indexer.Source.Reducer do
   end
 
   defp push_entry(%__MODULE__{} = reducer, %Entry{} = entry) do
+    reducer =
+      case entry do
+        %Entry{subtype: :definition, type: {kind, visibility}}
+        when kind in [:function, :macro] and visibility in [:public, :private] ->
+          put_caller(reducer, entry.subject)
+
+        %Entry{subtype: :definition, type: type}
+        when type in [:module, {:protocol, :definition}, {:protocol, :implementation}] ->
+          put_caller(reducer, Forge.Formats.module(entry.subject))
+
+        _ ->
+          reducer
+      end
+
+    entry =
+      case entry do
+        %Entry{subtype: :reference, type: {:function, :usage}, caller: nil} ->
+          %{entry | caller: current_block(reducer).caller}
+
+        _ ->
+          entry
+      end
+
     %__MODULE__{reducer | entries: [entry | reducer.entries]}
   end
 
   defp push_entry(%__MODULE__{} = reducer, _), do: reducer
+
+  defp put_caller(%__MODULE__{blocks: [block | rest]} = reducer, caller) do
+    %{reducer | blocks: [%{block | caller: caller} | rest]}
+  end
 
   defp maybe_pop_block(%__MODULE__{} = reducer) do
     if block_ended?(reducer) do

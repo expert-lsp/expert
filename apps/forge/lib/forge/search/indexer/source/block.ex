@@ -5,7 +5,7 @@ defmodule Forge.Search.Indexer.Source.Block do
 
   alias Forge.Identifier
 
-  defstruct [:starts_at, :ends_at, :id, :parent_id]
+  defstruct [:starts_at, :ends_at, :id, :parent_id, :caller]
 
   def root do
     %__MODULE__{id: :root}
