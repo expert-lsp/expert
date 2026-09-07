@@ -99,6 +99,35 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
              end)
     end
 
+    test "stores entry caller", %{project: project, runtime_versions: runtime_versions} do
+      entry = %Entry{
+        id: 1,
+        block_id: :root,
+        path: "/orders.ex",
+        subject: "Payments.charge/1",
+        caller: "Orders.checkout/1",
+        type: {:function, :usage},
+        subtype: :reference
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [entry])
+
+      assert [^entry] =
+               Sqlite.find_by_subject(
+                 project,
+                 "Payments.charge/1",
+                 {:function, :usage},
+                 :reference
+               )
+    end
+
     test "stores lean entry blobs and reconstructs entries from both tables", %{
       project: project,
       runtime_versions: runtime_versions
@@ -173,7 +202,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[4]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[5]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -412,6 +441,176 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Sqlite.replace_all(project, [structure])
 
       assert {:ok, %{1 => %{2 => %{}}}} = Sqlite.structure_for_path(project, path)
+    end
+  end
+
+  describe "find_by_caller/5" do
+    test "adds the caller index to an existing database without losing entries", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      entry = %Entry{
+        id: 1,
+        subject: "Payments.charge/1",
+        caller: "Orders.odd'_%/1",
+        path: "/orders'_%/file.ex",
+        type: {:function, :usage},
+        subtype: :reference,
+        block_id: :root
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [entry])
+      assert :ok = stop_supervised!(:sqlite)
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+
+      try do
+        # Simulate a persisted database created before the caller index was added.
+        result = Exqlite.Basic.exec(conn, "DROP INDEX entries_caller_idx")
+        assert {:ok, [], _columns} = Exqlite.Basic.rows(result)
+      after
+        Exqlite.Basic.close(conn)
+      end
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :stale} = Sqlite.prepare(pid)
+
+      assert [^entry] =
+               Sqlite.find_by_caller(project, entry.caller, entry.path, :_, :reference)
+
+      assert [] = Sqlite.find_by_caller(project, "Orders.oddX_%/1", entry.path, :_, :reference)
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+
+      try do
+        result =
+          Exqlite.Basic.exec(conn, "SELECT name FROM sqlite_master WHERE name = ?", [
+            "entries_caller_idx"
+          ])
+
+        assert {:ok, [["entries_caller_idx"]], _columns} = Exqlite.Basic.rows(result)
+      after
+        Exqlite.Basic.close(conn)
+      end
+    end
+  end
+
+  describe "find_by_subjects/4" do
+    setup %{project: project, runtime_versions: runtime_versions} do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      :ok
+    end
+
+    test "matches exact subjects without collapsing clauses or duplicating entries", %{
+      project: project
+    } do
+      first = %Entry{
+        id: 1,
+        subject: "Orders.checkout/1",
+        path: "/orders.ex",
+        type: {:function, :public},
+        subtype: :definition,
+        block_id: :root
+      }
+
+      second = %{first | id: 2}
+      other = %{first | id: 3, subject: "Jobs.retry/1", path: "/jobs.ex"}
+      other_path = %{first | id: 4, path: "/other/orders.ex"}
+
+      reference = %{
+        first
+        | id: 5,
+          subtype: :reference,
+          type: {:function, :usage},
+          caller: "Jobs.retry/1"
+      }
+
+      macro = %{first | id: 6, type: {:macro, :public}}
+      other_arity = %{first | id: 7, subject: "Orders.checkout/2"}
+      literal = %{first | id: 8, subject: "odd'_%/0"}
+      module = %{first | id: 9, subject: Orders, type: :module}
+
+      assert :ok =
+               Sqlite.replace_all(project, [
+                 first,
+                 second,
+                 other,
+                 other_path,
+                 reference,
+                 macro,
+                 other_arity,
+                 literal,
+                 module
+               ])
+
+      subjects = ["Jobs.retry/1", "Orders.checkout/1", "Orders.checkout/1", "Missing.function/0"]
+
+      assert [^first, ^second, ^other, ^other_path] =
+               project
+               |> Sqlite.find_by_subjects(subjects, {:function, :public}, :definition)
+               |> Enum.sort_by(& &1.id)
+
+      assert [^first, ^second, ^other, ^other_path, ^reference, ^macro] =
+               project
+               |> Sqlite.find_by_subjects(subjects, :_, :_)
+               |> Enum.sort_by(& &1.id)
+
+      assert [^reference] = Sqlite.find_by_subjects(project, subjects, :_, :reference)
+      assert [^literal] = Sqlite.find_by_subjects(project, ["odd'_%/0"], :_, :_)
+      assert [^module] = Sqlite.find_by_subjects(project, [Orders, "Orders"], :_, :_)
+      assert [] = Sqlite.find_by_subjects(project, ["Orders.checkout"], :_, :_)
+      assert [] = Sqlite.find_by_subjects(project, [], :_, :_)
+    end
+
+    test "batches subjects within the parameter limit and retains matches from every batch", %{
+      project: project
+    } do
+      subjects = Enum.map(1..32_767, &"Generated.function_#{&1}/0")
+
+      entries =
+        for id <- [1, 32_765, 32_767] do
+          %Entry{
+            id: id,
+            subject: "Generated.function_#{id}/0",
+            path: "/generated.ex",
+            type: {:function, :public},
+            subtype: :definition,
+            block_id: :root
+          }
+        end
+
+      assert :ok = Sqlite.replace_all(project, entries)
+      subjects = subjects ++ ["Generated.function_1/0"]
+
+      for {type, subtype} <- [
+            {:_, :_},
+            {{:function, :public}, :_},
+            {:_, :definition},
+            {{:function, :public}, :definition}
+          ] do
+        assert ^entries =
+                 project
+                 |> Sqlite.find_by_subjects(subjects, type, subtype)
+                 |> Enum.sort_by(& &1.id)
+      end
     end
   end
 
