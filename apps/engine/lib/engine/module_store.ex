@@ -24,6 +24,10 @@ defmodule Engine.ModuleStore do
       {:done, token}
     end)
 
-    {:stop, :normal, state}
+    # This is a permanent child of Engine.Supervisor. Exiting here, even with
+    # :normal, means one restart per build, and the fourth build to finish
+    # within five seconds exceeds the supervisor's restart intensity and stops
+    # the whole engine application.
+    {:noreply, state}
   end
 end
