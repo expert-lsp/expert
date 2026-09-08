@@ -41,7 +41,33 @@ defmodule Expert.Document.Lookup do
   end
 
   @spec resolve_from_request(struct(), [Project.t()]) ::
-          {:ok, Context.t()} | {:error, :document_not_found}
+          {:ok, Context.t()}
+          | {:error, :document_not_found}
+          | {:error, :invalid_call_hierarchy_item}
+  def resolve_from_request(
+        %request_module{
+          params: %{item: %Structures.CallHierarchyItem{} = item}
+        } = request,
+        projects
+      )
+      when request_module in [
+             GenLSP.Requests.CallHierarchyIncomingCalls,
+             GenLSP.Requests.CallHierarchyOutgoingCalls
+           ] do
+    # For path dependencies in poncho projects, call hierarchy items will point to
+    # a path in a different project. This will stop Call Hierarchy from working
+    # properly, as requests to it will be handled by the dependency project instead
+    # of the project that actually initiated the requests.
+    with %{"project_root_uri" => root_uri} when is_binary(root_uri) <- item.data,
+         %Project{} = project <- Enum.find(projects, &(&1.root_uri == root_uri)),
+         {:ok, %Document{} = document} <- request_document(request) do
+      {:ok, Context.new(document.uri, document, project)}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_call_hierarchy_item}
+    end
+  end
+
   def resolve_from_request(request_or_params, projects) when is_list(projects) do
     with {:ok, %Document{} = document} <- request_document(request_or_params) do
       {:ok, resolve(document, projects)}
@@ -278,6 +304,9 @@ defmodule Expert.Document.Lookup do
       Document.Store.open_temporary(uri)
     end
   end
+
+  defp extract_uri(%{item: %GenLSP.Structures.CallHierarchyItem{uri: uri}}) when is_binary(uri),
+    do: uri
 
   defp extract_uri(%{text_document: %{uri: uri}}) when is_binary(uri), do: uri
   defp extract_uri(%{uri: uri}) when is_binary(uri), do: uri
