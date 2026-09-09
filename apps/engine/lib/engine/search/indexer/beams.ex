@@ -164,13 +164,15 @@ defmodule Engine.Search.Indexer.Beams do
     source_path = Map.get(metadata, :file)
     source_stat_result = stat_source(source_path)
 
-    if fresh_beam?(beam_stat, source_stat_result) do
-      {:ok, manifest_entry} =
-        Manifest.Entry.beam(beam_path, source_path, beam_stat, source_stat_result)
+    case source_stat_result do
+      {:ok, _source_stat} ->
+        {:ok, manifest_entry} =
+          Manifest.Entry.beam(beam_path, source_path, beam_stat, source_stat_result)
 
-      [{:indexed, source_path, metadata, manifest_entry}]
-    else
-      skipped_result_from_beam(beam_path, beam_stat, source_path, source_stat_result)
+        [{:indexed, source_path, metadata, manifest_entry}]
+
+      :error ->
+        skipped_result_from_beam(beam_path, beam_stat, source_path, source_stat_result)
     end
   end
 
@@ -182,12 +184,6 @@ defmodule Engine.Search.Indexer.Beams do
   end
 
   defp stat_source(_source_path), do: :error
-
-  defp fresh_beam?(%File.Stat{} = beam_stat, {:ok, %File.Stat{} = source_stat}) do
-    beam_stat.mtime >= source_stat.mtime
-  end
-
-  defp fresh_beam?(_beam_stat, _source_stat), do: false
 
   defp skipped_result_from_beam(beam_path, beam_stat, source_path, source_stat_result) do
     {:ok, manifest_entry} =

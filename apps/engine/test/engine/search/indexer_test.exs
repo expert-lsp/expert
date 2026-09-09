@@ -10,6 +10,7 @@ defmodule Engine.Search.IndexerTest do
   alias Engine.Search.Indexer.Manifest
   alias Engine.Search.Indexer.Manifest.Entry, as: ManifestEntry
   alias Engine.Search.Indexer.ManifestStore
+  alias Engine.Search.Indexer.Source
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
@@ -270,19 +271,27 @@ defmodule Engine.Search.IndexerTest do
     end
 
     @tag :tmp_dir
-    test "caches stale dependency beams without entries", %{tmp_dir: tmp_dir} do
+    test "uses BEAM metadata for public dependency definitions", %{tmp_dir: tmp_dir} do
       %{beam_path: beam_path, dep_file: dep_file, module: module, project: project} =
         with_beam_dependency(tmp_dir, rewrite_source?: false)
 
       File.touch!(dep_file, {{2100, 1, 1}, {0, 0, 0}})
+      spy(Source)
 
       assert {entries, []} = update_index(project)
       assert {:ok, manifest} = ManifestStore.load(project)
 
-      refute Enum.any?(entries, &(&1.subject == module))
+      assert Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
 
-      assert {:ok, %ManifestEntry{kind: :beam, output_path: nil, source_path: ^dep_file}} =
+      assert Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(module, :public_fun, 0)))
+      refute Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(module, :private_fun, 0)))
+      refute_called(Source.index(^dep_file, _, _))
+
+      assert {:ok, %ManifestEntry{kind: :beam, output_path: ^dep_file, source_path: ^dep_file}} =
                Manifest.fetch(manifest, beam_path)
+
+      FakeBackend.set_entries(entries)
+      assert {[], []} = update_index(project)
     end
 
     @tag :tmp_dir
@@ -342,16 +351,61 @@ defmodule Engine.Search.IndexerTest do
     end
 
     @tag :tmp_dir
-    test "clears entries when beam metadata is stale", %{tmp_dir: tmp_dir} do
-      %{dep_file: dep_file, project: project} = with_beam_dependency(tmp_dir)
+    test "retains compiled definitions when newer source cannot be parsed", %{tmp_dir: tmp_dir} do
+      %{dep_file: dep_file, module: module, project: project} = with_beam_dependency(tmp_dir)
 
       entries = create_index(project)
       FakeBackend.set_entries(entries)
 
       File.touch!(dep_file, {{2100, 1, 1}, {0, 0, 0}})
 
-      assert {[], paths_to_clear} = update_index(project)
-      assert dep_file in paths_to_clear
+      assert {updated_entries, []} = update_index(project)
+      assert Enum.any?(updated_entries, &(&1.subject == module and &1.subtype == :definition))
+
+      assert Enum.any?(
+               updated_entries,
+               &(&1.subject == Forge.Formats.mfa(module, :public_fun, 0))
+             )
+
+      refute Enum.any?(updated_entries, &(&1.path == dep_file and &1.subtype == :reference))
+    end
+
+    @tag :tmp_dir
+    test "refreshes dependency definitions after recompilation", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, dep_file: dep_file, module: module, project: project} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      FakeBackend.set_entries(create_index(project))
+
+      File.write!(dep_file, """
+      defmodule #{inspect(module)} do
+        def newly_compiled_function, do: :updated
+      end
+      """)
+
+      File.touch!(dep_file, {{2100, 1, 1}, {0, 0, 0}})
+
+      assert {before_compile, []} = update_index(project)
+      assert Enum.any?(before_compile, &(&1.subject == Forge.Formats.mfa(module, :public_fun, 0)))
+
+      refute Enum.any?(
+               before_compile,
+               &(&1.subject == Forge.Formats.mfa(module, :newly_compiled_function, 0))
+             )
+
+      FakeBackend.set_entries(before_compile)
+      Code.compiler_options(ignore_module_conflict: true)
+      assert [^module] = compile_to_path!([dep_file], Path.dirname(beam_path))
+      File.touch!(beam_path, {{2101, 1, 1}, {0, 0, 0}})
+
+      assert {after_compile, []} = update_index(project)
+
+      assert Enum.any?(
+               after_compile,
+               &(&1.subject == Forge.Formats.mfa(module, :newly_compiled_function, 0))
+             )
+
+      refute Enum.any?(after_compile, &(&1.subject == Forge.Formats.mfa(module, :public_fun, 0)))
     end
 
     @tag :tmp_dir
