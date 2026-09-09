@@ -128,7 +128,7 @@ defmodule Expert.MixProject do
       {:path_glob, "~> 0.2"},
       {:phoenix_live_view, "~> 1.0", only: [:test], runtime: false},
       {:schematic, "~> 0.2"},
-      {:sourceror, "~> 1.12.2"},
+      {:sourceror, "~> 1.12.3"},
       {:telemetry, "~> 1.3", manager: :mix, optional: false, override: true}
     ]
   end

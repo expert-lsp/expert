@@ -570,6 +570,9 @@ defmodule Expert do
       %GenLSP.Requests.WorkspaceSymbol{} ->
         {:ok, Handlers.WorkspaceSymbol}
 
+      %GenLSP.Requests.TextDocumentSelectionRange{} ->
+        {:ok, Handlers.SelectionRange}
+
       %request_module{} ->
         {:error, {:unhandled, request_module}}
     end
