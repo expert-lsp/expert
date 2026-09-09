@@ -420,6 +420,7 @@ defmodule Expert.State do
         folding_range_provider: true,
         hover_provider: true,
         references_provider: true,
+        selection_range_provider: true,
         signature_help_provider: %Structures.SignatureHelpOptions{
           trigger_characters: Handlers.SignatureHelp.trigger_characters()
         },
