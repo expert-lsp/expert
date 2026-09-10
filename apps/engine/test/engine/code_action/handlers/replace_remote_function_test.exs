@@ -19,16 +19,11 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunctionTest do
         * count/2
   """
 
-  def apply_code_mod(original_text, _ast, options) do
+  def code_actions(original_text, options) do
     line_number = Keyword.get(options, :line, 1)
     message_body = Keyword.get(options, :message, @default_message)
     message_prefix = Keyword.get(options, :message_prefix, "")
     message = message_prefix <> message_body
-
-    suggestion =
-      options
-      |> Keyword.get(:suggestion, :count)
-      |> Atom.to_string()
 
     :ok = Document.Store.open("file:///file.ex", original_text, 0)
     {:ok, document} = Document.Store.fetch("file:///file.ex")
@@ -41,9 +36,15 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunctionTest do
 
     diagnostic = Diagnostic.new(range, message, nil)
 
+    ReplaceRemoteFunction.actions(document, range, [diagnostic])
+  end
+
+  def apply_code_mod(original_text, _ast, options) do
+    suggestion = options |> Keyword.get(:suggestion, :count) |> Atom.to_string()
+
     changes =
-      document
-      |> ReplaceRemoteFunction.actions(range, [diagnostic])
+      original_text
+      |> code_actions(options)
       |> Enum.flat_map(& &1.changes.edits)
       |> Enum.filter(fn
         %Forge.Document.Edit{text: ^suggestion} -> true
@@ -266,6 +267,59 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunctionTest do
 
         assert result == "&:ets.insert/2"
       end
+    end
+  end
+
+  describe "receiver resolution" do
+    test "handles aliased Erlang modules" do
+      message = ":ets.inserd/2 is undefined or private. Did you mean: insert/2"
+      original = ~q[
+        defmodule Example do
+          alias :ets, as: Table
+          def run, do: Table.inserd(:table, {:key, :value})
+        end
+      ]t
+      expected = String.replace(original, "inserd", "insert")
+
+      assert {:ok, ^expected} = modify(original, message: message, line: 3, suggestion: :insert)
+    end
+
+    test "handles __MODULE__" do
+      original = ~q{
+        defmodule Enum do
+          def run, do: __MODULE__.counts([1, 2, 3])
+        end
+      }t
+      expected = String.replace(original, "counts", "count")
+
+      assert {:ok, ^expected} = modify(original, line: 2)
+    end
+
+    test "does not treat __MODULE__.Nested as the diagnostic module" do
+      original = ~q{
+        defmodule Other do
+          def run, do: Enum.counts([]) + __MODULE__.Nested.counts([])
+        end
+      }t
+      expected = String.replace(original, "Enum.counts", "Enum.count")
+
+      assert {:ok, ^expected} = modify(original, line: 2)
+    end
+  end
+
+  describe "invalid diagnostics" do
+    test "does not return actions without edits" do
+      actions = code_actions("other.counts([1, 2, 3])", line: 1)
+
+      assert actions == []
+    end
+
+    test "ignores a non-numeric arity" do
+      message = "Enum.counts/one is undefined or private. Did you mean: count/1"
+
+      actions = code_actions("Enum.counts([1, 2, 3])", line: 1, message: message)
+
+      assert actions == []
     end
   end
 end
