@@ -548,6 +548,9 @@ defmodule Expert do
       %Requests.TextDocumentHover{} ->
         {:ok, Handlers.Hover}
 
+      %Requests.TextDocumentSignatureHelp{} ->
+        {:ok, Handlers.SignatureHelp}
+
       %Requests.WorkspaceExecuteCommand{} ->
         {:ok, Handlers.Commands}
 

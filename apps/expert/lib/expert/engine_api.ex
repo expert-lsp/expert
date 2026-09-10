@@ -101,6 +101,10 @@ defmodule Expert.EngineApi do
     call(project, Engine, :hover, [document, position])
   end
 
+  def signature_help(%Project{} = project, %Document{} = document, %Position{} = position) do
+    call(project, Engine, :signature_help, [document, position])
+  end
+
   def references(
         %Project{} = project,
         %Analysis{} = analysis,
