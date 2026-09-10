@@ -167,7 +167,10 @@ defmodule ExpertTest do
                )
 
       assert_result(1, %{
-        "capabilities" => %{"workspace" => %{"workspaceFolders" => %{"supported" => true}}}
+        "capabilities" => %{
+          "implementationProvider" => true,
+          "workspace" => %{"workspaceFolders" => %{"supported" => true}}
+        }
       })
 
       assert :ok = notify(client, initialized_notification())
