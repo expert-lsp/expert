@@ -10,6 +10,63 @@ defmodule Engine.Search.Indexer.Extractors.ModuleAttributeTest do
   end
 
   describe "indexing module attributes" do
+    test "initializers retain real calls without indexing the attribute name as a call" do
+      source = ~q"""
+      defmodule Owner do
+        @compiled Target.prepare(Target.input())
+        @mapped Enum.map([], fn value -> Target.map(value) end)
+        Target.after_attributes()
+      end
+      """
+
+      assert {:ok, entries, _} = index_everything(source)
+      calls = Enum.filter(entries, &(&1.type == {:function, :usage}))
+
+      assert Enum.map(calls, &{&1.subject, &1.caller}) == [
+               {"Target.prepare/1", "Owner"},
+               {"Target.input/0", "Owner"},
+               {"Enum.map/2", "Owner"},
+               {"Target.map/1", "Owner"},
+               {"Target.after_attributes/0", "Owner"}
+             ]
+
+      attributes = Enum.filter(entries, &(&1.type == :module_attribute))
+      assert Enum.map(attributes, & &1.subject) == ["@compiled", "@mapped"]
+    end
+
+    test "typespec signatures are not runtime calls but retain module references" do
+      source = ~q[
+      defmodule Owner do
+        @spec run(Input.t()) :: Output.t()
+        @type item() :: Item.t()
+        @typep private_item() :: PrivateItem.t()
+        @opaque secret() :: Secret.t()
+        @callback handle(Request.t()) :: Response.t()
+        @macrocallback build(MacroInput.t()) :: MacroOutput.t()
+        Target.after_signatures()
+      end
+      ]
+
+      assert {:ok, entries, _} = index_everything(source)
+      calls = Enum.filter(entries, &(&1.type == {:function, :usage}))
+      assert Enum.map(calls, &{&1.subject, &1.caller}) == [{"Target.after_signatures/0", "Owner"}]
+
+      modules = Enum.filter(entries, &(&1.type == :module and &1.subtype == :reference))
+
+      assert Enum.map(modules, & &1.subject) == [
+               Input,
+               Output,
+               Item,
+               PrivateItem,
+               Secret,
+               Request,
+               Response,
+               MacroInput,
+               MacroOutput,
+               Target
+             ]
+    end
+
     test "finds definitions when defining scalars" do
       {:ok, [attr], doc} =
         ~q[
