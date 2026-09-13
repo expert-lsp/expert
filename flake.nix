@@ -26,7 +26,7 @@
       perSystem =
         { lib, pkgs, ... }:
         let
-          beamPackages = pkgs.beamMinimal27Packages.extend (_: prev: { elixir = prev.elixir_1_17; });
+          beamPackages = pkgs.beamMinimal27Packages.overrideScope (_: prev: { elixir = prev.elixir_1_17; });
         in
         {
           formatter = pkgs.nixfmt;
