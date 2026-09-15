@@ -63,11 +63,20 @@ beamPackages.mixRelease rec {
   '';
 
   postInstall = ''
+    rm "$out/bin/start_expert"
     mv $out/bin/plain $out/bin/expert
     wrapProgram $out/bin/expert --add-flag "eval" --add-flag "System.no_halt(true); Application.ensure_all_started(:xp_expert)"
   '';
 
   removeCookie = false;
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    test "$(ls "$out/bin")" = expert
+    test -x "$out/bin/expert"
+    runHook postInstallCheck
+  '';
 
   passthru = {
     # not used by package, but exposed for repl and direct build access
