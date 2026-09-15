@@ -144,6 +144,70 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
     end
   end
 
+  describe "bitstrings" do
+    test "folds a multi-line bitstring" do
+      source = """
+      payload = <<
+        1,
+        2
+      >>
+      """
+
+      assert fold(source) == [range(0, 2)]
+    end
+
+    test "folds nested bitstrings with segment types" do
+      source = """
+      <<
+        <<
+          1::size(8),
+          2
+        >>::binary,
+        3
+      >>
+      """
+
+      assert fold(source) == [range(0, 5), range(1, 3)]
+    end
+
+    test "folds bitstring patterns inside a function" do
+      source = """
+      def decode(payload) do
+        <<
+          tag::8,
+          rest::binary
+        >> = payload
+        {tag, rest}
+      end
+      """
+
+      assert fold(source) == [range(0, 5), range(1, 3)]
+    end
+
+    test "does not fold single-line or empty bitstrings" do
+      assert fold("<<1, 2>>\n") == []
+      assert fold("<<>>\n") == []
+      assert fold("<<\n>>\n") == []
+    end
+
+    test "does not fold a bitstring without a closing delimiter" do
+      assert fold("<<\n  1,\n  2\n") == []
+    end
+
+    test "does not treat sigil contents as bitstring delimiters" do
+      source = ~S'''
+      ~s"""
+      <<
+        1,
+        2
+      >>
+      """
+      '''
+
+      assert fold(source) == [range(0, 4)]
+    end
+  end
+
   describe "heredocs" do
     test "folds a multi-line @moduledoc heredoc" do
       source = """
