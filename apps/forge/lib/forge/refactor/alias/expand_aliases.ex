@@ -10,6 +10,9 @@ defmodule Forge.Refactor.Alias.ExpandAliases do
   alias Forge.Refactor.Alias
   alias Forge.Refactor.Module
 
+  def can_refactor?(%{node: {:alias, _, [{form, _, _} | _]}}, _) when is_atom(form),
+    do: :skip
+
   def can_refactor?(zipper, {:__block__, meta, [{a1, a2}]}),
     do: can_refactor?(zipper, {:__block__, meta, [a1, a2]})
 

@@ -6,6 +6,46 @@ defmodule Forge.Refactor.Alias.ExpandAliasesTest do
 
   alias Forge.Refactor.Alias.ExpandAliases
 
+  test "ignores already expanded aliases and their selected module names" do
+    for {target, options} <- [
+          {"Foo.Bar", ""},
+          {"Foo.Bar", ", as: Baz"},
+          {"__MODULE__.Bar", ""},
+          {":lists", ", as: Lists"}
+        ] do
+      declaration = "alias #{target}#{options}"
+      zipper = text_to_zipper("defmodule Example do\n  #{declaration}\nend")
+
+      for {text, column} <- [{declaration, 3}, {target, 9}] do
+        selection = Sourceror.parse_string!(text, line: 2, column: column)
+
+        assert Forge.Refactor.list(zipper, selection, [ExpandAliases]) == []
+        assert Forge.Refactor.execute(zipper, selection, ExpandAliases) == :error
+      end
+    end
+  end
+
+  test "expands grouped aliases after an already expanded alias" do
+    assert_refactored(
+      ExpandAliases,
+      """
+      defmodule Foo do
+        alias Qez.Alpha
+      # v
+        alias Qez.{Bar, Delta}
+      #                      ^
+      end
+      """,
+      """
+      defmodule Foo do
+        alias Qez.Alpha
+        alias Qez.Bar
+        alias Qez.Delta
+      end
+      """
+    )
+  end
+
   test "expands the selected nested alias" do
     assert_refactored(
       ExpandAliases,
