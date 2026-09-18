@@ -34,26 +34,26 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   end
 
   defp ranges_from(ast, comments) do
-    block_ranges(ast) ++ string_ranges(ast) ++ comment_ranges(comments)
-  end
-
-  defp block_ranges(ast) do
-    {_, ranges} =
-      Macro.prewalk(ast, [], fn
-        {:fn, meta, _clauses} = node, acc when is_list(meta) ->
-          {node, collect_anonymous_function(meta, acc)}
-
-        {_form, meta, _args} = node, acc when is_list(meta) ->
-          {node, collect_block(meta, acc)}
-
-        node, acc ->
-          {node, acc}
+    {_, {blocks, strings}} =
+      Macro.prewalk(ast, {[], []}, fn node, {blocks, strings} ->
+        {node, {collect_block_range(node, blocks), collect_string_range(node, strings)}}
       end)
 
-    ranges
-    |> Enum.map(&to_block_folding_range/1)
-    |> Enum.reject(&is_nil/1)
+    block_ranges =
+      blocks
+      |> Enum.map(&to_block_folding_range/1)
+      |> Enum.reject(&is_nil/1)
+
+    block_ranges ++ Enum.reject(strings, &is_nil/1) ++ comment_ranges(comments)
   end
+
+  defp collect_block_range({:fn, meta, _clauses}, acc) when is_list(meta),
+    do: collect_anonymous_function(meta, acc)
+
+  defp collect_block_range({_form, meta, _args}, acc) when is_list(meta),
+    do: collect_block(meta, acc)
+
+  defp collect_block_range(_node, acc), do: acc
 
   defp collect_block(meta, acc) do
     do_line = meta_line(meta, :do)
@@ -93,26 +93,20 @@ defmodule Expert.Provider.Handlers.CodeFolding do
     end
   end
 
-  defp string_ranges(ast) do
-    {_, ranges} =
-      Macro.prewalk(ast, [], fn
-        {:__block__, meta, [str]} = node, acc when is_binary(str) and is_list(meta) ->
-          {node, collect_string(meta, str, acc)}
+  defp collect_string_range({:__block__, meta, [str]}, acc)
+       when is_binary(str) and is_list(meta),
+       do: collect_string(meta, str, acc)
 
-        {sigil, meta, [{:<<>>, _, [str]}, _mods]} = node, acc
-        when is_atom(sigil) and is_binary(str) and is_list(meta) ->
-          if match?("sigil_" <> _, Atom.to_string(sigil)) do
-            {node, collect_string(meta, str, acc)}
-          else
-            {node, acc}
-          end
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    Enum.reject(ranges, &is_nil/1)
+  defp collect_string_range({sigil, meta, [{:<<>>, _, [str]}, _mods]}, acc)
+       when is_atom(sigil) and is_binary(str) and is_list(meta) do
+    if match?("sigil_" <> _, Atom.to_string(sigil)) do
+      collect_string(meta, str, acc)
+    else
+      acc
+    end
   end
+
+  defp collect_string_range(_node, acc), do: acc
 
   defp collect_string(meta, str, acc) do
     start_line = Keyword.get(meta, :line)
