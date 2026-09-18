@@ -40,8 +40,8 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   defp block_ranges(ast) do
     {_, ranges} =
       Macro.prewalk(ast, [], fn
-        {:fn, meta, _clauses} = node, acc when is_list(meta) ->
-          {node, collect_anonymous_function(meta, acc)}
+        {form, meta, _args} = node, acc when form in [:fn, :<<>>] and is_list(meta) ->
+          {node, collect_delimited_block(meta, acc)}
 
         {_form, meta, _args} = node, acc when is_list(meta) ->
           {node, collect_block(meta, acc)}
@@ -66,7 +66,7 @@ defmodule Expert.Provider.Handlers.CodeFolding do
     end
   end
 
-  defp collect_anonymous_function(meta, acc) do
+  defp collect_delimited_block(meta, acc) do
     opening_line = Keyword.get(meta, :line)
     closing_line = meta_line(meta, :closing)
 
