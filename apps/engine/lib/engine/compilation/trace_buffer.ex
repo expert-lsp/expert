@@ -50,14 +50,13 @@ defmodule Engine.Compilation.TraceBuffer do
   @impl GenServer
   def handle_cast({:record_module, path, binary, module}, state) do
     definitions =
-      module
-      |> Module.definitions_in()
-      |> Enum.flat_map(fn definition ->
-        case Module.get_definition(module, definition, skip_clauses: true) do
-          {:v1, kind, metadata, []} -> [{definition, kind, metadata}]
-          _ -> []
-        end
-      end)
+      case Beams.debug_metadata_from_binary(binary) do
+        {:ok, metadata} ->
+          for {def, kind, meta, _} <- metadata[:definitions], do: {def, kind, meta}
+
+        _ ->
+          []
+      end
 
     true =
       :ets.insert(
