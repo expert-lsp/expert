@@ -302,12 +302,13 @@ defmodule Forge.Ast.Analysis do
     {skip_leading_do(quoted), new_state}
   end
 
-  # defimpl Foo, for: SomeProtocol do
+  # defimpl Foo, for: Bar do ... end
+  # defimpl Foo, for: Bar, do: ...
   defp analyze_node(
          {:defimpl, _meta,
           [
             {:__aliases__, _, protocol_segments},
-            [{_for_keyword, {:__aliases__, _, for_segments}}] | _
+            [{{:__block__, _, [:for]}, {:__aliases__, _, for_segments}} | _] | _
           ]} = quoted,
          state
        ) do

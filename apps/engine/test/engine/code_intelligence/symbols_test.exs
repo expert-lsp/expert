@@ -569,6 +569,27 @@ defmodule Engine.CodeIntelligence.SymbolsTest do
       assert function.children == []
     end
 
+    test "preserves bodyless default headers in a partial AST" do
+      {[module], doc} =
+        ~q[
+        defmodule MyModule do
+          def valid_function(arg \\ :default)
+
+          def broken_function(arg do
+            :error
+          end
+        end
+        ]
+        |> document_symbols()
+
+      assert [zero_arity, one_arity] = module.children
+      assert zero_arity.subject == "MyModule.valid_function/0"
+      assert one_arity.subject == "MyModule.valid_function/1"
+      assert zero_arity.type == {:function, :public}
+      assert one_arity.type == {:function, :public}
+      assert extract(doc, one_arity.detail_range) == ~S"valid_function(arg \\ :default)"
+    end
+
     test "returns symbols for invalid code with module attributes" do
       {symbols, doc} =
         ~q[
@@ -756,7 +777,7 @@ defmodule Engine.CodeIntelligence.SymbolsTest do
       assert function.name == "SomeProtocol.Atom.do_stuff/2"
     end
 
-    test "converts protocol definitions" do
+    test "converts bodyless protocol declarations to public function symbols" do
       {[protocol, function], _doc, _uri} =
         ~q[
           defprotocol MyProto do
@@ -768,7 +789,7 @@ defmodule Engine.CodeIntelligence.SymbolsTest do
       assert protocol.type == {:protocol, :definition}
       assert protocol.name == "MyProto"
 
-      assert function.type == {:function, :usage}
+      assert function.type == {:function, :public}
       assert function.name == "MyProto.do_stuff/2"
     end
   end

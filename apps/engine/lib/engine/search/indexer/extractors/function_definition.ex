@@ -8,9 +8,10 @@ defmodule Engine.Search.Indexer.Extractors.FunctionDefinition do
 
   @function_definitions [:def, :defp, :defmacro, :defmacrop]
 
-  def extract({definition, _, [{fn_name, _, args} = def_ast, body]} = ast, %Reducer{} = reducer)
+  def extract({definition, _, [{fn_name, _, _} = def_ast | body]} = ast, %Reducer{} = reducer)
       when is_atom(fn_name) and definition in @function_definitions do
     with {:ok, detail_range} <- Ast.Range.fetch(def_ast, reducer.analysis.document),
+         true <- valid_bodyless_head?(body, reducer.analysis, detail_range),
          {:ok, module} <- Analyzer.current_module(reducer.analysis, detail_range.start),
          {fun_name, arity} when is_atom(fun_name) <- fun_name_and_arity(def_ast) do
       min_arity = arity - count_defaults(extract_args(def_ast))
@@ -31,7 +32,13 @@ defmodule Engine.Search.Indexer.Extractors.FunctionDefinition do
           )
         end
 
-      {:ok, entries, [args, body]}
+      args_and_guards =
+        case def_ast do
+          {:when, _, [{_, _, args} | guards]} -> [args | guards]
+          {_, _, args} -> args
+        end
+
+      {:ok, entries, [args_and_guards, body]}
     else
       _ ->
         :ignored
@@ -104,6 +111,14 @@ defmodule Engine.Search.Indexer.Extractors.FunctionDefinition do
 
   defp extract_args({:when, _, [{_fun_name, _, fun_args} | _]}), do: fun_args || []
   defp extract_args({_fun_name, _, fun_args}), do: fun_args || []
+
+  defp valid_bodyless_head?([], %Analysis{valid?: false, document: document}, range) do
+    # Partial AST can make `def run(arg do ... end` look like a bodyless declaration.
+    source = Forge.Document.fragment(document, range.start, range.end)
+    match?({:ok, _}, Code.string_to_quoted(source))
+  end
+
+  defp valid_bodyless_head?(_body, _analysis, _range), do: true
 
   defp count_defaults(args) do
     Enum.count(args, &match?({:\\, _, _}, &1))

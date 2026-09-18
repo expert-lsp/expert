@@ -135,6 +135,13 @@ defmodule Expert do
            message: "Document could not be loaded"
          }, lsp}
 
+      {:error, :invalid_call_hierarchy_item} ->
+        {:reply,
+         %GenLSP.ErrorResponse{
+           code: GenLSP.Enumerations.ErrorCodes.invalid_params(),
+           message: "Call hierarchy item has missing or unknown project context"
+         }, lsp}
+
       error ->
         message = "Failed to handle #{request.method}, #{inspect(error)}"
         Logger.error(message)
@@ -165,6 +172,9 @@ defmodule Expert do
       {:ok, nil}
     end
   end
+
+  defp document_request?(%{item: %GenLSP.Structures.CallHierarchyItem{uri: uri}})
+       when is_binary(uri), do: true
 
   defp document_request?(%{document: %Forge.Document{}}), do: true
 
@@ -559,6 +569,15 @@ defmodule Expert do
 
       %GenLSP.Requests.WorkspaceSymbol{} ->
         {:ok, Handlers.WorkspaceSymbol}
+
+      %GenLSP.Requests.TextDocumentPrepareCallHierarchy{} ->
+        {:ok, Handlers.CallHierarchy}
+
+      %GenLSP.Requests.CallHierarchyIncomingCalls{} ->
+        {:ok, Handlers.CallHierarchy}
+
+      %GenLSP.Requests.CallHierarchyOutgoingCalls{} ->
+        {:ok, Handlers.CallHierarchy}
 
       %request_module{} ->
         {:error, {:unhandled, request_module}}
