@@ -64,7 +64,7 @@ defmodule Engine.CodeIntelligence.Variable do
     entries
     |> Enum.find(fn %Entry{} = entry ->
       entry.subject == variable_name and entry.type == :variable and
-        Range.contains?(entry.range, position)
+        Range.contains_cursor?(entry.range, position)
     end)
     |> case do
       %Entry{} = entry ->

@@ -40,7 +40,7 @@ defmodule Forge.Ast.Detection.String do
   # a string literal
   defp do_detect({:__block__, _, [literal]} = ast, %Position{} = position)
        when is_binary(literal) do
-    case fetch_range(ast, 0, -1) do
+    case fetch_range(ast, 0, 0) do
       {:ok, range} -> Range.contains?(range, position)
       :error -> false
     end
@@ -74,7 +74,7 @@ defmodule Forge.Ast.Detection.String do
       |> Keyword.get(:delimiter, "\"")
       |> String.length()
 
-    with {:ok, string_range} <- fetch_range(ast, delimiter_length, -1),
+    with {:ok, string_range} <- fetch_range(ast, delimiter_length, 0),
          {:ok, interpolation_ranges} <- collect_interpolation_ranges(interpolations) do
       Range.contains?(string_range, position) and
         not Enum.any?(interpolation_ranges, &Range.contains?(&1, position))
@@ -91,7 +91,7 @@ defmodule Forge.Ast.Detection.String do
           {ast, :error}
 
         {:"::", _, _} = interpolation, {:ok, acc} ->
-          case fetch_range(interpolation, 1, -1) do
+          case fetch_range(interpolation, 1, 0) do
             {:ok, range} ->
               {interpolation, {:ok, [range | acc]}}
 
