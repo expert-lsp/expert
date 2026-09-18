@@ -412,6 +412,7 @@ defmodule Expert.State do
         code_lens_provider: code_lens_options,
         completion_provider: completion_options,
         definition_provider: true,
+        implementation_provider: true,
         document_formatting_provider: true,
         document_symbol_provider: true,
         execute_command_provider: command_options,

@@ -97,6 +97,10 @@ defmodule Expert.EngineApi do
     call(project, Engine, :definition, [document, position])
   end
 
+  def implementation(%Project{} = project, %Document{} = document, %Position{} = position) do
+    call(project, Engine, :implementation, [document, position])
+  end
+
   def hover(%Project{} = project, %Document{} = document, %Position{} = position) do
     call(project, Engine, :hover, [document, position])
   end
