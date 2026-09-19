@@ -4,18 +4,20 @@ defmodule Forge.Ast.Analysis.Alias do
   alias Forge.Document.Position
   alias Forge.Document.Range
 
-  defstruct [:module, :as, :range, explicit?: true]
+  defstruct [:module, :as, :range, explicit?: true, explicit_as?: false]
 
   @type t :: %__MODULE__{
           module: [atom],
           as: [module()],
-          range: Range.t() | nil
+          range: Range.t() | nil,
+          explicit_as?: boolean()
         }
 
-  def explicit(%Document{} = document, ast, module, as) when is_list(module) do
+  def explicit(%Document{} = document, ast, module, as, explicit_as? \\ false)
+      when is_list(module) do
     as = List.wrap(as)
     range = range_for_ast(document, ast, module, as)
-    %__MODULE__{module: module, as: as, range: range}
+    %__MODULE__{module: module, as: as, range: range, explicit_as?: explicit_as?}
   end
 
   def implicit(%Document{} = document, ast, module, as) when is_list(module) do

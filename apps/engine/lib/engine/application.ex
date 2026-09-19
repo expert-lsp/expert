@@ -14,6 +14,7 @@ defmodule Engine.Application do
           Engine.CodeMod.Format.Cache,
           Engine.Api.Proxy,
           Engine.Commands.Reindex,
+          Engine.Commands.RenameSupervisor,
           Engine.Module.Loader,
           Engine.Compilation.TraceBuffer,
           Engine.Dispatch,
