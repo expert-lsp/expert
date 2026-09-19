@@ -30,29 +30,26 @@ defmodule Engine.Bootstrap do
          {:ok, _} <- Application.ensure_all_started(:elixir),
          {:ok, _} <- Application.ensure_all_started(:mix),
          {:ok, _} <- Application.ensure_all_started(:logger) do
-      project = maybe_load_mix_exs(project)
-
       with :ok <- Project.ensure_workspace(project) do
         Engine.set_project(project)
         Engine.set_manager_node(manager_node)
         Mix.env(:test)
         set_mix_build_path(project)
-
-        maybe_load_project_config(project)
+        load_project(project)
 
         ExUnit.start()
         start_logger(project)
-        maybe_change_directory(project)
+        maybe_change_directory(Engine.get_project())
         :ok
       end
     end
   end
 
-  defp maybe_load_project_config(%Project{kind: :mix} = project) do
-    Engine.Mix.in_project(project, fn _ -> Mix.Task.run(:loadconfig) end)
+  defp load_project(%Project{kind: :mix} = project) do
+    Engine.Mix.reload_project(project)
   end
 
-  defp maybe_load_project_config(%Project{}) do
+  defp load_project(%Project{}) do
     :ok
   end
 
@@ -104,6 +101,8 @@ defmodule Engine.Bootstrap do
     LogFilter.hook_into_logger()
   end
 
+  defp maybe_change_directory(%Project{project_module: nil}), do: :ok
+
   defp maybe_change_directory(%Project{kind: :mix} = project) do
     current_dir = File.cwd!()
 
@@ -128,41 +127,4 @@ defmodule Engine.Bootstrap do
   defp maybe_change_directory(%Project{}) do
     :ok
   end
-
-  defp maybe_load_mix_exs(%Project{} = project) do
-    # The reason this function exists is to support projects that have the same name as
-    # one of their dependencies. Prior to this, the project name was based off the directory
-    # name of the project, and if that's the same as a dependency, the mix project stack will
-    # raise an error during `deps.safe_compile`, as a project with the same name was already defined.
-    # Mix itself uses the name of the module that the mix.exs defines as the project name, and I figured
-    # this was a safe default.
-
-    with path when is_binary(path) <- Project.mix_exs_path(project),
-         compiled = Code.compile_file(path),
-         {:ok, project_module} <- find_mix_project_module(compiled) do
-      # We've found the mix project module, but it's now been added to the
-      # project stack. We need to clear the stack because we use `in_mix_project`, and
-      # that will fail if the current project is already in the project stack.
-      # Restarting mix will clear the stack without using private APIs.
-      Application.stop(:mix)
-      Application.ensure_all_started(:mix)
-      Project.set_project_module(project, project_module)
-    else
-      _ ->
-        project
-    end
-  end
-
-  defp find_mix_project_module(module_list) do
-    case Enum.find(module_list, &project_module?/1) do
-      {module, _bytecode} -> {:ok, module}
-      nil -> :error
-    end
-  end
-
-  defp project_module?({module, _bytecode}) do
-    function_exported?(module, :project, 0)
-  end
-
-  defp project_module?(_), do: false
 end

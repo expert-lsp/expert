@@ -4,7 +4,9 @@ defmodule Expert.Project.Intelligence do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
+  alias Expert.Search.Store
   alias Forge.Project
+  alias Forge.Search.Indexer.Entry
 
   defmodule State do
     alias Forge.Formats
@@ -212,7 +214,11 @@ defmodule Expert.Project.Intelligence do
 
   @impl GenServer
   def handle_info(project_index_ready(), %State{} = state) do
-    {:ok, struct_definitions} = EngineApi.struct_definitions(state.project)
+    struct_definitions =
+      case Store.exact(state.project, :_, type: :struct, subtype: :definition) do
+        {:ok, entries} -> for %Entry{subject: module} <- entries, do: module
+        _ -> []
+      end
 
     state =
       Enum.reduce(struct_definitions, State.new(state.project), fn module, state ->

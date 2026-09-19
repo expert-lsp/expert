@@ -154,7 +154,11 @@ defmodule Engine.CodeMod.FormatTest do
 
     File.write!(Path.join(lib_dir, "format.ex"), "my_dsl :foo\n")
 
-    Project.new(Document.Path.to_uri(root))
+    project = Project.new(Document.Path.to_uri(root))
+
+    Mix.Project.in_project(app, root, fn module ->
+      Project.set_project_module(project, module)
+    end)
   end
 
   setup do

@@ -153,10 +153,6 @@ defmodule Expert.EngineApi do
     call(project, Engine, :resolve_entity, [analysis, position])
   end
 
-  def struct_definitions(%Project{} = project) do
-    call(project, Engine, :struct_definitions, [])
-  end
-
   def document_symbols(%Project{} = project, %Document{} = document) do
     call(project, Engine, :document_symbols, [document])
   end

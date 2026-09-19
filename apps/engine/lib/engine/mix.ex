@@ -1,11 +1,155 @@
 defmodule Engine.Mix do
+  alias Engine.Build.Isolation
   alias Forge.Internet
   alias Forge.Project
 
   require Logger
 
+  @modules_key {__MODULE__, :root_modules}
+
   def loaded? do
     not is_nil(Mix.Project.get())
+  end
+
+  def project_file?(path) do
+    path = Path.expand(path)
+
+    Path.basename(path) == "mix.exs" or
+      case Engine.get_project() do
+        %Project{} = project ->
+          project_path = Project.mix_exs_path(project)
+          is_binary(project_path) and Path.expand(project_path) == path
+
+        nil ->
+          false
+      end
+  end
+
+  @doc "Reloads the saved Mix project and runs the build before releasing the project lock."
+  def reload_project(%Project{} = project, fun \\ fn _project -> {:ok, []} end) do
+    with_lock(fn ->
+      File.cd!(Project.root_path(project), fn ->
+        case load_project(project) do
+          {:ok, loaded, diagnostics} ->
+            Engine.set_project(loaded)
+            Project.put_config(loaded, Mix.Project.config())
+            {status, build_diagnostics} = fun.(loaded)
+
+            {status, diagnostics ++ build_diagnostics}
+
+          {:error, diagnostics} ->
+            mark_project_unavailable(project)
+            {:error, diagnostics}
+        end
+      end)
+    end)
+  end
+
+  defp load_project(project) do
+    clear_project()
+    Project.put_config(project, [])
+    path = Project.mix_exs_path(project)
+    env = Mix.env()
+    target = Mix.target()
+    compiler_options = Code.compiler_options()
+
+    try do
+      Code.compiler_options(
+        tracers: [],
+        ignore_module_conflict: true,
+        no_warn_undefined: :all,
+        relative_paths: false
+      )
+
+      Mix.ProjectStack.post_config(
+        build_path: Project.versioned_build_path(project),
+        prune_code_paths: false
+      )
+
+      case Isolation.with_diagnostics(path, fn -> compile_project_file(project, path) end) do
+        {:ok, loaded, diagnostics} ->
+          {:ok, loaded, diagnostics}
+
+        {:error, diagnostics} ->
+          unload_modules(modules_loaded_from(path))
+          clear_project()
+          {:error, diagnostics}
+      end
+    after
+      Code.compiler_options(compiler_options)
+      Mix.env(env)
+      Mix.target(target)
+    end
+  end
+
+  defp compile_project_file(project, path) do
+    modules = for {module, _binary} <- Code.compile_file(path), do: module
+    :persistent_term.put(@modules_key, modules)
+    module = Mix.Project.get()
+    file = Mix.Project.project_file()
+
+    if is_nil(module) or not is_binary(file) or Path.expand(file) != Path.expand(path) do
+      Mix.raise("mix.exs does not define a Mix project")
+    end
+
+    Mix.Task.run(:loadconfig)
+    Project.set_project_module(project, module)
+  end
+
+  defp clear_project do
+    for {app, values} <- Mix.State.read_cache(Mix.Tasks.Loadconfig) || [],
+        app == :logger or app not in Engine.required_apps(),
+        {key, _value} <- values do
+      Application.delete_env(app, key, persistent: true)
+    end
+
+    # Mix caches each dependency's project module and source path. Collect these
+    # before clearing the cache, including children from a failed dependency load.
+    children =
+      for {{Mix.State, {:app, _app}}, {module, _file}} <- :persistent_term.get(),
+          is_atom(module) and not is_nil(module),
+          do: module
+
+    modules = pop_projects(:persistent_term.get(@modules_key, []) ++ children)
+    Mix.ProjectStack.clear_stack()
+    Mix.State.clear_cache()
+    Mix.Task.clear()
+    :persistent_term.erase(@modules_key)
+    unload_modules(Enum.uniq(modules))
+  end
+
+  defp pop_projects(modules) do
+    case Mix.Project.pop() do
+      nil -> modules
+      %{name: nil} -> pop_projects(modules)
+      %{name: module} -> pop_projects([module | modules])
+    end
+  end
+
+  defp unload_modules(modules) do
+    Enum.each(modules, fn module ->
+      :code.purge(module)
+      :code.delete(module)
+      :code.purge(module)
+    end)
+
+    if Process.whereis(Engine.Module.Loader) do
+      Engine.Module.Loader.forget(modules)
+    end
+  end
+
+  defp modules_loaded_from(path) do
+    path = Path.expand(path)
+
+    for {module, []} <- :code.all_loaded(),
+        source when not is_nil(source) <- [module.module_info(:compile)[:source]],
+        Path.expand(to_string(source)) == path,
+        do: module
+  end
+
+  defp mark_project_unavailable(%Project{} = project) do
+    Engine.set_project(Project.set_project_module(project, nil))
+    Project.put_config(project, [])
   end
 
   def ensure_hex_and_rebar do
@@ -34,7 +178,28 @@ defmodule Engine.Mix do
   end
 
   def in_project(%Project{kind: :mix} = project, fun) do
-    with_lock(fn -> run_and_normalize(fn -> in_loaded_project(project, fun) end) end)
+    with_lock(fn ->
+      case Engine.get_project() do
+        %Project{root_uri: root_uri, entropy: entropy, project_module: nil}
+        when root_uri == project.root_uri and entropy == project.entropy ->
+          {:error, :project_not_loaded}
+
+        _ ->
+          project = current_project(project)
+          run_and_normalize(fn -> in_loaded_project(project, fun) end)
+      end
+    end)
+  end
+
+  defp current_project(project) do
+    case Engine.get_project() do
+      %Project{root_uri: root_uri, entropy: entropy} = current
+      when root_uri == project.root_uri and entropy == project.entropy ->
+        current
+
+      _ ->
+        project
+    end
   end
 
   def deps_paths do
@@ -177,9 +342,18 @@ defmodule Engine.Mix do
   defp release_project(:pushed), do: Mix.Project.pop()
 
   defp pushed_module(%Project{} = project) do
-    if Mix.Project.project_file() == Project.mix_exs_path(project) do
+    project_file = Mix.Project.project_file()
+
+    if is_binary(project_file) and
+         normalize_path(project_file) == normalize_path(Project.mix_exs_path(project)) do
       Mix.Project.get()
     end
+  end
+
+  defp normalize_path(path) do
+    path
+    |> Forge.Path.normalize()
+    |> Path.expand()
   end
 
   defp push_project(%Project{} = project) do

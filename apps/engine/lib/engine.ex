@@ -14,6 +14,8 @@ defmodule Engine do
   @excluded_apps [:patch, :nimble_parsec]
   @allowed_apps [:engine | Mix.Project.deps_apps()] -- @excluded_apps
 
+  def required_apps, do: [:elixir, :mix, :logger, :kernel, :stdlib | @allowed_apps]
+
   defdelegate schedule_compile(force?), to: Proxy
 
   defdelegate compile_document(document), to: Proxy
@@ -62,8 +64,6 @@ defmodule Engine do
   defdelegate register_listener(listener_pid, message_types), to: Engine.Dispatch
 
   defdelegate resolve_entity(analysis, position), to: CodeIntelligence.Entity, as: :resolve
-
-  defdelegate struct_definitions, to: CodeIntelligence.Structs, as: :for_project
 
   defdelegate document_symbols(document), to: CodeIntelligence.Symbols, as: :for_document
 

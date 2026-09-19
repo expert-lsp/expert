@@ -89,6 +89,57 @@ defmodule Engine.Build.Error do
     end
   end
 
+  def diagnostics_from_mix(fallback_path, diagnostics) when is_binary(fallback_path) do
+    Enum.map(diagnostics, fn diagnostic ->
+      Diagnostic.new(
+        diagnostic[:file] || fallback_path,
+        if(diagnostic.position == 0, do: 1, else: diagnostic.position),
+        diagnostic.message,
+        diagnostic.severity,
+        @elixir_source
+      )
+    end)
+  end
+
+  @doc "Converts a saved project failure into a diagnostic with its source location."
+  def from_failure(path, {kind, reason, stack}) do
+    {file, position} = failure_location(path, reason, stack)
+
+    message =
+      case kind do
+        :error -> Exception.message(Exception.normalize(:error, reason, stack))
+        :exit -> "mix.exs compilation exited: #{inspect(reason)}"
+        :throw -> "mix.exs compilation threw: #{inspect(reason)}"
+      end
+
+    Diagnostic.new(file, position, message, :error, @elixir_source)
+  end
+
+  defp failure_location(_path, %{file: file, line: line, column: column}, _stack)
+       when is_binary(file) and is_integer(line) and line > 0 and
+              is_integer(column) and column > 0 do
+    {file, {line, column}}
+  end
+
+  defp failure_location(_path, %{file: file, line: line}, _stack)
+       when is_binary(file) and is_integer(line) and line > 0 do
+    {file, line}
+  end
+
+  defp failure_location(path, _reason, stack) do
+    root = Path.dirname(path)
+
+    Enum.find_value(stack, {path, 1}, fn {_module, _function, _arity, metadata} ->
+      with file when not is_nil(file) <- metadata[:file],
+           file = Path.expand(to_string(file)),
+           true <- Forge.Path.contains?(file, root) do
+        {file, metadata[:line] || 1}
+      else
+        _ -> nil
+      end
+    end)
+  end
+
   def error_to_diagnostic(
         %Document{} = source,
         %CompileError{} = compile_error,

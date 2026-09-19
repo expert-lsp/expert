@@ -15,8 +15,7 @@ defmodule Engine.Build do
   end
 
   def compile_document(%Project{} = _project, %Document{} = document) do
-    with false <- Path.absname(document.path) == "mix.exs",
-         false <- HEEx.recognizes?(document) do
+    with false <- HEEx.recognizes?(document) do
       GenServer.cast(__MODULE__, {:compile_file, document})
     end
 
@@ -25,8 +24,7 @@ defmodule Engine.Build do
 
   # this is for testing
   def force_compile_document(%Document{} = document) do
-    with false <- Path.absname(document.path) == "mix.exs",
-         false <- HEEx.recognizes?(document) do
+    with false <- HEEx.recognizes?(document) do
       GenServer.call(__MODULE__, {:force_compile_file, document})
     end
 

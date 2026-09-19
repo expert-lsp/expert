@@ -126,18 +126,66 @@ defmodule Forge.Project.Diagnostics.StateTest do
       assert ^old_diagnostics = State.get(state, document.uri)
     end
 
-    test "it should not clear a script file even if it is clean", %{
+    test "it should not clear file diagnostics for a script even if it is clean", %{
       state: state,
       project: project
     } do
-      script_file_path = Path.join([Project.root_path(project), "test", "*.exs"])
+      script_file_path = Path.join([Project.root_path(project), "test", "example_test.exs"])
       document = document("assert f() == 0", script_file_path)
 
-      state = State.add(state, 1, diagnostic(message: "undefined function f/0"))
+      diagnostic = diagnostic(file: document.uri, message: "undefined function f/0")
+      state = State.add_file(state, 1, diagnostic)
 
-      old_diagnostics = State.get(state, document.uri)
+      assert [^diagnostic] = State.get(state, document.uri)
       state = State.clear_all_flushed(state)
-      assert ^old_diagnostics = State.get(state, document.uri)
+      assert [^diagnostic] = State.get(state, document.uri)
+    end
+
+    test "clears saved diagnostics for a child project file", %{state: state, project: project} do
+      document =
+        "old contents"
+        |> document(Path.join(Project.root_path(project), "apps/child/mix.exs"))
+        |> change_with("saved contents")
+
+      diagnostic = diagnostic(file: document.uri)
+      state = State.add_file(state, 1, diagnostic)
+
+      assert [^diagnostic] = State.get(state, document.uri)
+      :ok = Document.Store.save(document.uri)
+
+      state = State.clear_all_flushed(state)
+
+      assert [] = State.get(state, document.uri)
+      assert %{document.uri => []} == State.diagnostics_by_uri(state)
+    end
+
+    test "clears saved diagnostics for the configured project file", %{
+      state: state,
+      project: project
+    } do
+      document =
+        "old contents"
+        |> document(Path.join(Project.root_path(project), "custom_project.exs"))
+        |> change_with("saved contents")
+
+      diagnostic = diagnostic(file: document.uri)
+      state = %{state | project: %{project | mix_exs_uri: document.uri}}
+      state = State.add_file(state, 1, diagnostic)
+      :ok = Document.Store.save(document.uri)
+
+      assert [] = state |> State.clear_all_flushed() |> State.get(document.uri)
+    end
+
+    test "keeps diagnostics for an unsaved project file", %{state: state, project: project} do
+      document =
+        "saved contents"
+        |> document(Path.join(Project.root_path(project), "mix.exs"))
+        |> change_with("unsaved contents")
+
+      diagnostic = diagnostic(file: document.uri)
+      state = State.add_file(state, 1, diagnostic)
+
+      assert [^diagnostic] = state |> State.clear_all_flushed() |> State.get(document.uri)
     end
 
     test "it should clear a file's diagnostics if it is just open", %{state: state} do
