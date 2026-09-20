@@ -678,6 +678,58 @@ defmodule Engine.CodeIntelligence.SymbolsTest do
       assert module.name == "MyModule"
       assert module.type == :module
     end
+
+    # These shapes come from real-world files (scripts, generated files,
+    # buffers that are not Elixir modules). No matter the file's shape, the
+    # API must always return a (possibly empty) list of symbols rather than
+    # raising.
+    test "an empty document returns an empty list" do
+      assert {[], _doc} = "" |> document_symbols()
+    end
+
+    test "a document with only whitespace returns an empty list" do
+      assert {[], _doc} = "\n\n  \n" |> document_symbols()
+    end
+
+    test "a document with only comments returns an empty list" do
+      assert {[], _doc} =
+               ~q[
+               # a comment
+
+               # another comment
+               ]
+               |> document_symbols()
+    end
+
+    test "a document with only module attributes returns an empty list" do
+      assert {[], _doc} =
+               ~q[
+               @moduledoc """
+               Just a moduledoc
+               """
+               ]
+               |> document_symbols()
+    end
+
+    test "a script-style document without any module returns an empty list" do
+      assert {[], _doc} =
+               ~q"""
+               IO.puts("running a script")
+
+               [1, 2, 3]
+               |> Enum.map(&(&1 * 2))
+               |> IO.inspect()
+               """
+               |> document_symbols()
+    end
+
+    test "a document with only a sigil returns an empty list" do
+      assert {[], _doc} = ~s(some text) |> document_symbols()
+    end
+
+    test "a document with unicode-only content returns an empty list" do
+      assert {[], _doc} = "# ünïcødé 中文 🚀\n" |> document_symbols()
+    end
   end
 
   describe "workspace symbols" do

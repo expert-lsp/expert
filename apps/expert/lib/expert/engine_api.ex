@@ -161,6 +161,12 @@ defmodule Expert.EngineApi do
     call(project, Engine, :document_symbols, [document])
   end
 
+  # A handler that cannot resolve the request's document (for example, a
+  # documentSymbol request for a file that is not present in the document
+  # store) falls back to nil. Treat that as "no symbols" rather than
+  # crashing with a FunctionClauseError.
+  def document_symbols(%Project{} = _project, nil), do: []
+
   def workspace_symbols(%Project{} = project, query) do
     call(project, Engine, :workspace_symbols, [query])
   end

@@ -375,7 +375,6 @@ So, first install the extension and then update your `settings.json` to use Expe
       "language_servers": [
         "expert",
         "!elixir-ls",
-        "!next-ls",
         "!lexical",
         "..."
       ]
