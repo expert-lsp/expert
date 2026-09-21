@@ -1,291 +1,168 @@
 defmodule Expert.Search.Indexer.Paths do
+  alias Expert.EngineApi
+  alias Forge.Document
   alias Forge.Project
 
   @indexable_extensions "*.{ex,exs}"
 
-  defstruct source_paths: [], beam_paths: []
+  defstruct source_paths: [], beam_paths: [], applications: %{}
 
   @type t :: %__MODULE__{
           source_paths: [Path.t()],
-          beam_paths: [Path.t()]
+          beam_paths: [Path.t()],
+          applications: %{optional(Path.t()) => atom()}
         }
 
   def for_project(%Project{} = project) do
-    %__MODULE__{
-      source_paths: source_paths(project),
-      beam_paths: beam_paths(project)
-    }
+    for_project(project, &EngineApi.project_configuration(project, &1))
   end
 
-  def indexable_files(%Project{} = project) do
-    source_paths(project)
+  def for_project(%Project{kind: :bare} = project, _configuration) do
+    %__MODULE__{source_paths: source_files(Project.root_path(project), [])}
   end
 
-  defp source_paths(%Project{} = project) do
-    source_roots = source_index_roots(project)
-    dependency_roots = dependency_roots(project)
-    roots_with_build_outputs = source_roots ++ dependency_roots
-    excluded_roots = dependency_roots ++ build_exclusion_roots(project, roots_with_build_outputs)
-
-    source_roots
-    |> Enum.flat_map(&indexable_files_in/1)
-    |> Enum.uniq()
-    |> reject_paths_under(excluded_roots)
-  end
-
-  defp indexable_files_in(root) do
-    Forge.Path.glob([root, "**", @indexable_extensions])
-  end
-
-  defp source_index_roots(%Project{} = project) do
-    project
-    |> Project.root_path()
-    |> List.wrap()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp reject_paths_under(paths, []), do: paths
-
-  defp reject_paths_under(paths, roots) do
-    Enum.reject(paths, &contained_in_any?(&1, roots))
-  end
-
-  defp contained_in_any?(path, roots) do
-    Enum.any?(roots, &Forge.Path.contains?(path, &1))
-  end
-
-  defp beam_paths(%Project{kind: :mix} = project) do
-    build_dir = build_dir(project)
-    dependency_app_names = dependency_app_names(project)
-
-    build_dir
-    |> beam_app_paths()
-    |> Enum.filter(fn app_path ->
-      Path.basename(app_path) in dependency_app_names
-    end)
-    |> Enum.flat_map(&beam_files/1)
-  end
-
-  defp beam_paths(%Project{}), do: []
-
-  @spec dependency_app_names(Project.t()) :: [String.t()]
-  defp dependency_app_names(%Project{} = project) do
-    (mix_dependency_app_names(project) ++ configured_dependency_app_names(project))
-    |> Enum.uniq()
-  end
-
-  @spec mix_dependency_app_names(Project.t()) :: [String.t()]
-  defp mix_dependency_app_names(%Project{} = project) do
-    case Engine.Mix.in_project(project, fn _ ->
-           Mix.Dep.clear_cached()
-           Mix.Project.clear_deps_cache()
-           Mix.Project.deps_apps()
-         end) do
-      {:ok, app_names} -> app_names |> Enum.map(&Atom.to_string/1) |> Enum.uniq()
-      _ -> []
-    end
-  end
-
-  @spec configured_dependency_app_names(Project.t()) :: [String.t()]
-  defp configured_dependency_app_names(%Project{} = project) do
-    configured_dependency_app_names(project, [])
-  end
-
-  @spec configured_dependency_app_names(Project.t(), [String.t()]) :: [String.t()]
-  defp configured_dependency_app_names(%Project{} = project, seen_roots) do
+  def for_project(%Project{} = project, configuration) do
     root = Project.root_path(project)
 
-    if root in seen_roots do
-      []
-    else
-      seen_roots = [root | seen_roots]
+    case configuration.(project) do
+      {:ok, info} ->
+        {configured_apps, dependency_roots} =
+          configured_dependencies(root, info, configuration, [])
 
-      case Engine.Mix.in_project(project, fn _ ->
-             config = Mix.Project.config()
-             env = Mix.env()
-             target = Mix.target()
+        resolved_apps =
+          case info.dependency_apps do
+            {:ok, apps} -> apps
+            {:error, _} -> []
+          end
 
-             {dependency_app_names(config, env, target),
-              path_dependency_paths(config, env, target)}
-           end) do
-        {:ok, {app_names, path_roots}} ->
-          Enum.reduce(path_roots, app_names, fn path_root, app_names ->
-            path_root
-            |> project_for_path()
-            |> configured_dependency_app_names(seen_roots)
-            |> Kernel.++(app_names)
-            |> Enum.uniq()
-          end)
+        dependency_apps = Enum.uniq(resolved_apps ++ configured_apps)
 
-        _ ->
-          []
-      end
+        project_apps =
+          case info.apps_paths do
+            nil -> List.wrap(info.config[:app])
+            apps -> Map.keys(apps)
+          end
+
+        dependency_roots = Enum.uniq([info.deps_path | dependency_roots])
+        build_root = configured_build_root(root, info)
+        relative_build_root = Path.relative_to(build_root, root)
+        build_roots = Enum.map([root | dependency_roots], &Path.expand(relative_build_root, &1))
+
+        excluded = [
+          Project.workspace_path(project),
+          info.build_path,
+          build_root | dependency_roots ++ build_roots
+        ]
+
+        sources = source_files(root, excluded)
+        dependencies = application_beams(info.build_path, dependency_apps)
+        project_beams = application_beams(info.build_path, project_apps)
+        artifacts = Enum.uniq(dependencies ++ project_beams)
+        applications = Map.new(artifacts, fn {path, app} -> {Path.dirname(path), app} end)
+
+        %__MODULE__{
+          source_paths: sources,
+          beam_paths: Enum.map(artifacts, &elem(&1, 0)),
+          applications: applications
+        }
+
+      {:error, _} ->
+        excluded = [
+          Project.workspace_path(project),
+          Path.join(root, "deps"),
+          Path.join(root, "_build")
+        ]
+
+        %__MODULE__{source_paths: source_files(root, excluded)}
     end
   end
 
-  @spec dependency_app_names(keyword(), atom(), atom()) :: [String.t()]
-  defp dependency_app_names(config, env, target) do
-    config
-    |> Keyword.get(:deps, [])
-    |> Enum.flat_map(&dependency_app_name(&1, env, target))
-    |> Enum.map(&Atom.to_string/1)
+  defp source_files(root, excluded) do
+    [root, "**", @indexable_extensions]
+    |> Forge.Path.glob()
+    |> Enum.reject(fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end)
     |> Enum.uniq()
   end
 
-  defp dependency_app_name({app, opts}, env, target) when is_atom(app) and is_list(opts) do
-    dependency_app_name_from_opts(app, opts, env, target)
-  end
-
-  defp dependency_app_name({app, _requirement, opts}, env, target)
-       when is_atom(app) and is_list(opts) do
-    dependency_app_name_from_opts(app, opts, env, target)
-  end
-
-  defp dependency_app_name(_dep, _env, _target), do: []
-
-  defp dependency_app_name_from_opts(app, opts, env, target) do
-    app = Keyword.get(opts, :app, app)
-
-    if app != false and is_atom(app) and dependency_active?(opts, env, target) do
-      [app]
-    else
-      []
-    end
-  end
-
-  defp dependency_roots(%Project{kind: :mix} = project) do
-    [deps_path(project) | path_dependency_paths(project)]
-    |> Enum.reject(&is_nil/1)
+  defp application_beams(build_path, apps) do
+    apps
     |> Enum.uniq()
-  end
-
-  defp dependency_roots(%Project{}), do: []
-
-  defp project_for_path(path) do
-    path
-    |> Forge.Document.Path.to_uri()
-    |> Project.new()
-  end
-
-  defp deps_path(%Project{kind: :mix} = project) do
-    case Engine.Mix.in_project(project, fn _ -> Mix.Project.deps_path() end) do
-      {:ok, path} -> path
-      _ -> Path.join(Project.root_path(project), "deps")
-    end
-  end
-
-  defp path_dependency_paths(%Project{} = project) do
-    case Engine.Mix.in_project(project, fn _ ->
-           path_dependency_paths(Mix.Project.config(), Mix.env(), Mix.target())
-         end) do
-      {:ok, roots} -> roots
-      _ -> []
-    end
-  end
-
-  defp path_dependency_paths(config, env, target) do
-    config
-    |> Keyword.get(:deps, [])
-    |> Enum.flat_map(&path_dependency_path(&1, env, target))
-  end
-
-  defp path_dependency_path({_app, opts}, env, target) when is_list(opts) do
-    path_dependency_path_from_opts(opts, env, target)
-  end
-
-  defp path_dependency_path({_app, _requirement, opts}, env, target) when is_list(opts) do
-    path_dependency_path_from_opts(opts, env, target)
-  end
-
-  defp path_dependency_path(_dep, _env, _target), do: []
-
-  defp path_dependency_path_from_opts(opts, env, target) do
-    path = Keyword.get(opts, :path)
-
-    if is_binary(path) and dependency_active?(opts, env, target) do
-      [Path.expand(path, File.cwd!())]
-    else
-      []
-    end
-  end
-
-  defp dependency_active?(opts, env, target) do
-    only_envs = opts |> Keyword.get(:only) |> List.wrap()
-    targets = opts |> Keyword.get(:targets) |> List.wrap()
-
-    dependency_active_in_env?(only_envs, env) and dependency_active_for_target?(targets, target)
-  end
-
-  defp dependency_active_in_env?([], _env), do: true
-  defp dependency_active_in_env?(envs, env), do: env in envs
-
-  defp dependency_active_for_target?([], _target), do: true
-  defp dependency_active_for_target?(targets, target), do: target in targets
-
-  defp build_exclusion_roots(%Project{kind: :mix} = project, roots) do
-    {runtime_build_path, configured_build_root} = build_paths(project)
-    relative_build_root = Path.relative_to(configured_build_root, Project.root_path(project))
-
-    dependency_build_roots = Enum.map(roots, &Path.expand(relative_build_root, &1))
-
-    [runtime_build_path, configured_build_root | dependency_build_roots]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp build_exclusion_roots(%Project{}, _roots), do: []
-
-  defp build_dir(%Project{kind: :mix} = project) do
-    project
-    |> build_paths()
-    |> elem(0)
-  end
-
-  defp build_paths(%Project{kind: :mix} = project) do
-    case Engine.Mix.in_project(project, fn project_module ->
-           {Mix.Project.build_path(), configured_build_root(project, project_module.project())}
-         end) do
-      {:ok, paths} -> paths
-      _ -> {source_build_dir(project), configured_build_root(project, [])}
-    end
-  end
-
-  defp configured_build_root(%Project{} = project, config) do
-    config = Keyword.put_new(config, :build_per_environment, true)
-
-    with_deleted_env("MIX_BUILD_PATH", fn ->
-      File.cd!(Project.root_path(project), fn ->
-        config
-        |> Mix.Project.build_path()
-        |> Path.dirname()
-      end)
+    |> Enum.flat_map(fn app ->
+      [build_path, "lib", Atom.to_string(app), "ebin", "*.beam"]
+      |> Path.join()
+      |> Path.wildcard()
+      |> Enum.map(&{&1, app})
     end)
   end
 
-  defp source_build_dir(%Project{} = project) do
-    Path.join(Project.root_path(project), "_build")
-  end
-
-  defp with_deleted_env(name, fun) do
-    original = System.fetch_env(name)
-    System.delete_env(name)
-
-    try do
-      fun.()
-    after
-      restore_env(name, original)
+  defp configured_build_root(root, info) do
+    case info.project_config[:deps_build_path] do
+      path when is_binary(path) -> Path.expand(Path.dirname(path), root)
+      nil -> Path.expand(info.build_root || info.project_config[:build_path] || "_build", root)
     end
   end
 
-  defp restore_env(name, {:ok, value}), do: System.put_env(name, value)
-  defp restore_env(name, :error), do: System.delete_env(name)
+  defp configured_dependencies(root, info, configuration, seen) do
+    if root in seen do
+      {[], []}
+    else
+      seen = [root | seen]
 
-  defp beam_app_paths(build_dir) do
-    Path.wildcard(Path.join([build_dir, "lib", "*"]))
+      dependencies =
+        info.config
+        |> Keyword.get(:deps, [])
+        |> Enum.flat_map(&dependency(&1, info.env, info.target))
+
+      apps =
+        for {app, opts} <- dependencies,
+            app = Keyword.get(opts, :app, app),
+            is_atom(app) and app != false,
+            do: app
+
+      roots =
+        for {_, opts} <- dependencies,
+            path = opts[:path],
+            is_binary(path),
+            do: Path.expand(path, root)
+
+      Enum.reduce(roots, {apps, roots}, fn path, {apps, roots} ->
+        project = Project.new(Document.Path.to_uri(path))
+
+        project = %{
+          project
+          | mix_exs_uri: Document.Path.to_uri(Path.join(path, "mix.exs")),
+            kind: :mix
+        }
+
+        case configuration.(project) do
+          {:ok, child_info} ->
+            {child_apps, child_roots} =
+              configured_dependencies(path, child_info, configuration, seen)
+
+            {Enum.uniq(apps ++ child_apps), Enum.uniq(roots ++ child_roots)}
+
+          {:error, _} ->
+            {apps, roots}
+        end
+      end)
+    end
   end
 
-  defp beam_files(app_path) do
-    Path.wildcard(Path.join([app_path, "ebin", "*.beam"]))
+  defp dependency({app, opts}, env, target) when is_atom(app) and is_list(opts),
+    do: active_dependency(app, opts, env, target)
+
+  defp dependency({app, _requirement, opts}, env, target) when is_atom(app) and is_list(opts),
+    do: active_dependency(app, opts, env, target)
+
+  defp dependency({app, _requirement}, _env, _target) when is_atom(app), do: [{app, []}]
+  defp dependency(_, _, _), do: []
+
+  defp active_dependency(app, opts, env, target) do
+    environments = List.wrap(opts[:only])
+    targets = List.wrap(opts[:targets])
+
+    if (environments == [] or env in environments) and (targets == [] or target in targets),
+      do: [{app, opts}],
+      else: []
   end
 end

@@ -4,12 +4,13 @@ defmodule Expert.Search.IndexerTest do
 
   import Forge.Test.Fixtures
 
-  alias Engine.Dispatch
+  alias Expert.EngineApi
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.Manifest.Entry, as: ManifestEntry
   alias Expert.Search.Indexer.ManifestStore
+  alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Source
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
@@ -37,19 +38,40 @@ defmodule Expert.Search.IndexerTest do
   setup do
     project = project()
     start_supervised!(Engine.ApplicationCache)
-    start_supervised(Dispatch)
 
     patch(Engine.Api.Proxy, :broadcast, fn _ -> :ok end)
 
-    patch(Dispatch, :erpc_call, fn
-      Expert.Progress, :begin, [_title, _opts] ->
-        {:ok, System.unique_integer([:positive])}
-
-      Expert.Progress, :report, _args ->
-        :ok
+    patch(Expert.Progress, :begin, fn _title, _opts ->
+      {:ok, System.unique_integer([:positive])}
     end)
 
-    patch(Dispatch, :erpc_cast, fn Expert.Progress, _function, _args -> true end)
+    patch(Expert.Progress, :report, :ok)
+    patch(Expert.Progress, :complete, :ok)
+
+    patch(EngineApi, :project_configuration, fn _engine_project, configured_project ->
+      Engine.Mix.project_configuration(configured_project)
+    end)
+
+    patch(EngineApi, :call, fn
+      _project, Engine.ApplicationCache, :clear, [] ->
+        Engine.ApplicationCache.clear()
+
+      _project, Engine.ApplicationCache, :application, [module] ->
+        Engine.ApplicationCache.application(module)
+
+      _project, Engine.ApplicationCache, :available_module?, [module] ->
+        Engine.ApplicationCache.available_module?(module)
+
+      _project, Engine.Modules, :exunit_module?, [module] ->
+        Engine.Modules.exunit_module?(module)
+
+      _project, Engine.Analyzer.Imports, :at, [analysis, position] ->
+        Engine.Analyzer.Imports.at(analysis, position)
+
+      _project, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity] ->
+        Engine.Analyzer.resolve_local_call(analysis, position, name, arity)
+    end)
+
     FakeBackend.set_entries([])
     ManifestStore.invalidate(project)
     {:ok, project: project}
@@ -104,6 +126,19 @@ defmodule Expert.Search.IndexerTest do
   end
 
   describe "create_index/1" do
+    test "clears Engine application metadata before and after indexing", %{project: project} do
+      test_pid = self()
+
+      patch(EngineApi, :clear_application_cache, fn ^project ->
+        send(test_pid, :application_cache_cleared)
+        :ok
+      end)
+
+      assert {:ok, [], %Manifest{}} = Indexer.create_index(project, paths: %Paths{})
+      assert_receive :application_cache_cleared
+      assert_receive :application_cache_cleared
+    end
+
     test "returns a list of entries", %{project: project} do
       entry_stream = create_index(project)
       entries = Enum.to_list(entry_stream)
@@ -285,7 +320,7 @@ defmodule Expert.Search.IndexerTest do
 
       assert Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(module, :public_fun, 0)))
       refute Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(module, :private_fun, 0)))
-      refute_called(Source.index(^dep_file, _, _))
+      refute_called(Source.index(^dep_file, _, _, _))
 
       assert {:ok, %ManifestEntry{kind: :beam, output_path: ^dep_file, source_path: ^dep_file}} =
                Manifest.fetch(manifest, beam_path)
@@ -314,16 +349,13 @@ defmodule Expert.Search.IndexerTest do
 
       test_pid = self()
 
-      patch(Dispatch, :erpc_call, fn
-        Expert.Progress, :begin, ["Indexing dependencies metadata", _opts] ->
+      patch(Expert.Progress, :begin, fn
+        "Indexing dependencies metadata", _opts ->
           send(test_pid, :dependency_progress_begin)
           {:ok, System.unique_integer([:positive])}
 
-        Expert.Progress, :begin, [_title, _opts] ->
+        _title, _opts ->
           {:ok, System.unique_integer([:positive])}
-
-        Expert.Progress, :report, _args ->
-          :ok
       end)
 
       assert {entries, []} = update_index(project)
@@ -631,7 +663,6 @@ defmodule Expert.Search.IndexerTest do
     end
 
     test "there is no progress", %{project: project} do
-      Dispatch.register_listener(self(), :all)
       assert {[], []} = update_index(project)
       refute_receive _
     end

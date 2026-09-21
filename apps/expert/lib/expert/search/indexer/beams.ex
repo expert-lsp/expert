@@ -1,24 +1,23 @@
 defmodule Expert.Search.Indexer.Beams do
   import Forge.Document.Line
 
-  alias Engine.ApplicationCache
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
-  alias Forge.Search.Subject
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
+  alias Forge.Search.Subject
 
   @beam_index_concurrency 16
   @beam_index_chunk_bytes 128 * 1024
 
-  def index(paths) when is_list(paths) do
+  def index(paths, opts \\ []) when is_list(paths) do
     {beams, total_bytes} = stat_beams(paths)
 
     beams
     |> index_beam_chunks(total_bytes)
-    |> entries_and_manifest_entries()
+    |> entries_and_manifest_entries(opts)
   end
 
   def extract_definitions_from_binary(beam, source_path)
@@ -114,9 +113,9 @@ defmodule Expert.Search.Indexer.Beams do
     results
   end
 
-  defp entries_and_manifest_entries(results) do
+  defp entries_and_manifest_entries(results, opts) do
     {indexed_results, skipped_results} = Enum.split_with(results, &indexed_result?/1)
-    entries = entries_from_indexed_results(indexed_results)
+    entries = entries_from_indexed_results(indexed_results, opts)
     manifest_entries = manifest_entries_from_results(indexed_results ++ skipped_results)
 
     {entries, manifest_entries}
@@ -132,25 +131,34 @@ defmodule Expert.Search.Indexer.Beams do
     end)
   end
 
-  defp entries_from_indexed_results([]), do: []
+  defp entries_from_indexed_results([], _opts), do: []
 
-  defp entries_from_indexed_results(results) do
+  defp entries_from_indexed_results(results, opts) do
     source_lines_by_path = source_lines_by_path(results)
 
     results
     |> Enum.group_by(fn {:indexed, source_path, _metadata, _manifest_entry} -> source_path end)
     |> Enum.flat_map(fn {source_path, results} ->
-      entries_from_group(source_path, results, source_lines_by_path)
+      entries_from_group(source_path, results, source_lines_by_path, opts)
     end)
   end
 
-  defp entries_from_group(source_path, results, source_lines_by_path) do
+  defp entries_from_group(source_path, results, source_lines_by_path, opts) do
     entries =
-      Enum.flat_map(results, fn {:indexed, _source_path, metadata, _manifest_entry} ->
-        entries_from_metadata(metadata, Map.get(source_lines_by_path, source_path, %{}))
+      Enum.flat_map(results, fn {:indexed, _source_path, metadata, manifest_entry} ->
+        entries_from_metadata(
+          metadata,
+          Map.get(source_lines_by_path, source_path, %{}),
+          application(manifest_entry, opts)
+        )
       end)
 
     [Entry.block_structure(source_path, %{root: %{}}) | entries]
+  end
+
+  defp application(manifest_entry, opts) do
+    applications = Keyword.get(opts, :applications, %{})
+    Map.get(applications, Path.dirname(manifest_entry.input_path))
   end
 
   defp metadata_from_beam({beam_path, beam_stat}) do
@@ -223,18 +231,18 @@ defmodule Expert.Search.Indexer.Beams do
     _kind, _reason -> :error
   end
 
-  defp entries_from_metadata(metadata, source_lines) do
-    context = entry_context(metadata)
+  defp entries_from_metadata(metadata, source_lines, app \\ nil) do
+    context = entry_context(metadata, app)
 
     module_entries(metadata, context, module_range(metadata, source_lines)) ++
       public_definition_entries(metadata, context)
   end
 
-  defp entry_context(metadata) do
+  defp entry_context(metadata, app) do
     module = Map.fetch!(metadata, :module)
 
     %{
-      app: ApplicationCache.application(module),
+      app: app,
       module: module,
       root_block: Block.root(),
       source_path: Map.fetch!(metadata, :file)
@@ -281,7 +289,7 @@ defmodule Expert.Search.Indexer.Beams do
       Subject.module(protocol),
       {:protocol, :implementation},
       range,
-      ApplicationCache.application(protocol)
+      context.app
     )
   end
 
@@ -457,7 +465,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp remote_context_definition_entries(source_path, module, compiler_definitions) do
     context = %{
-      app: ApplicationCache.application(module),
+      app: nil,
       module: module,
       root_block: Block.root(),
       source_path: source_path

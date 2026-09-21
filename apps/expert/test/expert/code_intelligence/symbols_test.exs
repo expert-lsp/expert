@@ -17,7 +17,26 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
 
   def document_symbols(code) do
     doc = Forge.Document.new("file:///file.ex", code, 1)
-    symbols = Symbols.for_document(doc)
+    project = %Forge.Project{}
+
+    patch(Expert.EngineApi, :call, fn
+      ^project, Engine.ApplicationCache, :application, [module] ->
+        Engine.ApplicationCache.application(module)
+
+      ^project, Engine.ApplicationCache, :available_module?, [module] ->
+        Engine.ApplicationCache.available_module?(module)
+
+      ^project, Engine.Modules, :exunit_module?, [module] ->
+        Engine.Modules.exunit_module?(module)
+
+      ^project, Engine.Analyzer.Imports, :at, [analysis, position] ->
+        Engine.Analyzer.Imports.at(analysis, position)
+
+      ^project, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity] ->
+        Engine.Analyzer.resolve_local_call(analysis, position, name, arity)
+    end)
+
+    symbols = Symbols.for_document(project, doc)
     {symbols, doc}
   end
 
@@ -36,13 +55,12 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
       ])
 
     entries = Enum.reject(entries, &(&1.type == :metadata))
-    patch(Engine, :get_project, %Forge.Project{})
 
-    patch(Engine.ManagerApi, :search_store_all, fn _project, [subtype: :definition] ->
+    patch(Expert.Search.Store, :all, fn _project, [subtype: :definition] ->
       {:ok, entries}
     end)
 
-    symbols = Symbols.for_workspace("")
+    {:ok, symbols} = Symbols.for_workspace(%Forge.Project{}, "")
     {symbols, doc, uri}
   end
 

@@ -11,17 +11,12 @@ defmodule Expert.Search.Indexer.BeamsTest do
   @moduletag :tmp_dir
 
   setup do
-    start_supervised!(Engine.ApplicationCache)
-
-    patch(Engine.Dispatch, :erpc_call, fn
-      Expert.Progress, :begin, [_title, _opts] ->
-        {:ok, System.unique_integer([:positive])}
-
-      Expert.Progress, :report, _args ->
-        :ok
+    patch(Expert.Progress, :begin, fn _title, _opts ->
+      {:ok, System.unique_integer([:positive])}
     end)
 
-    patch(Engine.Dispatch, :erpc_cast, fn Expert.Progress, _function, _args -> true end)
+    patch(Expert.Progress, :report, :ok)
+    patch(Expert.Progress, :complete, :ok)
 
     :ok
   end
@@ -378,16 +373,9 @@ defmodule Expert.Search.Indexer.BeamsTest do
     test "reports progress per beam chunk instead of per beam", %{tmp_dir: tmp_dir} do
       test_pid = self()
 
-      patch(Engine.Dispatch, :erpc_call, fn
-        Expert.Progress, :begin, ["Indexing dependencies metadata", _opts] ->
-          {:ok, System.unique_integer([:positive])}
-
-        Expert.Progress, :begin, [_title, _opts] ->
-          {:ok, System.unique_integer([:positive])}
-
-        Expert.Progress, :report, [_token, opts] ->
-          send(test_pid, {:dependency_progress_report, opts})
-          :ok
+      patch(Expert.Progress, :report, fn _token, opts ->
+        send(test_pid, {:dependency_progress_report, opts})
+        :ok
       end)
 
       modules = for index <- 1..4, do: unique_module("Progress#{index}")

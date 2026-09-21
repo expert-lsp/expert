@@ -1,4 +1,4 @@
-defmodule Engine.Dispatch.Handlers.IndexingTest do
+defmodule Expert.Project.ReindexEventsTest do
   use ExUnit.Case
   use Patch
 
@@ -7,48 +7,46 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
   import Forge.Test.EventualAssertions
   import Forge.Test.Fixtures
 
-  alias Engine.Commands
-  alias Engine.Dispatch.Handlers.Indexing
-  alias Engine.Search
+  alias Expert.EngineApi
+  alias Expert.Project.Reindex
+  alias Expert.Search
   alias Forge.Document
 
   setup do
     project = project()
-    Engine.set_project(project)
     {:ok, store} = Agent.start_link(fn -> %{} end)
 
-    # Mock the broadcast so progress reporting doesn't fail
-    patch(Engine.Api.Proxy, :broadcast, fn _ -> :ok end)
-    # Mock erpc calls for progress reporting
-    patch(Engine.Dispatch, :erpc_call, fn
-      Expert.Progress, :begin, [_title, _opts] ->
-        {:ok, System.unique_integer([:positive])}
+    patch(EngineApi, :register_listener, :ok)
 
-      Expert.Progress, :report, _args ->
-        :ok
-    end)
-
-    patch(Engine.ManagerApi, :search_store_clear, fn ^project, path ->
+    patch(Search.Store, :clear, fn ^project, path ->
       clear_store(store, path)
     end)
 
-    patch(Engine.ManagerApi, :search_store_update, fn ^project, path, entries ->
+    patch(Search.Store, :update, fn ^project, path, entries ->
       update_store(store, path, entries)
     end)
 
-    patch(Engine.ManagerApi, :search_store_exact, fn ^project, subject, _constraints ->
+    patch(Search.Store, :exact, fn ^project, subject, _constraints ->
       {:ok, exact_entries(store, subject)}
     end)
 
-    patch(Engine.Dispatch, :erpc_cast, fn Expert.Progress, _function, _args -> true end)
+    patch(Search.Indexer, :document, fn ^project, uri ->
+      with {:ok, document, analysis} <- Document.Store.fetch(uri, :analysis),
+           {:ok, entries} <- Search.Indexer.Quoted.index_with_cleanup(analysis) do
+        {:ok, document.path, entries}
+      end
+    end)
 
-    start_supervised!(Engine.ApplicationCache)
-    start_supervised!(Engine.Dispatch)
-    start_supervised!({Commands.Reindex, debounce_interval_millis: 0})
     start_supervised!({Document.Store, derive: [analysis: &Forge.Ast.analyze/1]})
 
-    {:ok, state} = Indexing.init([])
-    {:ok, state: state, project: project, store: store}
+    start_supervised!(%{
+      id: Reindex,
+      start:
+        {Reindex, :start_link,
+         [project, [reindex_fun: fn _ -> :ok end, debounce_interval_millis: 0]]}
+    })
+
+    {:ok, project: project, store: store}
   end
 
   defp update_store(store, path, entries) do
@@ -103,7 +101,7 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
   defp format_subject(subject), do: to_string(subject)
 
   describe "handling file_quoted events" do
-    test "should add new entries to the store", %{state: state, store: store} do
+    test "should add new entries to the store", %{project: project, store: store} do
       {uri, _source} =
         ~q[
           defmodule NewModule do
@@ -111,14 +109,14 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
         ]
         |> set_document!()
 
-      assert {:ok, _} = Indexing.on_event(file_compile_requested(uri: uri), state)
+      send(Reindex.name(project), file_compile_requested(uri: uri))
 
       assert_eventually {:ok, [entry]} = exact(store, "NewModule")
 
       assert entry.subject == NewModule
     end
 
-    test "should update entries in the store", %{state: state, store: store} do
+    test "should update entries in the store", %{project: project, store: store} do
       {uri, source} =
         ~q[
           defmodule OldModule
@@ -126,7 +124,8 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
         ]
         |> set_document!()
 
-      {:ok, _} = Search.Indexer.Source.index(uri, source)
+      {:ok, old_entries} = Search.Indexer.Source.index(uri, source)
+      update_store(store, Document.Path.ensure_path(uri), old_entries)
 
       {^uri, _source} =
         ~q[
@@ -135,7 +134,7 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
         ]
         |> set_document!()
 
-      assert {:ok, _} = Indexing.on_event(file_compile_requested(uri: uri), state)
+      send(Reindex.name(project), file_compile_requested(uri: uri))
 
       assert_eventually {:ok, [entry]} = exact(store, "UpdatedModule")
       assert entry.subject == UpdatedModule
@@ -143,7 +142,7 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
     end
 
     test "only updates entries if the version of the document is the same as the version in the document store",
-         %{state: state, store: store} do
+         %{project: project, store: store} do
       Document.Store.open("file:///file.ex", "defmodule Newer do \nend", 3)
 
       {uri, _source} =
@@ -153,13 +152,13 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
         ]
         |> set_document!()
 
-      assert {:ok, _} = Indexing.on_event(file_compile_requested(uri: uri), state)
+      send(Reindex.name(project), file_compile_requested(uri: uri))
       assert {:ok, []} = exact(store, "Stale")
     end
   end
 
   describe "a file is deleted" do
-    test "its entries should be deleted", %{project: project, state: state, store: store} do
+    test "its entries should be deleted", %{project: project, store: store} do
       {uri, source} =
         ~q[
           defmodule ToDelete do
@@ -172,9 +171,9 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
 
       assert_eventually {:ok, [_]} = exact(store, "ToDelete")
 
-      Indexing.on_event(
-        filesystem_event(project: project, uri: uri, event_type: :deleted),
-        state
+      send(
+        Reindex.name(project),
+        filesystem_event(project: project, uri: uri, event_type: :deleted)
       )
 
       assert_eventually {:ok, []} = exact(store, "ToDelete")
@@ -182,12 +181,13 @@ defmodule Engine.Dispatch.Handlers.IndexingTest do
   end
 
   describe "a file is created" do
-    test "is a no op", %{project: project, state: state, store: store} do
+    test "is a no op", %{project: project, store: store} do
       spy(Search.Indexer)
 
       event = filesystem_event(project: project, uri: "file:///another.ex", event_type: :created)
 
-      assert {:ok, _} = Indexing.on_event(event, state)
+      send(Reindex.name(project), event)
+      Process.sleep(10)
 
       assert Agent.get(store, & &1) == %{}
       assert history(Search.Indexer) == []

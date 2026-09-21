@@ -237,7 +237,7 @@ defmodule Expert.Search.Indexer.Extractors.Variable do
 
   defp get_current_app(%Reducer{} = reducer) do
     with {:ok, module} <- Analyzer.current_module(reducer.analysis, Reducer.position(reducer)) do
-      Engine.ApplicationCache.application(module)
+      Reducer.application(reducer, module)
     end
   end
 

@@ -10,7 +10,6 @@ defmodule Engine.Api.ProxyTest do
   alias Engine.Api.Proxy.DrainingState
   alias Engine.Build
   alias Engine.CodeMod
-  alias Engine.Commands
   alias Engine.Dispatch
   alias Forge.Document
   alias Forge.Document.Changes
@@ -48,16 +47,6 @@ defmodule Engine.Api.ProxyTest do
       assert_called(Build.compile_document(^project, ^document))
     end
 
-    test "reindex is proxied" do
-      patch(Commands.Reindex, :perform, :ok)
-      patch(Commands.Reindex, :running?, false)
-
-      refute Proxy.index_running?()
-      assert :ok = Proxy.reindex()
-      assert_called(Commands.Reindex.perform())
-      assert_called(Commands.Reindex.running?())
-    end
-
     test "formatting is proxied" do
       document = %Document{}
       patch(CodeMod.Format, :edits, {:ok, Changes.new(document, [])})
@@ -68,7 +57,7 @@ defmodule Engine.Api.ProxyTest do
   end
 
   def with_draining_mode(ctx) do
-    patch(Commands.Reindex, :perform, fn ->
+    patch(Build, :schedule_compile, fn _project, _force? ->
       Process.sleep(100)
       :ok
     end)
@@ -77,7 +66,7 @@ defmodule Engine.Api.ProxyTest do
 
     spawn_link(fn ->
       send(me, :ready)
-      result = Proxy.reindex()
+      result = Proxy.schedule_compile()
       send(me, {:proxy_result, result})
     end)
 
@@ -106,10 +95,7 @@ defmodule Engine.Api.ProxyTest do
     end
 
     test "ends when in-flight requests end", %{stop_buffering: stop_buffering} do
-      patch(Build, :schedule_compile, callable(fn _ -> :ok end))
-
       assert :ok = Proxy.schedule_compile()
-      refute_called(Build.schedule_compile(_, _))
       assert_receive {:proxy_result, :ok}
       stop_buffering.()
       assert_called(Build.schedule_compile(_, _))
@@ -162,16 +148,6 @@ defmodule Engine.Api.ProxyTest do
 
       assert :ok = Proxy.compile_document(document)
       refute_any_call(Build.compile_document())
-    end
-
-    test "buffers reindex" do
-      patch(Commands.Reindex, :perform, :ok)
-      patch(Commands.Reindex, :running?, false)
-
-      refute Proxy.index_running?()
-      assert :ok = Proxy.reindex()
-      refute_any_call(Commands.Reindex.perform())
-      refute_any_call(Commands.Reindex.running?())
     end
 
     test "buffers formatting" do
@@ -234,34 +210,6 @@ defmodule Engine.Api.ProxyTest do
       stop_buffering.()
 
       assert_called(Build.compile_document(^project, ^doc), 1)
-    end
-
-    test "reindex calls are buffered", %{stop_buffering: stop_buffering} do
-      patch(Commands.Reindex, :perform, :ok)
-
-      Proxy.reindex()
-      Proxy.reindex()
-      Proxy.reindex()
-
-      refute_any_call(Commands.Reindex.perform())
-
-      stop_buffering.()
-
-      assert_called(Commands.Reindex.perform())
-    end
-
-    test "calls to Reindex.running?() are dropped", %{stop_buffering: stop_buffering} do
-      patch(Commands.Reindex, :running?, false)
-
-      Proxy.index_running?()
-      Proxy.index_running?()
-      Proxy.index_running?()
-
-      refute_any_call(Commands.Reindex.running?())
-
-      stop_buffering.()
-
-      refute_any_call(Commands.Reindex.running?())
     end
   end
 end

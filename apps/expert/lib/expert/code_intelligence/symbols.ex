@@ -1,11 +1,12 @@
 defmodule Expert.CodeIntelligence.Symbols do
-  alias Engine.ManagerApi
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Extractors
+  alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.CodeIntelligence.Symbols
   alias Forge.Document
   alias Forge.Document.Range
+  alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
   @block_types [
@@ -24,37 +25,41 @@ defmodule Expert.CodeIntelligence.Symbols do
     Extractors.ExUnit
   ]
 
-  def for_document(%Document{} = document) do
+  def for_document(%Project{} = project, %Document{} = document) do
+    document_entries(project, document)
+  end
+
+  defp document_entries(project, %Document{} = document) do
     analysis = Ast.analyze(document)
 
     entries =
       if analysis.ast == nil do
         []
       else
-        Indexer.Quoted.extract_entries(analysis, @symbol_extractors)
+        Indexer.Quoted.extract_entries(analysis, @symbol_extractors, project)
       end
 
     definitions = Enum.filter(entries, &(&1.subtype == :definition))
     to_symbols(document, definitions)
   end
 
-  def for_workspace("") do
-    case ManagerApi.search_store_all(Engine.get_project(), subtype: :definition) do
+  def for_workspace(project, "") do
+    case Store.all(project, subtype: :definition) do
       {:ok, entries} ->
-        Enum.map(entries, &Symbols.Workspace.from_entry/1)
+        {:ok, Enum.map(entries, &Symbols.Workspace.from_entry/1)}
 
-      _ ->
-        []
+      error ->
+        error
     end
   end
 
-  def for_workspace(query) do
-    case ManagerApi.search_store_fuzzy(Engine.get_project(), query, []) do
+  def for_workspace(project, query) do
+    case Store.fuzzy(project, query, subtype: :definition) do
       {:ok, entries} ->
-        Enum.map(entries, &Symbols.Workspace.from_entry/1)
+        {:ok, Enum.map(entries, &Symbols.Workspace.from_entry/1)}
 
-      _ ->
-        []
+      error ->
+        error
     end
   end
 

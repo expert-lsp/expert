@@ -1,8 +1,8 @@
 defmodule Expert.Search.Indexer.Analyzer do
-  alias Expert.Search.Indexer.Analyzer.Aliases
-  alias Expert.Search.Indexer.Analyzer.Imports
-  alias Expert.Search.Indexer.Analyzer.Requires
-  alias Expert.Search.Indexer.Analyzer.Uses
+  alias Expert.Search.Indexer.Analysis.Aliases
+  alias Expert.Search.Indexer.Analysis.Imports
+  alias Expert.Search.Indexer.Analysis.Requires
+  alias Expert.Search.Indexer.Analysis.Uses
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Ast.Analysis.Require

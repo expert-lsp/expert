@@ -3,7 +3,6 @@ defmodule Engine.Api.Proxy.BufferingState do
   import Forge.EngineApi.Messages
 
   alias Engine.Build
-  alias Engine.Commands
   alias Forge.Document
 
   defstruct initiator_pid: nil, buffer: []
@@ -24,7 +23,7 @@ defmodule Engine.Api.Proxy.BufferingState do
         match?(mfa(module: Engine.Dispatch, function: :broadcast), value)
       end)
 
-    {project_compile, document_compiles, reindex} = collapse_commands(commands)
+    {project_compile, document_compiles} = collapse_commands(commands)
 
     all_commands = [project_compile | Map.values(document_compiles)]
 
@@ -32,22 +31,13 @@ defmodule Engine.Api.Proxy.BufferingState do
     |> Enum.concat(collapse_messages(messages, project_compile, document_compiles))
     |> Enum.filter(&match?(mfa(), &1))
     |> Enum.sort_by(fn mfa(seq: seq) -> seq end)
-    |> then(fn commands ->
-      if reindex do
-        commands ++ [reindex]
-      else
-        commands
-      end
-    end)
   end
 
   defp collapse_commands(commands) do
     # Rules for collapsing commands
     # 1. If there's a project compilation requested, remove all document compilations
     # 2. Formats can be dropped, as they're only valid for a short time.
-    # 3. If there's a reindex, do it after the project compilation has finished
-
-    initial_state = %{project_compiles: [], document_compiles: %{}, reindex: nil}
+    initial_state = %{project_compiles: [], document_compiles: %{}}
 
     grouped =
       commands
@@ -62,9 +52,6 @@ defmodule Engine.Api.Proxy.BufferingState do
             uri = document.uri
             put_in(acc, [:document_compiles, uri], mfa)
 
-          mfa(module: Commands.Reindex) = mfa, acc ->
-            Map.put(acc, :reindex, mfa)
-
           _, acc ->
             acc
         end
@@ -72,8 +59,7 @@ defmodule Engine.Api.Proxy.BufferingState do
 
     %{
       project_compiles: project_compiles,
-      document_compiles: document_compiles,
-      reindex: reindex
+      document_compiles: document_compiles
     } = grouped
 
     project_compile =
@@ -100,7 +86,7 @@ defmodule Engine.Api.Proxy.BufferingState do
         end
       end
 
-    {project_compile, document_compiles, reindex}
+    {project_compile, document_compiles}
   end
 
   defp collapse_messages(messages, project_compile, document_compiles) do

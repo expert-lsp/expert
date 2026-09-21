@@ -1,10 +1,100 @@
 defmodule Expert.Search.Indexer.PathsTest do
   use ExUnit.Case, async: false
+  use Patch
 
+  alias Expert.EngineApi
   alias Expert.Search.Indexer.Paths
   alias Forge.Project
 
-  describe "indexable_files/1" do
+  setup do
+    patch(EngineApi, :project_configuration, fn _engine_project, configured_project ->
+      Engine.Mix.project_configuration(configured_project)
+    end)
+
+    :ok
+  end
+
+  defp source_paths(project), do: Paths.for_project(project).source_paths
+
+  describe "for_project/1" do
+    @tag :tmp_dir
+    test "discovers files locally from configuration without executing project code", %{
+      tmp_dir: root
+    } do
+      with_env("MIX_BUILD_ROOT", Path.join(root, "manager_build"))
+      with_env("MIX_BUILD_PATH", Path.join(root, "manager_build/dev"))
+      project = root |> Forge.Document.Path.to_uri() |> Project.bare()
+      project = %{project | kind: :mix}
+      build = Path.join(root, ".expert/build/target/test")
+      source = Path.join(root, "lib/source.ex")
+      generated = Path.join(root, "target_build/generated.ex")
+      dependency_source = Path.join(root, "vendor/lib/dependency.ex")
+      project_beam = Path.join([build, "lib", "example", "ebin", "Example.beam"])
+      dependency_beam = Path.join([build, "lib", "active", "ebin", "Active.beam"])
+      inactive_beam = Path.join([build, "lib", "inactive", "ebin", "Inactive.beam"])
+      disabled_beam = Path.join([build, "lib", "disabled", "ebin", "Disabled.beam"])
+
+      for path <- [
+            source,
+            generated,
+            dependency_source,
+            project_beam,
+            dependency_beam,
+            inactive_beam,
+            disabled_beam
+          ],
+          do: write_file!(path, "fixture")
+
+      info = %{
+        config: [
+          app: :example,
+          deps: [
+            {:active, "*", only: :prod, targets: :board},
+            {:inactive, "*", only: :dev},
+            {:disabled, "*", app: false}
+          ]
+        ],
+        project_config: [build_path: "ignored_configured_build"],
+        build_path: build,
+        deps_path: Path.join(root, "vendor"),
+        apps_paths: nil,
+        dependency_apps: {:error, :unavailable},
+        env: :prod,
+        target: :board,
+        build_root: "target_build"
+      }
+
+      patch(EngineApi, :call, fn _, _, _, _ ->
+        flunk("Discovery must not run through engine RPC")
+      end)
+
+      cwd = File.cwd!()
+      paths = Paths.for_project(project, fn ^project -> {:ok, info} end)
+      assert paths.source_paths == [source]
+
+      assert Enum.sort(paths.beam_paths) ==
+               Enum.sort([project_beam, dependency_beam])
+
+      assert paths.applications[Path.dirname(project_beam)] == :example
+      assert File.cwd!() == cwd
+      assert System.get_env("MIX_BUILD_PATH") == Path.join(root, "manager_build/dev")
+
+      added = Path.join(root, "lib/added.ex")
+      write_file!(added, "fixture")
+      updated = Paths.for_project(project, fn ^project -> {:ok, info} end)
+      assert Enum.sort(updated.source_paths) == Enum.sort([source, added])
+    end
+
+    @tag :tmp_dir
+    test "bare discovery needs no engine configuration", %{tmp_dir: root} do
+      source = Path.join(root, "deps/source.ex")
+      write_file!(source, "defmodule BareDependency, do: :ok")
+      project = root |> Forge.Document.Path.to_uri() |> Project.bare()
+      paths = Paths.for_project(project, fn _ -> flunk("Bare discovery must be local") end)
+      assert paths.source_paths == [source]
+      assert paths.beam_paths == []
+    end
+
     @tag :tmp_dir
     test "does not include project-local default build files", %{tmp_dir: tmp_dir} do
       with_env("MIX_BUILD_PATH", native_join([tmp_dir, ".expert", "build", "dev"]))
@@ -23,8 +113,8 @@ defmodule Expert.Search.Indexer.PathsTest do
 
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
 
-      assert source_file in Paths.indexable_files(project)
-      refute build_file in Paths.indexable_files(project)
+      assert source_file in source_paths(project)
+      refute build_file in source_paths(project)
     end
 
     @tag :tmp_dir
@@ -45,8 +135,8 @@ defmodule Expert.Search.Indexer.PathsTest do
 
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
 
-      assert source_file in Paths.indexable_files(project)
-      refute build_file in Paths.indexable_files(project)
+      assert source_file in source_paths(project)
+      refute build_file in source_paths(project)
     end
 
     @tag :tmp_dir
@@ -69,8 +159,8 @@ defmodule Expert.Search.Indexer.PathsTest do
 
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
 
-      assert source_file in Paths.indexable_files(project)
-      refute build_file in Paths.indexable_files(project)
+      assert source_file in source_paths(project)
+      refute build_file in source_paths(project)
     end
 
     @tag :tmp_dir
@@ -97,8 +187,12 @@ defmodule Expert.Search.Indexer.PathsTest do
 
       project = app_root |> Forge.Document.Path.to_uri() |> Project.new()
 
-      assert app_file in Paths.indexable_files(project)
-      refute dep_file in Paths.indexable_files(project)
+      patch(EngineApi, :project_configuration, fn ^project, configured_project ->
+        Engine.Mix.project_configuration(configured_project)
+      end)
+
+      assert app_file in source_paths(project)
+      refute dep_file in source_paths(project)
     end
   end
 

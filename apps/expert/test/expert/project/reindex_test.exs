@@ -1,44 +1,38 @@
-defmodule Engine.Commands.ReindexTest do
+defmodule Expert.Project.ReindexTest do
   use ExUnit.Case
   use Patch
 
-  import Engine.Test.Entry.Builder
   import Forge.EngineApi.Messages
   import Forge.Test.EventualAssertions
   import Forge.Test.Fixtures
 
-  alias Engine.Commands.Reindex
-  alias Engine.Dispatch
-  alias Engine.Search.Indexer
+  alias Expert.EngineApi
+  alias Expert.Progress
+  alias Expert.Project.Reindex
+  alias Expert.Search.Indexer
+  alias Expert.Search.Store
   alias Forge.Document
+  alias Forge.Search.Indexer.Entry
 
   setup context do
     debounce_interval_millis = Map.get(context, :debounce_interval_millis, 0)
     project = project()
-    Engine.set_project(project)
-
-    patch(Dispatch, :erpc_call, fn
-      Expert.Progress, :begin, [_title, _opts] ->
-        {:ok, System.unique_integer([:positive])}
-
-      Expert.Progress, :report, _args ->
-        :ok
-    end)
-
-    patch(Dispatch, :erpc_cast, fn Expert.Progress, _function, _args -> true end)
+    patch(EngineApi, :register_listener, :ok)
+    patch(Progress, :begin, fn _title, _opts -> {:ok, System.unique_integer([:positive])} end)
+    patch(Progress, :report, :ok)
+    patch(Progress, :complete, :ok)
 
     case Map.get(context, :reindex_fun, :sleep) do
       :default ->
-        start_supervised!({Reindex, debounce_interval_millis: debounce_interval_millis})
+        start_reindex!(project, debounce_interval_millis: debounce_interval_millis)
 
       :none ->
         :ok
 
       :sleep ->
-        start_supervised!(
-          {Reindex,
-           reindex_fun: fn _ -> Process.sleep(20) end,
-           debounce_interval_millis: debounce_interval_millis}
+        start_reindex!(project,
+          reindex_fun: fn _ -> Process.sleep(20) end,
+          debounce_interval_millis: debounce_interval_millis
         )
     end
 
@@ -47,7 +41,7 @@ defmodule Engine.Commands.ReindexTest do
 
   test "it should allow reindexing", %{project: project} do
     assert :ok = Reindex.perform(project)
-    assert Reindex.running?()
+    assert Reindex.running?(project)
   end
 
   test "it fails if another index is running", %{project: project} do
@@ -57,7 +51,7 @@ defmodule Engine.Commands.ReindexTest do
 
   test "it eventually becomes available", %{project: project} do
     assert :ok = Reindex.perform(project)
-    refute_eventually Reindex.running?()
+    refute_eventually Reindex.running?(project)
   end
 
   test "another reindex can be enqueued", %{project: project} do
@@ -73,7 +67,7 @@ defmodule Engine.Commands.ReindexTest do
     setup do
       test = self()
 
-      patch(Reindex.State, :entries_for_uri, fn uri ->
+      patch(Reindex.State, :entries_for_uri, fn _project, uri ->
         entries =
           test
           |> Process.info()
@@ -86,19 +80,19 @@ defmodule Engine.Commands.ReindexTest do
         {:ok, Document.Path.ensure_path(uri), entries || []}
       end)
 
-      patch(Engine.ManagerApi, :search_store_update, fn _project, uri, entries ->
+      patch(Store, :update, fn _project, uri, entries ->
         send(test, {:entries, uri, entries})
       end)
 
       :ok
     end
 
-    test "reindexes a specific uri" do
+    test "reindexes a specific uri", %{project: project} do
       uri = "file:///file.ex"
       path = Document.Path.ensure_path(uri)
       entries = [reference()]
       put_entries(uri, entries)
-      Reindex.uri(uri)
+      Reindex.uri(project, uri)
       assert_receive {:entries, ^path, ^entries}
     end
 
@@ -108,7 +102,7 @@ defmodule Engine.Commands.ReindexTest do
       new_entries = [reference(), definition()]
       put_entries(uri, new_entries)
       Reindex.perform(project)
-      Reindex.uri(uri)
+      Reindex.uri(project, uri)
 
       assert_receive {:entries, ^path, ^new_entries}
     end
@@ -119,11 +113,11 @@ defmodule Engine.Commands.ReindexTest do
     test "broadcasts success when refreshing the search index succeeds", %{project: project} do
       patch(Indexer, :create_index, fn ^project -> {:ok, [], :manifest} end)
       patch(Indexer, :commit_manifest, fn ^project, :manifest -> :ok end)
-      patch(Engine.ManagerApi, :search_store_replace, fn ^project, [] -> :ok end)
+      patch(Store, :replace, fn ^project, [] -> :ok end)
 
       test_pid = self()
 
-      patch(Engine, :broadcast, fn message ->
+      patch(EngineApi, :broadcast, fn ^project, message ->
         send(test_pid, {:broadcast, message})
         :ok
       end)
@@ -140,7 +134,7 @@ defmodule Engine.Commands.ReindexTest do
 
       test_pid = self()
 
-      patch(Engine, :broadcast, fn message ->
+      patch(EngineApi, :broadcast, fn ^project, message ->
         send(test_pid, {:broadcast, message})
         :ok
       end)
@@ -164,11 +158,11 @@ defmodule Engine.Commands.ReindexTest do
         :ok
       end)
 
-      patch(Engine.ManagerApi, :search_store_replace, fn ^project, [] ->
+      patch(Store, :replace, fn ^project, [] ->
         {:error, :replace_failed}
       end)
 
-      patch(Engine, :broadcast, fn message ->
+      patch(EngineApi, :broadcast, fn ^project, message ->
         send(test_pid, {:broadcast, message})
         :ok
       end)
@@ -183,4 +177,14 @@ defmodule Engine.Commands.ReindexTest do
       refute_receive :commit_manifest
     end
   end
+
+  defp start_reindex!(project, opts) do
+    start_supervised!(%{
+      id: Reindex,
+      start: {Reindex, :start_link, [project, opts]}
+    })
+  end
+
+  defp reference, do: %Entry{subtype: :reference}
+  defp definition, do: %Entry{subtype: :definition}
 end

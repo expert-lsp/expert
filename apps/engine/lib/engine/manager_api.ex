@@ -9,21 +9,6 @@ defmodule Engine.ManagerApi do
 
   @search_timeout 5_000
 
-  @spec search_store_replace(Project.t(), [Entry.t()]) :: :ok | {:error, term()}
-  def search_store_replace(%Project{} = project, entries) do
-    Dispatch.erpc_call(Expert.Search.Store, :replace, [project, entries], :infinity)
-  end
-
-  @spec search_store_update(Project.t(), Path.t(), [Entry.t()]) :: :ok | {:error, term()}
-  def search_store_update(%Project{} = project, path, entries) do
-    Dispatch.erpc_call(Expert.Search.Store, :update, [project, path, entries], :infinity)
-  end
-
-  @spec search_store_clear(Project.t(), Path.t()) :: :ok | {:error, term()}
-  def search_store_clear(%Project{} = project, path) do
-    Dispatch.erpc_call(Expert.Search.Store, :clear, [project, path])
-  end
-
   @spec search_store_exact(Project.t(), Entry.subject_query(), Entry.constraints()) ::
           {:ok, [Entry.t()]} | {:error, term()} | []
   def search_store_exact(%Project{} = project, subject \\ :_, constraints) do
@@ -44,22 +29,5 @@ defmodule Engine.ManagerApi do
       [project, prefix, constraints],
       @search_timeout
     )
-  end
-
-  @spec search_store_fuzzy(Project.t(), Entry.subject(), Entry.constraints()) ::
-          {:ok, [Entry.t()]} | {:error, term()} | []
-  def search_store_fuzzy(%Project{} = project, subject, constraints) do
-    Dispatch.erpc_call(
-      Expert.Search.Store,
-      :fuzzy,
-      [project, subject, constraints],
-      @search_timeout
-    )
-  end
-
-  @spec search_store_all(Project.t(), [Entry.constraint() | {:paths, [Path.t()]}]) ::
-          {:ok, [Entry.t()]} | {:error, term()} | []
-  def search_store_all(%Project{} = project, constraints \\ []) do
-    Dispatch.erpc_call(Expert.Search.Store, :all, [project, constraints], @search_timeout)
   end
 end

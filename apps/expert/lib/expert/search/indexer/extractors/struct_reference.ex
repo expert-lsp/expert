@@ -1,9 +1,9 @@
 defmodule Expert.Search.Indexer.Extractors.StructReference do
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Source.Reducer
-  alias Forge.Search.Subject
   alias Forge.Ast
   alias Forge.Search.Indexer.Entry
+  alias Forge.Search.Subject
 
   require Logger
 
@@ -69,7 +69,7 @@ defmodule Expert.Search.Indexer.Extractors.StructReference do
       subject,
       :struct,
       Ast.Range.fetch!(reference, document),
-      Engine.ApplicationCache.application(struct_module)
+      Reducer.application(reducer, struct_module)
     )
   end
 

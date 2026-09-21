@@ -1,6 +1,8 @@
 defmodule Expert.Search.Indexer.Extractors.ModuleTest do
   use Expert.Test.ExtractorCase
+  use Patch
 
+  alias Expert.Search.Indexer.Source.Reducer
   alias Some.Other.Thing.Util
 
   def index(source) do
@@ -63,6 +65,8 @@ defmodule Expert.Search.Indexer.Extractors.ModuleTest do
     end
 
     test "can detect an erlang module" do
+      patch(Reducer, :available_module?, fn _reducer, module -> module == :timer end)
+
       {:ok, [module_def, erlang_module], doc} =
         ~q[
         defmodule Root do

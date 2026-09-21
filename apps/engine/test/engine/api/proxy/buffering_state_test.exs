@@ -7,7 +7,6 @@ defmodule Engine.Api.Proxy.BufferingStateStateTest do
 
   alias Engine.Api.Proxy.BufferingState
   alias Engine.Build
-  alias Engine.Commands
   alias Forge.Document
 
   setup do
@@ -92,36 +91,6 @@ defmodule Engine.Api.Proxy.BufferingStateStateTest do
         |> add_to_state_and_flush()
 
       assert [{:mfa, Build, :compile_document, [^project, ^document], _}] = flushed_messages
-    end
-
-    test "there can only be one reindex", %{project: project} do
-      flushed_messages =
-        [
-          to_mfa(Commands.Reindex.perform()),
-          to_mfa(Commands.Reindex.perform(project))
-        ]
-        |> add_to_state_and_flush()
-
-      assert [{:mfa, Commands.Reindex, :perform, [^project], _}] = flushed_messages
-    end
-
-    test "a reindex is the last thing", %{project: project} do
-      other = open_document("file:///other.uri")
-      third = open_document("file:///third.uri")
-
-      flushed_messages =
-        [
-          to_mfa(Commands.Reindex.perform()),
-          to_mfa(Build.compile_document(project, other)),
-          to_mfa(Build.compile_document(project, third))
-        ]
-        |> add_to_state_and_flush()
-
-      assert [
-               {:mfa, Build, :compile_document, [^project, ^other], _},
-               {:mfa, Build, :compile_document, [^project, ^third], _},
-               {:mfa, Commands.Reindex, :perform, [], _}
-             ] = flushed_messages
     end
   end
 

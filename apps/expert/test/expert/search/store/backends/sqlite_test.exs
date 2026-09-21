@@ -216,7 +216,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       runtime_versions: runtime_versions
     } do
       start_supervised!(Engine.ApplicationCache)
-      {:ok, entries} = Engine.Search.Indexer.Source.index("/foo.ex", "defmodule Foo, do: :ok")
+      {:ok, entries} = Expert.Search.Indexer.Source.index("/foo.ex", "defmodule Foo, do: :ok")
 
       pid =
         start_supervised!(%{

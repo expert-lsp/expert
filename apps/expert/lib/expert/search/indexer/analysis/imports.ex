@@ -1,6 +1,5 @@
 defmodule Expert.Search.Indexer.Analysis.Imports do
   alias Expert.Search.Indexer.Analysis.Aliases
-  alias Engine.Module.Loader
   alias Forge.Ast.Analysis
   alias Forge.Ast.Analysis.Import
   alias Forge.Ast.Analysis.Scope
@@ -49,23 +48,23 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   end
 
   defp import_allows?(module, :all, fun, arity) do
-    not Loader.ensure_loaded?(module) or
+    not ensure_loaded?(module) or
       {fun, arity} in function_and_arities_for_module(module, :functions) or
       {fun, arity} in function_and_arities_for_module(module, :macros)
   end
 
   defp import_allows?(module, [only: :functions], fun, arity) do
-    not Loader.ensure_loaded?(module) or
+    not ensure_loaded?(module) or
       {fun, arity} in function_and_arities_for_module(module, :functions)
   end
 
   defp import_allows?(module, [only: :macros], fun, arity) do
-    not Loader.ensure_loaded?(module) or
+    not ensure_loaded?(module) or
       {fun, arity} in function_and_arities_for_module(module, :macros)
   end
 
   defp import_allows?(module, [only: :sigils], fun, arity) do
-    not Loader.ensure_loaded?(module) or
+    not ensure_loaded?(module) or
       {fun, arity} in function_and_arities_for_module(module, :sigils)
   end
 
@@ -74,7 +73,7 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
 
   defp import_allows?(module, [except: fns], fun, arity) when is_list(fns) do
     {fun, arity} not in fns and
-      (not Loader.ensure_loaded?(module) or
+      (not ensure_loaded?(module) or
          {fun, arity} in function_and_arities_for_module(module, :functions) or
          {fun, arity} in function_and_arities_for_module(module, :macros))
   end
@@ -119,12 +118,14 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
         Map.put(current_imports, import_module, macros)
 
       [only: :sigils] ->
-        sigils = mfas_for(import_module, :sigils)
-        Map.put(current_imports, import_module, sigils)
+        Map.put(current_imports, import_module, mfas_for(import_module, :sigils))
 
       [only: functions_to_import] ->
-        functions_to_import = function_and_arity_to_mfa(import_module, functions_to_import)
-        Map.put(current_imports, import_module, functions_to_import)
+        Map.put(
+          current_imports,
+          import_module,
+          function_and_arity_to_mfa(import_module, functions_to_import)
+        )
 
       [except: functions_to_except] ->
         # This one is a little tricky. Imports using except have two cases.
@@ -160,7 +161,7 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   end
 
   defp mfas_for(current_module, type) do
-    if Loader.ensure_loaded?(current_module) do
+    if ensure_loaded?(current_module) do
       fa_list = function_and_arities_for_module(current_module, type)
 
       function_and_arity_to_mfa(current_module, fa_list)
@@ -202,5 +203,9 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
       Import.implicit(range, [:Kernel]),
       Import.implicit(range, [:Kernel, :SpecialForms])
     ]
+  end
+
+  defp ensure_loaded?(module) do
+    match?({:module, ^module}, Code.ensure_loaded(module))
   end
 end

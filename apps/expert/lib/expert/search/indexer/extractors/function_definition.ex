@@ -1,10 +1,10 @@
 defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Source.Reducer
-  alias Forge.Search.Subject
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Search.Indexer.Entry
+  alias Forge.Search.Subject
 
   @function_definitions [:def, :defp, :defmacro, :defmacrop]
 
@@ -16,7 +16,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
       min_arity = arity - count_defaults(extract_args(def_ast))
       block_r = block_range(reducer.analysis, ast)
       fun_type = type(definition)
-      app = Engine.ApplicationCache.application(module)
+      app = Reducer.application(reducer, module)
 
       entries =
         for a <- min_arity..arity do
@@ -63,7 +63,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
             Subject.mfa(module, delegate_name, a),
             {:function, :delegate},
             detail_range,
-            Engine.ApplicationCache.application(module)
+            Reducer.application(reducer, module)
           )
           |> Entry.put_metadata(metadata)
         end

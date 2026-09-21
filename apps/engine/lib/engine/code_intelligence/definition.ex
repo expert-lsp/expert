@@ -254,7 +254,10 @@ defmodule Engine.CodeIntelligence.Definition do
     |> Stream.flat_map(fn entry ->
       case entry do
         %Entry{metadata: %{via: :use, original_mfa: mfa}} ->
-          query_search_index(mfa, subtype: :definition)
+          case query_search_index(mfa, subtype: :definition) do
+            [] -> [entry]
+            definitions -> definitions
+          end
 
         %Entry{
           type: {:function, :delegate},

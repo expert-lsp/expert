@@ -5,11 +5,11 @@ defmodule Expert.Provider.Handlers.HoverTest do
   import Forge.Test.CursorSupport
   import Forge.Test.RangeSupport
 
-  alias Engine.Search
   alias Expert.Document.Context
   alias Expert.EngineApi
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
+  alias Expert.Search
   alias Expert.Search.Store
   alias Forge.Document
   alias Forge.Document.Position

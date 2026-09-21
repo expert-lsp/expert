@@ -5,10 +5,10 @@ defmodule Expert.Search.Indexer.Extractors.ModuleAttribute do
 
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Source.Reducer
-  alias Forge.Search.Subject
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
+  alias Forge.Search.Subject
 
   # Finds module attribute usages
   def extract({:@, _, [{attr_name, _, nil}]}, %Reducer{} = reducer) do
@@ -23,7 +23,7 @@ defmodule Expert.Search.Indexer.Extractors.ModuleAttribute do
             Subject.module_attribute(current_module, attr_name),
             :module_attribute,
             reference_range(reducer, attr_name),
-            Engine.ApplicationCache.application(current_module)
+            Reducer.application(reducer, current_module)
           )
 
         {:ok, reference}
@@ -54,7 +54,7 @@ defmodule Expert.Search.Indexer.Extractors.ModuleAttribute do
             Subject.module_attribute(current_module, attr_name),
             :module_attribute,
             definition_range(reducer, attr),
-            Engine.ApplicationCache.application(current_module)
+            Reducer.application(reducer, current_module)
           )
 
         {:ok, definition}

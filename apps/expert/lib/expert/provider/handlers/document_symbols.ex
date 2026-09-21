@@ -1,9 +1,8 @@
 defmodule Expert.Provider.Handlers.DocumentSymbols do
   @behaviour Expert.Provider.Handler
 
+  alias Expert.CodeIntelligence.Symbols
   alias Expert.Document.Context
-  alias Expert.EngineApi
-  alias Forge.CodeIntelligence.Symbols
   alias Forge.Document
   alias GenLSP.Enumerations.SymbolKind
   alias GenLSP.Requests
@@ -15,13 +14,13 @@ defmodule Expert.Provider.Handlers.DocumentSymbols do
 
     symbols =
       project
-      |> EngineApi.document_symbols(document)
+      |> Symbols.for_document(document)
       |> Enum.map(&to_response(&1, document))
 
     {:ok, symbols}
   end
 
-  def to_response(%Symbols.Document{} = root, %Document{} = document) do
+  def to_response(%Forge.CodeIntelligence.Symbols.Document{} = root, %Document{} = document) do
     children =
       case root.children do
         list when is_list(list) ->
