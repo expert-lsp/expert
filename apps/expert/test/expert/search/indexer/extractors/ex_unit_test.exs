@@ -1,9 +1,11 @@
 defmodule Expert.Search.Indexer.Extractors.ExUnitTest do
   use Expert.Test.ExtractorCase
+  use Patch
 
   import Forge.Test.RangeSupport
 
   alias Expert.Search.Indexer.Extractors
+  alias Expert.Search.Indexer.Source.Reducer
 
   @test_types [
     :ex_unit_setup,
@@ -427,6 +429,8 @@ defmodule Expert.Search.Indexer.Extractors.ExUnitTest do
     end
 
     test "indexes test/describe/setup through a case template" do
+      patch(Reducer, :exunit_module?, fn _reducer, module -> module == MyCase end)
+
       {:ok, entries, _doc} =
         ~q[
         defmodule SomeTest do

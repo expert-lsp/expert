@@ -7,10 +7,9 @@ defmodule Engine.Dispatch do
   `Engine.Dispatch.Handler` behaviour and add the module to the @handlers module attribute.
   """
 
-  alias Engine.Dispatch.Handlers
   alias Engine.Dispatch.PubSub
 
-  @handlers [PubSub, Handlers.Indexing]
+  @handlers [PubSub]
 
   # public API
 

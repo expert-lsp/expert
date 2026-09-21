@@ -1,12 +1,13 @@
 defmodule Expert.Search.Indexer.Extractors.FunctionReference do
+  alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Extractors.FunctionDefinition
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.Source.Reducer
-  alias Forge.Search.Subject
   alias Forge.Ast
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
+  alias Forge.Search.Subject
 
   require Logger
 
@@ -62,8 +63,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
       ) do
     position = Reducer.position(reducer)
 
-    {module, _, _} =
-      Expert.Search.Indexer.Analyzer.resolve_local_call(reducer.analysis, position, fn_name, arity)
+    {module, _, _} = resolve_local_call(reducer, position, fn_name, arity)
 
     reducer
     |> entry(end_metadata, arity_meta, module, fn_name, arity)
@@ -113,7 +113,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
             Forge.Formats.mfa(module, function_name, arity),
             {:function, :usage},
             Ast.Range.get(ast, analysis.document),
-            Engine.ApplicationCache.application(module)
+            Reducer.application(reducer, module)
           )
 
         {:ok, entry, []}
@@ -132,8 +132,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
       arity = call_arity(args, meta)
       position = Reducer.position(reducer)
 
-      {module, _, _} =
-        Expert.Search.Indexer.Analyzer.resolve_local_call(reducer.analysis, position, fn_name, arity)
+      {module, _, _} = resolve_local_call(reducer, position, fn_name, arity)
 
       entry(reducer, meta, meta, [module], fn_name, args)
     end
@@ -145,6 +144,10 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
 
   defp without_further_analysis(:ignored), do: :ignored
   defp without_further_analysis({:ok, entry}), do: {:ok, entry, nil}
+
+  defp resolve_local_call(%Reducer{} = reducer, position, name, arity) do
+    Reducer.resolve_local_call(reducer, position, name, arity)
+  end
 
   defp entry(
          %Reducer{} = reducer,
@@ -170,7 +173,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
         :ignored
 
       _ ->
-        case Expert.Search.Indexer.Analyzer.expand_alias(module, reducer.analysis, range.start) do
+        case Analyzer.expand_alias(module, reducer.analysis, range.start) do
           {:ok, module} ->
             mfa = Subject.mfa(module, function_name, arity)
 
@@ -181,7 +184,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
                mfa,
                {:function, :usage},
                range,
-               Engine.ApplicationCache.application(module)
+               Reducer.application(reducer, module)
              )}
 
           _ ->

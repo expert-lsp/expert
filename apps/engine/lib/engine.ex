@@ -20,10 +20,6 @@ defmodule Engine do
 
   defdelegate format(document), to: Proxy
 
-  defdelegate reindex, to: Proxy
-
-  defdelegate index_running?, to: Proxy
-
   defdelegate broadcast(message), to: Proxy
 
   defdelegate clean_and_fetch_deps, to: Proxy
@@ -50,9 +46,6 @@ defmodule Engine do
 
   defdelegate hover(document, position), to: CodeIntelligence.Hover
 
-  defdelegate references(analysis, position, include_definitions?),
-    to: CodeIntelligence.References
-
   defdelegate modules_with_prefix(prefix), to: Engine.Modules, as: :with_prefix
 
   defdelegate modules_with_prefix(prefix, predicate), to: Engine.Modules, as: :with_prefix
@@ -62,12 +55,6 @@ defmodule Engine do
   defdelegate register_listener(listener_pid, message_types), to: Engine.Dispatch
 
   defdelegate resolve_entity(analysis, position), to: CodeIntelligence.Entity, as: :resolve
-
-  defdelegate struct_definitions, to: CodeIntelligence.Structs, as: :for_project
-
-  defdelegate document_symbols(document), to: CodeIntelligence.Symbols, as: :for_document
-
-  defdelegate workspace_symbols(query), to: CodeIntelligence.Symbols, as: :for_workspace
 
   defdelegate runtime_versions, to: Forge.VM.Versions, as: :current
 

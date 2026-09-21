@@ -1,6 +1,7 @@
 defmodule Expert.Provider.Handlers.GoToDefinition do
   @behaviour Expert.Provider.Handler
 
+  alias Expert.CodeIntelligence.Definition
   alias Expert.Document.Context
   alias Expert.EngineApi
   alias GenLSP.Requests
@@ -15,9 +16,15 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
       ) do
     %Context{document: document, project: project} = context
 
-    case EngineApi.definition(project, document, params.position) do
-      {:ok, native_location} ->
-        {:ok, native_location}
+    result =
+      case Definition.definition(project, document, params.position) do
+        {:ok, nil} -> EngineApi.definition(project, document, params.position)
+        {:ok, _native_location} = result -> result
+      end
+
+    case result do
+      {:ok, _native_location} = result ->
+        result
 
       {:error, reason} ->
         Logger.error("GoToDefinition failed: #{inspect(reason)}")

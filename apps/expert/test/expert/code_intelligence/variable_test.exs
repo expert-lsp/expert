@@ -8,11 +8,6 @@ defmodule Expert.CodeIntelligence.VariableTest do
   alias Expert.CodeIntelligence.Variable
   alias Forge.Ast
 
-  setup do
-    start_supervised!(Engine.ApplicationCache)
-    :ok
-  end
-
   def find_definition(code) do
     {position, document} = pop_cursor(code, as: :document)
     analysis = Ast.analyze(document)

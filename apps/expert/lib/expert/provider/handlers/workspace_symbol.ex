@@ -1,11 +1,11 @@
 defmodule Expert.Provider.Handlers.WorkspaceSymbol do
   @behaviour Expert.Provider.Handler
 
+  alias Expert.CodeIntelligence.Symbols
   alias Expert.Configuration
   alias Expert.Configuration.WorkspaceSymbols
   alias Expert.Project.Store
-  alias Expert.Search.Store, as: SearchStore
-  alias Forge.CodeIntelligence.Symbols
+  alias Forge.CodeIntelligence.Symbols.Workspace
   alias Forge.Project
   alias GenLSP.Enumerations.SymbolKind
   alias GenLSP.Requests
@@ -43,11 +43,9 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbol do
            params: %Structures.WorkspaceSymbolParams{} = params
          }
        ) do
-    case query_symbols(project, params.query) do
-      {:ok, entries} ->
-        entries
-        |> Enum.map(&Symbols.Workspace.from_entry/1)
-        |> Enum.map(&to_lsp_symbol/1)
+    case Symbols.for_workspace(project, params.query) do
+      {:ok, symbols} ->
+        Enum.map(symbols, &to_lsp_symbol/1)
 
       {:error, :loading} ->
         []
@@ -65,15 +63,7 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbol do
       []
   end
 
-  defp query_symbols(%Project{} = project, "") do
-    SearchStore.all(project, subtype: :definition)
-  end
-
-  defp query_symbols(%Project{} = project, query) do
-    SearchStore.fuzzy(project, query, subtype: :definition)
-  end
-
-  def to_lsp_symbol(%Symbols.Workspace{} = root) do
+  def to_lsp_symbol(%Workspace{} = root) do
     %Structures.WorkspaceSymbol{
       kind: to_kind(root.type),
       location: to_location(root.link),
@@ -82,7 +72,7 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbol do
     }
   end
 
-  defp to_location(%Symbols.Workspace.Link{} = link) do
+  defp to_location(%Workspace.Link{} = link) do
     %Structures.Location{uri: link.uri, range: link.detail_range}
   end
 

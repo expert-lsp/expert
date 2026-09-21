@@ -1,7 +1,7 @@
 defmodule Expert.Provider.Handlers.Commands do
   @behaviour Expert.Provider.Handler
 
-  alias Expert.EngineApi
+  alias Expert.Project.Reindex
   alias Expert.Project.Store
   alias Forge.Project
   alias GenLSP.Enumerations.ErrorCodes
@@ -96,7 +96,7 @@ defmodule Expert.Provider.Handlers.Commands do
 
   defp reindex_all(projects) do
     Enum.reduce_while(projects, :ok, fn project, _ ->
-      case EngineApi.reindex(project) do
+      case Reindex.perform(project) do
         :ok ->
           {:cont, "ok"}
 

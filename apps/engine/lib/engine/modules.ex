@@ -37,6 +37,13 @@ defmodule Engine.Modules do
     end
   end
 
+  def exunit_module?(module) when is_atom(module) do
+    Loader.ensure_loaded?(module) and
+      (function_exported?(module, :__ex_unit__, 1) or function_exported?(module, :__ex_unit__, 2))
+  end
+
+  def exunit_module?(_module), do: false
+
   @doc """
   Fetch the docs chunk from BEAM object code.
   """

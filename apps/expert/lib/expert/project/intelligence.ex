@@ -212,14 +212,18 @@ defmodule Expert.Project.Intelligence do
 
   @impl GenServer
   def handle_info(project_index_ready(), %State{} = state) do
-    {:ok, struct_definitions} = EngineApi.struct_definitions(state.project)
+    case Expert.Search.Store.exact(state.project, type: :struct, subtype: :definition) do
+      {:ok, entries} ->
+        state =
+          Enum.reduce(entries, State.new(state.project), fn entry, state ->
+            State.add_struct_module(state, entry.subject)
+          end)
 
-    state =
-      Enum.reduce(struct_definitions, State.new(state.project), fn module, state ->
-        State.add_struct_module(state, module)
-      end)
+        {:noreply, state}
 
-    {:noreply, state}
+      _ ->
+        {:noreply, State.new(state.project)}
+    end
   end
 
   # Private

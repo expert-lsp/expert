@@ -7,12 +7,12 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
   import Forge.Test.Fixtures
   import Forge.Test.RangeSupport
 
-  alias Engine.Search
-  alias Engine.Search.Indexer.Beams
   alias Expert.EngineApi
   alias Expert.EngineNode
   alias Expert.EngineSupervisor
   alias Expert.Project.Indexer
+  alias Expert.Search
+  alias Expert.Search.Indexer.Beams
   alias Expert.Search.Store
   alias Expert.Search.Store.Backends.Sqlite
   alias Forge.Document
@@ -363,33 +363,6 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
                definition(project, subject_module, referenced_uri)
 
       assert definition_line == ~S[      def «allowed?(_user, _capability)», do: true]
-    end
-
-    test "resolves a use-injected definition after a forced project compile", %{
-      project: project,
-      uri: referenced_uri
-    } do
-      EngineApi.register_listener(project, self(), [:all])
-      EngineApi.schedule_compile(project, true)
-      assert_receive project_compiled(), @project_compile_timeout
-      assert_receive project_index_ready(project: ^project), @project_index_timeout
-
-      code = ~q[
-        defmodule UsesInjectedDefinition do
-          def allowed?(user) do
-            MyDefinition.Capability.allowe|d?(user, :some_capability)
-          end
-        end
-      ]
-
-      {position, code} = pop_cursor(code)
-      {:ok, document} = subject_module(project, code)
-
-      assert {:ok, location} = EngineApi.definition(project, document, position)
-      assert location.document.uri == referenced_uri
-
-      assert decorate(location.document, location.range) ==
-               ~S[      def «allowed?(_user, _capability)», do: true]
     end
   end
 

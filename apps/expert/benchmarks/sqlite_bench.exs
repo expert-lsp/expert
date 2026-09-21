@@ -63,8 +63,6 @@ end
 project = SearchStoreBenchHelper.project("sqlite")
 runtime_versions = SearchStoreBenchHelper.runtime_versions()
 Forge.Identifier.start()
-{:ok, _application_cache} = Engine.ApplicationCache.start_link([])
-{:ok, _module_loader} = Engine.Module.Loader.start_link([])
 entries = SearchStoreBenchHelper.entries()
 entries_by_path = Enum.group_by(entries, & &1.path)
 

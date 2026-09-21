@@ -16,8 +16,6 @@ defmodule Engine.Api.Proxy do
     `schedule_compile` - Buffered - Only one call is kept
     `compile_document` - Buffered, though only one call per URI is kept, and if a `schedule_compile` call
                          was buffered, all `compile_document` calls are dropped
-    `reindex`  - Buffered, though only one call is kept and it is the last thing run.
-    `index_running?` - Dropped because it requires an immediate response
     `format`  - Dropped, as it requires an immediate response. Responds immediately with empty changes
 
   Internally, there are three states: proxying, draining and buffering.
@@ -38,7 +36,6 @@ defmodule Engine.Api.Proxy do
   alias Engine.Api.Proxy.DrainingState
   alias Engine.Api.Proxy.ProxyingState
   alias Engine.CodeMod
-  alias Engine.Commands
   alias Forge.Document
   alias Forge.Document.Changes
 
@@ -75,16 +72,6 @@ defmodule Engine.Api.Proxy do
     mfa = to_mfa(Engine.Build.compile_document(project, document))
 
     :gen_statem.call(__MODULE__, buffer(contents: mfa))
-  end
-
-  def reindex do
-    mfa = to_mfa(Commands.Reindex.perform())
-    :gen_statem.call(__MODULE__, buffer(contents: mfa))
-  end
-
-  def index_running? do
-    mfa = to_mfa(Commands.Reindex.running?())
-    :gen_statem.call(__MODULE__, drop(contents: mfa, return: false))
   end
 
   def format(%Document{} = document) do

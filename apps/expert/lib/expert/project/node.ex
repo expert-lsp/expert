@@ -86,11 +86,11 @@ defmodule Expert.Project.Node do
   def handle_info({:nodedown, _}, %State{} = state) do
     Logger.warning("The node has died. Restarting after deleting the build directory")
 
-    with :ok <- delete_build_artifacts(state.project),
-         {:ok, new_state} <- start_node(state.project) do
-      EngineApi.schedule_compile(state.project, true)
-      {:noreply, new_state}
-    else
+    case delete_build_artifacts(state.project) do
+      :ok ->
+        # The remote dispatcher lost its registrations. Restart listeners to register again.
+        {:stop, :normal, state}
+
       error ->
         {:stop, error, state}
     end
@@ -98,7 +98,7 @@ defmodule Expert.Project.Node do
 
   # private api
 
-  defp start_node(%Project{} = project, token \\ Progress.noop_token()) do
+  defp start_node(%Project{} = project, token) do
     with {:ok, node, node_pid} <- EngineNode.start(project, token) do
       Node.monitor(node, true)
       {:ok, State.new(project, node, node_pid)}

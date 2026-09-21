@@ -6,9 +6,11 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
   import Forge.Test.RangeSupport
 
   alias Expert.CodeIntelligence.Symbols
+  alias Expert.EngineApi
   alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Indexer.Source
   alias Forge.CodeIntelligence.Symbols.Document
+  alias Forge.ProcessCache
 
   setup do
     start_supervised!(Engine.ApplicationCache)
@@ -17,7 +19,9 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
 
   def document_symbols(code) do
     doc = Forge.Document.new("file:///file.ex", code, 1)
-    symbols = Symbols.for_document(doc)
+    project = %Forge.Project{}
+
+    symbols = Symbols.for_document(project, doc)
     {symbols, doc}
   end
 
@@ -36,13 +40,12 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
       ])
 
     entries = Enum.reject(entries, &(&1.type == :metadata))
-    patch(Engine, :get_project, %Forge.Project{})
 
-    patch(Engine.ManagerApi, :search_store_all, fn _project, [subtype: :definition] ->
+    patch(Expert.Search.Store, :all, fn _project, [subtype: :definition] ->
       {:ok, entries}
     end)
 
-    symbols = Symbols.for_workspace("")
+    {:ok, symbols} = Symbols.for_workspace(%Forge.Project{}, "")
     {symbols, doc, uri}
   end
 
@@ -55,6 +58,63 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
   end
 
   describe "document symbols" do
+    test "does not call the Engine" do
+      patch(Expert.EngineApi, :call, fn _, _, _, _ -> flunk("called the Engine") end)
+
+      {[%Document{}], _doc} =
+        document_symbols("""
+        defmodule Example do
+          def value, do: :ok
+        end
+        """)
+    end
+
+    test "finds tests from a custom ExUnit case when the Engine is ready" do
+      project = Forge.Test.Fixtures.project()
+      start_supervised!({Expert.Project.Store, []})
+      Expert.Project.Store.set_projects([project])
+      Expert.Project.Store.transition(project, :ready)
+
+      document =
+        Forge.Document.new(
+          "file:///file.ex",
+          """
+          defmodule ExampleTest do
+            use MyApp.DataCase
+
+            test "works", do: :ok
+          end
+          """,
+          1
+        )
+
+      patch(EngineApi, :application, nil)
+      patch(EngineApi, :available_module?, false)
+
+      patch(EngineApi, :exunit_module?, fn
+        ^project, MyApp.DataCase -> true
+        ^project, _module -> false
+      end)
+
+      assert [%Document{children: children}] = Symbols.for_document(project, document, true)
+      assert Enum.any?(children, &(&1.type == :ex_unit_test))
+    end
+
+    test "clears process cache entries" do
+      ProcessCache.trans(:document_symbols_test, fn -> :cached end)
+
+      ~q[
+      defmodule ExampleTest do
+        use ExUnit.Case
+
+        test "works", do: :ok
+      end
+      ]
+      |> document_symbols()
+
+      assert :error = ProcessCache.fetch(:document_symbols_test)
+    end
+
     test "a top level module is found" do
       {[%Document{} = module], doc} =
         ~q[

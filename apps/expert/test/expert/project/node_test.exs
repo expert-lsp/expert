@@ -7,6 +7,7 @@ defmodule Expert.Project.NodeTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
+  alias Expert.Project.Indexer
   alias Expert.Project.Node, as: EngineNode
 
   setup do
@@ -67,6 +68,36 @@ defmodule Expert.Project.NodeTest do
     assert is_pid(supervisor_pid)
     Process.exit(supervisor_pid, :kill)
     assert_eventually(Node.ping(node_name) == :pong, 750)
+  end
+
+  test "a supervised Node restart registers before its compile request", %{project: project} do
+    test_pid = self()
+
+    patch(EngineApi, :register_listener, fn ^project, listener, messages ->
+      send(test_pid, {:registered, listener, messages})
+      :ok
+    end)
+
+    patch(EngineApi, :schedule_compile, fn ^project, force? ->
+      send(test_pid, {:compile, force?})
+      :ok
+    end)
+
+    old_pid = Process.whereis(EngineNode.name(project))
+    Process.exit(old_pid, :kill)
+
+    assert_eventually(
+      case Process.whereis(EngineNode.name(project)) do
+        pid when is_pid(pid) -> pid != old_pid
+        _ -> false
+      end,
+      :timer.seconds(15)
+    )
+
+    assert_receive {:registered, new_pid, [project_compiled() | _]}, :timer.seconds(15)
+    assert new_pid == Process.whereis(Indexer.name(project))
+    assert_receive {:compile, _force?}, :timer.seconds(15)
+    refute_receive {:compile, _}
   end
 
   defp node_pid(project) do

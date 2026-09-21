@@ -19,7 +19,7 @@ defmodule Expert.Search.Indexer.Extractors.StructDefinition do
             current_module,
             :struct,
             range,
-            Engine.ApplicationCache.application(current_module)
+            Reducer.application(reducer, current_module)
           )
 
         {:ok, entry}

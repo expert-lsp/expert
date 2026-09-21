@@ -1,6 +1,5 @@
 defmodule Expert.Search.Indexer.Extractors.ExUnit do
   alias Expert.Search.Indexer.Analyzer
-  alias Engine.Module.Loader
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.Source.Reducer
   alias Forge.Ast
@@ -78,7 +77,7 @@ defmodule Expert.Search.Indexer.Extractors.ExUnit do
         _ -> nil
       end
 
-    exunit_module?(current_module) or
+    exunit_module?(reducer, current_module) or
       exunit_from_uses?(reducer, position) or
       ExUnit.Case in Analyzer.requires_at(reducer.analysis, position) or
       exunit_imported?(reducer, position)
@@ -89,19 +88,19 @@ defmodule Expert.Search.Indexer.Extractors.ExUnit do
 
     ExUnit.Case in uses or
       ExUnit.CaseTemplate in uses or
-      Enum.any?(uses, &exunit_module?/1)
+      Enum.any?(uses, &exunit_module?(reducer, &1))
   end
 
-  defp exunit_module?(module) when is_atom(module) do
-    Loader.ensure_loaded?(module) and
-      (function_exported?(module, :__ex_unit__, 1) or
-         function_exported?(module, :__ex_unit__, 2))
+  defp exunit_module?(%Reducer{} = reducer, module) when is_atom(module) do
+    Reducer.exunit_module?(reducer, module)
   end
 
-  defp exunit_module?(_), do: false
+  defp exunit_module?(_reducer, _module), do: false
 
   defp exunit_imported?(%Reducer{} = reducer, %Position{} = position) do
-    Enum.any?(Analyzer.imports_at(reducer.analysis, position), fn {mod, _, _} ->
+    imports = Reducer.imports_at(reducer, position)
+
+    Enum.any?(imports, fn {mod, _, _} ->
       mod == ExUnit.Case
     end)
   end
@@ -111,7 +110,7 @@ defmodule Expert.Search.Indexer.Extractors.ExUnit do
     block = Reducer.current_block(reducer)
 
     {:ok, module} = Analyzer.current_module(reducer.analysis, Reducer.position(reducer))
-    app = Engine.ApplicationCache.application(module)
+    app = Reducer.application(reducer, module)
 
     case detail_range(reducer.analysis, ast) do
       nil -> :ignored
@@ -124,7 +123,7 @@ defmodule Expert.Search.Indexer.Extractors.ExUnit do
     block = Reducer.current_block(reducer)
 
     {:ok, module} = Analyzer.current_module(reducer.analysis, Reducer.position(reducer))
-    app = Engine.ApplicationCache.application(module)
+    app = Reducer.application(reducer, module)
 
     case detail_range(reducer.analysis, ast) do
       nil ->

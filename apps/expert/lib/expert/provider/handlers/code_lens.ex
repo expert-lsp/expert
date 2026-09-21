@@ -4,7 +4,6 @@ defmodule Expert.Provider.Handlers.CodeLens do
   import Forge.Document.Line
 
   alias Expert.Document.Context
-  alias Expert.EngineApi
   alias Expert.Provider.Handlers
   alias Forge.Document
   alias Forge.Document.Position
@@ -61,7 +60,7 @@ defmodule Expert.Provider.Handlers.CodeLens do
 
       mix_exs_path ->
         normalize_path(document.path) == normalize_path(mix_exs_path) and
-          not EngineApi.index_running?(project)
+          not Expert.Project.Reindex.running?(project)
     end
   end
 

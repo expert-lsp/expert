@@ -6,8 +6,7 @@ defmodule Engine.CodeAction.Handlers.AddAliasTest do
   import Forge.Test.CursorSupport
 
   alias Engine.CodeAction.Handlers.AddAlias
-  alias Engine.Search.Indexer
-  alias Engine.Search.Indexer.Source
+  alias Forge.Ast.Analysis
   alias Forge.Ast.Analysis.Scope
   alias Forge.CodeUnit
   alias Forge.Document
@@ -109,13 +108,13 @@ defmodule Engine.CodeAction.Handlers.AddAliasTest do
     test "when a full module name is given" do
       {:ok, added} =
         ~q[
-        Engine.Search.Indexer.Source|
+        Forge.Ast.Analysis.Scope|
         ]
-        |> add_alias([Source])
+        |> add_alias([Scope])
 
       expected = ~q[
-        alias Engine.Search.Indexer.Source
-        Source
+        alias Forge.Ast.Analysis.Scope
+        Scope
       ]t
 
       assert added == expected
@@ -128,17 +127,17 @@ defmodule Engine.CodeAction.Handlers.AddAliasTest do
         ~q[
         defmodule MyModule do
           def my_fun do
-            result = Engine.Search.Indexer|
+            result = Forge.Ast.Analysis|
           end
         end
         ]
-        |> add_alias([Indexer])
+        |> add_alias([Analysis])
 
       expected = ~q[
         defmodule MyModule do
-          alias Engine.Search.Indexer
+          alias Forge.Ast.Analysis
           def my_fun do
-            result = Indexer
+            result = Analysis
           end
         end
       ]t

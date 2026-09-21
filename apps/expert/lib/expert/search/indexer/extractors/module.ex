@@ -3,14 +3,15 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   Extracts module references and definitions from AST
   """
 
+  alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.Source.Reducer
-  alias Forge.Search.Subject
   alias Forge.Ast
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
+  alias Forge.Search.Subject
 
   require Logger
 
@@ -39,7 +40,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
           @definition_mappings[definition],
           block_range(reducer.analysis.document, defmodule_ast),
           detail_range,
-          Engine.ApplicationCache.application(aliased_module)
+          Reducer.application(reducer, aliased_module)
         )
 
       module_name_meta = Reducer.skip(module_name_meta)
@@ -74,7 +75,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
           {:protocol, :implementation},
           block_range(reducer.analysis.document, defimpl_ast),
           detail_range,
-          Engine.ApplicationCache.application(protocol_module)
+          Reducer.application(reducer, protocol_module)
         )
 
       module_entry =
@@ -104,7 +105,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
           Subject.module(module),
           :module,
           range,
-          Engine.ApplicationCache.application(module)
+          Reducer.application(reducer, module)
         )
 
       {:ok, entry, nil}
@@ -119,7 +120,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
     line = Sourceror.get_line(ast)
     pos = Position.new(reducer.analysis.document, line - 1, 1)
 
-    with {:ok, current_module} <- Expert.Search.Indexer.Analyzer.current_module(reducer.analysis, pos),
+    with {:ok, current_module} <- Analyzer.current_module(reducer.analysis, pos),
          {:ok, start_pos, end_pos} <- module_positions(reducer, metadata) do
       range = Range.new(start_pos, end_pos)
       %Block{} = current_block = Reducer.current_block(reducer)
@@ -131,7 +132,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
           Subject.module(current_module),
           :module,
           range,
-          Engine.ApplicationCache.application(current_module)
+          Reducer.application(reducer, current_module)
         )
 
       {:ok, entry}
@@ -154,7 +155,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
           Subject.module(module),
           :module,
           range,
-          Engine.ApplicationCache.application(module)
+          Reducer.application(reducer, module)
         )
 
       {:ok, entry}
@@ -186,7 +187,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
           Subject.module(module),
           :module,
           range,
-          Engine.ApplicationCache.application(module)
+          Reducer.application(reducer, module)
         )
 
       {:ok, entry}
@@ -233,7 +234,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   defp resolve_alias(%Reducer{} = reducer, unresolved_alias) do
     position = Reducer.position(reducer)
 
-    Expert.Search.Indexer.Analyzer.expand_alias(unresolved_alias, reducer.analysis, position)
+    Analyzer.expand_alias(unresolved_alias, reducer.analysis, position)
   end
 
   defp module(%Reducer{} = reducer, maybe_module) when is_list(maybe_module) do
@@ -252,12 +253,10 @@ defmodule Expert.Search.Indexer.Extractors.Module do
     end
   end
 
-  defp module(%Reducer{}, maybe_erlang_module) when is_atom(maybe_erlang_module) do
-    if Engine.ApplicationCache.available_module?(maybe_erlang_module) do
-      {:ok, maybe_erlang_module}
-    else
-      :error
-    end
+  defp module(%Reducer{} = reducer, maybe_erlang_module) when is_atom(maybe_erlang_module) do
+    if Reducer.available_module?(reducer, maybe_erlang_module),
+      do: {:ok, maybe_erlang_module},
+      else: :error
   end
 
   defp module(_, _), do: :error

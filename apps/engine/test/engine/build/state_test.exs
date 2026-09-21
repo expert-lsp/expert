@@ -14,7 +14,7 @@ defmodule Engine.Build.StateTest do
     start_supervised!(Engine.Dispatch)
     start_supervised!(Engine.Api.Proxy)
     start_supervised!(Build.CaptureServer)
-    start_supervised!(Engine.Compilation.TraceBuffer)
+    start_supervised!(Engine.ApplicationCache)
     start_supervised!(Engine.ModuleMappings)
     :ok
   end

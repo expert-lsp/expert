@@ -10,6 +10,8 @@ defmodule Expert.Project.IndexerTest do
   alias Expert.EngineApi
   alias Expert.Project.Indexer
   alias Expert.Project.Node, as: ProjectNode
+  alias Expert.Search
+  alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Store
   alias Expert.Search.Store.Backends.Sqlite
   alias Expert.Test.DispatchFake
@@ -86,8 +88,9 @@ defmodule Expert.Project.IndexerTest do
     test_pid = self()
     entry = definition(id: 1, subject: ProjectIndexer.Initial, path: "/initial.ex")
 
-    patch(EngineApi, :call, fn ^project, Engine.Compilation.TraceBuffer, :drain_definitions, [] ->
-      {:ok, %{}}
+    patch(Search.Indexer, :commit_manifest, fn ^project, %Manifest{} ->
+      send(test_pid, {:after_apply, Store.exact(project, ProjectIndexer.Initial, [])})
+      :ok
     end)
 
     start_supervised!(
@@ -98,15 +101,11 @@ defmodule Expert.Project.IndexerTest do
          create_index: fn ^project ->
            send(test_pid, :create_index)
 
-           {:ok, [entry],
-            fn ->
-              send(test_pid, {:after_apply, Store.exact(project, ProjectIndexer.Initial, [])})
-              :ok
-            end}
+           {:ok, [entry], Manifest.new([])}
          end,
          update_index: fn ^project, _path_to_ids ->
            send(test_pid, :update_index)
-           {:ok, [], [], fn -> :ok end}
+           {:ok, [], [], Manifest.new([])}
          end
        ]}
     )
@@ -128,6 +127,11 @@ defmodule Expert.Project.IndexerTest do
     test_pid = self()
     entry = definition(id: 1, subject: ProjectIndexer.OnError, path: "/on_error.ex")
 
+    patch(Search.Indexer, :commit_manifest, fn ^project, %Manifest{} ->
+      send(test_pid, {:after_apply, Store.exact(project, ProjectIndexer.OnError, [])})
+      :ok
+    end)
+
     start_supervised!(
       {Indexer,
        [
@@ -136,15 +140,11 @@ defmodule Expert.Project.IndexerTest do
          create_index: fn ^project ->
            send(test_pid, :create_index)
 
-           {:ok, [entry],
-            fn ->
-              send(test_pid, {:after_apply, Store.exact(project, ProjectIndexer.OnError, [])})
-              :ok
-            end}
+           {:ok, [entry], Manifest.new([])}
          end,
          update_index: fn ^project, _path_to_ids ->
            send(test_pid, :update_index)
-           {:ok, [], [], fn -> :ok end}
+           {:ok, [], [], Manifest.new([])}
          end
        ]}
     )
@@ -168,8 +168,9 @@ defmodule Expert.Project.IndexerTest do
 
     test_pid = self()
 
-    patch(EngineApi, :call, fn ^project, Engine.Compilation.TraceBuffer, :drain_definitions, [] ->
-      {:ok, %{}}
+    patch(Search.Indexer, :commit_manifest, fn ^project, %Manifest{} ->
+      send(test_pid, {:after_apply, Store.exact(project, ProjectIndexer.Fresh, [])})
+      :ok
     end)
 
     start_supervised!(
@@ -179,16 +180,11 @@ defmodule Expert.Project.IndexerTest do
          task_supervisor: task_supervisor,
          create_index: fn ^project ->
            send(test_pid, :create_index)
-           {:ok, []}
+           {:ok, [], Manifest.new([])}
          end,
          update_index: fn ^project, path_to_ids ->
            send(test_pid, {:update_index, path_to_ids})
-
-           {:ok, [new_entry], [],
-            fn ->
-              send(test_pid, {:after_apply, Store.exact(project, ProjectIndexer.Fresh, [])})
-              :ok
-            end}
+           {:ok, [new_entry], [], Manifest.new([])}
          end
        ]}
     )
@@ -202,194 +198,6 @@ defmodule Expert.Project.IndexerTest do
     assert_receive project_index_ready(project: ^project)
     assert {:ok, []} = Store.exact(project, ProjectIndexer.Stale, [])
     assert {:ok, [^new_entry]} = Store.exact(project, ProjectIndexer.Fresh, [])
-  end
-
-  test "applies compiler trace definitions after the normal index write", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
-    test_pid = self()
-    structure_entry = Entry.block_structure("/generated.ex", %{root: %{}})
-    source_entry = definition(id: 1, subject: ProjectIndexer.Source, path: "/generated.ex")
-    trace_entry = definition(id: 2, subject: ProjectIndexer.Generated, path: "/generated.ex")
-
-    patch(EngineApi, :call, fn ^project, Engine.Compilation.TraceBuffer, :drain_definitions, [] ->
-      {:ok, %{trace_entry.path => [trace_entry]}}
-    end)
-
-    start_supervised!(
-      {Indexer,
-       [
-         project,
-         task_supervisor: task_supervisor,
-         create_index: fn ^project ->
-           send(test_pid, {:create_started, self()})
-
-           receive do
-             :finish_index -> {:ok, [structure_entry, source_entry], fn -> :ok end}
-           end
-         end,
-         update_index: fn ^project, _path_to_ids -> {:ok, [], [], fn -> :ok end} end
-       ]}
-    )
-
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
-    assert_receive {:create_started, index_task}
-    refute_receive project_index_ready(project: ^project), 100
-
-    send(index_task, :finish_index)
-
-    assert_receive project_index_ready(project: ^project)
-
-    assert {:ok, [%Entry{subject: ProjectIndexer.Generated}]} =
-             Store.exact(project, ProjectIndexer.Generated, [])
-
-    assert {:ok, [^source_entry]} = Store.exact(project, ProjectIndexer.Source, [])
-  end
-
-  test "uses the latest trace batch when successful compiles overlap indexing", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
-    test_pid = self()
-    first_entry = definition(id: 1, subject: ProjectIndexer.First, path: "/stale_trace.ex")
-    second_entry = definition(id: 2, subject: ProjectIndexer.Second, path: "/stale_trace.ex")
-    old_trace = definition(id: 3, subject: ProjectIndexer.OldTrace, path: "/stale_trace.ex")
-    new_trace = definition(id: 4, subject: ProjectIndexer.NewTrace, path: "/stale_trace.ex")
-
-    patch(EngineApi, :call, fn ^project, Engine.Compilation.TraceBuffer, :drain_definitions, [] ->
-      send(test_pid, {:drain_trace, self()})
-
-      receive do
-        {:trace_batch, batch} -> {:ok, batch}
-      end
-    end)
-
-    start_supervised!(
-      {Indexer,
-       [
-         project,
-         task_supervisor: task_supervisor,
-         create_index: fn ^project ->
-           send(test_pid, {:index_started, self(), :first})
-
-           receive do
-             :finish_index -> {:ok, [first_entry], fn -> :ok end}
-           end
-         end,
-         update_index: fn ^project, _path_to_ids ->
-           send(test_pid, {:index_started, self(), :second})
-
-           receive do
-             :finish_index -> {:ok, [second_entry], [], fn -> :ok end}
-           end
-         end
-       ]}
-    )
-
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
-    assert_receive {:drain_trace, drain_task}
-    send(drain_task, {:trace_batch, %{old_trace.path => [old_trace]}})
-    assert_receive {:index_started, first_task, :first}
-
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
-    assert_receive {:drain_trace, drain_task}
-    send(drain_task, {:trace_batch, %{new_trace.path => [new_trace]}})
-
-    send(first_task, :finish_index)
-    assert_receive {:index_started, second_task, :second}
-
-    send(second_task, :finish_index)
-    assert_receive project_index_ready(project: ^project)
-
-    assert {:ok, []} = Store.exact(project, ProjectIndexer.OldTrace, [])
-    assert {:ok, []} = Store.exact(project, ProjectIndexer.First, [])
-
-    assert {:ok, [%Entry{subject: ProjectIndexer.NewTrace}]} =
-             Store.exact(project, ProjectIndexer.NewTrace, [])
-
-    assert {:ok, [%Entry{subject: ProjectIndexer.Second}]} =
-             Store.exact(project, ProjectIndexer.Second, [])
-  end
-
-  test "source entries win over duplicate compiler trace definitions", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
-    path = "/duplicate.ex"
-    source_entry = definition(id: 1, subject: ProjectIndexer.Duplicate, path: path)
-    trace_entry = definition(id: 2, subject: ProjectIndexer.Duplicate, path: path)
-    unique_trace_entry = definition(id: 3, subject: ProjectIndexer.TraceOnly, path: path)
-    duplicate_trace_entry = definition(id: 4, subject: ProjectIndexer.TraceOnly, path: path)
-
-    patch(EngineApi, :call, fn ^project, Engine.Compilation.TraceBuffer, :drain_definitions, [] ->
-      {:ok, %{path => [trace_entry, unique_trace_entry, duplicate_trace_entry]}}
-    end)
-
-    start_supervised!(
-      {Indexer,
-       [
-         project,
-         task_supervisor: task_supervisor,
-         create_index: fn ^project -> {:ok, [source_entry], fn -> :ok end} end,
-         update_index: fn ^project, _path_to_ids -> {:ok, [], [], fn -> :ok end} end
-       ]}
-    )
-
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
-
-    assert_receive project_index_ready(project: ^project)
-    assert {:ok, [^source_entry]} = Store.exact(project, ProjectIndexer.Duplicate, [])
-
-    assert {:ok, [%Entry{subject: ProjectIndexer.TraceOnly}]} =
-             Store.exact(project, ProjectIndexer.TraceOnly, [])
-  end
-
-  test "compiler trace definitions replace stale use definitions", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
-    path = "/use_definition.ex"
-
-    stale_entry =
-      [id: 1, subject: ProjectIndexer.Injected, path: path]
-      |> definition()
-      |> Entry.put_metadata(%{via: :use, original_mfa: "OldProvider.injected/0"})
-
-    compiler_entry =
-      [id: 2, subject: ProjectIndexer.Injected, path: path]
-      |> definition()
-      |> Entry.put_metadata(%{via: :use, original_mfa: "ActualProvider.injected/0"})
-
-    impossible_entry =
-      [id: 3, subject: ProjectIndexer.DisabledInjection, path: path]
-      |> definition()
-      |> Entry.put_metadata(%{via: :use, original_mfa: "Provider.disabled/0"})
-
-    patch(EngineApi, :call, fn ^project, Engine.Compilation.TraceBuffer, :drain_definitions, [] ->
-      {:ok, %{path => [compiler_entry]}}
-    end)
-
-    start_supervised!(
-      {Indexer,
-       [
-         project,
-         task_supervisor: task_supervisor,
-         create_index: fn ^project ->
-           {:ok, [stale_entry, impossible_entry], fn -> :ok end}
-         end,
-         update_index: fn ^project, _path_to_ids -> {:ok, [], [], fn -> :ok end} end
-       ]}
-    )
-
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
-
-    assert_receive project_index_ready(project: ^project)
-
-    assert {:ok, [%Entry{metadata: %{original_mfa: "ActualProvider.injected/0"}}]} =
-             Store.exact(project, ProjectIndexer.Injected, [])
-
-    assert {:ok, []} = Store.exact(project, ProjectIndexer.DisabledInjection, [])
   end
 
   defp definition(opts) do

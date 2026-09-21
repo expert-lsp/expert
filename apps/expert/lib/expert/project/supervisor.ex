@@ -6,6 +6,7 @@ defmodule Expert.Project.Supervisor do
   alias Expert.Project.Indexer
   alias Expert.Project.Intelligence
   alias Expert.Project.Node
+  alias Expert.Project.Reindex
   alias Expert.Project.SearchListener
   alias Expert.Project.Store
   alias Expert.Search
@@ -26,6 +27,7 @@ defmodule Expert.Project.Supervisor do
       {Diagnostics, project},
       {Intelligence, project},
       {SearchListener, project},
+      {Reindex, project},
       {Task.Supervisor, name: Indexer.task_supervisor_name(project)},
       {Indexer, [project, initial_compile?: true]}
     ]

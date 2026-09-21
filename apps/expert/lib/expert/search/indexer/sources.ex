@@ -3,15 +3,15 @@ defmodule Expert.Search.Indexer.Sources do
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.Source
 
-  def index(paths) when is_list(paths) do
+  def index(paths, source_indexer \\ &Source.index/2) when is_list(paths) do
     paths
-    |> map_paths("Indexing source code", "Indexing", &index_path/1)
+    |> map_paths("Indexing source code", "Indexing", &index_path(&1, source_indexer))
     |> entries_and_manifest_entries()
   end
 
-  defp index_path(path) do
+  defp index_path(path, source_indexer) do
     with {:ok, contents} <- File.read(path),
-         {:ok, [_ | _] = entries} <- Source.index(path, contents),
+         {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
          true <- has_search_entries?(entries),
          {:ok, manifest_entry} <- Manifest.Entry.source(path) do
       [{entries, manifest_entry}]

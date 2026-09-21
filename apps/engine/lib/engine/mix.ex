@@ -41,6 +41,30 @@ defmodule Engine.Mix do
     :persistent_term.get({__MODULE__, :deps_paths}, %{})
   end
 
+  @doc "Returns evaluated Mix configuration from the project's runtime."
+  def project_configuration(%Project{kind: :mix} = project) do
+    in_project(project, fn project_module ->
+      dependencies =
+        run_and_normalize(fn ->
+          Mix.Dep.clear_cached()
+          Mix.Project.clear_deps_cache()
+          Mix.Project.deps_apps()
+        end)
+
+      %{
+        config: Mix.Project.config(),
+        project_config: project_module.project(),
+        build_path: Mix.Project.build_path(),
+        deps_path: Mix.Project.deps_path(),
+        apps_paths: Mix.Project.apps_paths(),
+        dependency_apps: dependencies,
+        env: Mix.env(),
+        target: Mix.target(),
+        build_root: System.get_env("MIX_BUILD_ROOT")
+      }
+    end)
+  end
+
   def deps_formatter_opts do
     {_, formatter_opts} = :persistent_term.get({__MODULE__, :deps_formatter}, {%{}, %{}})
     formatter_opts

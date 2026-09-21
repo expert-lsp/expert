@@ -19,7 +19,7 @@ defmodule Expert.CodeIntelligence.Variable do
     end
   end
 
-  @spec references(Analysis.t(), Position.t(), charlist(), boolean()) :: [Range.t()]
+  @spec references(Analysis.t(), Position.t(), atom(), boolean()) :: [Range.t()]
   def references(
         %Analysis{} = analysis,
         %Position{} = position,
@@ -27,23 +27,35 @@ defmodule Expert.CodeIntelligence.Variable do
         include_definitions? \\ false
       ) do
     with {:ok, block_structure, entries} <- index_variables(analysis),
-         {:ok, %Entry{} = definition_entry} <-
-           do_find_definition(variable_name, block_structure, entries, position) do
-      references = search_for_references(entries, definition_entry, block_structure)
-
-      entries =
-        if include_definitions? do
-          [definition_entry | references]
-        else
-          references
-        end
-
-      Enum.sort_by(entries, fn %Entry{} = entry ->
-        {entry.range.start.line, entry.range.start.character}
-      end)
+         {:ok, entries} <-
+           references_in(entries, block_structure, position, variable_name, include_definitions?) do
+      entries
     else
+      _ -> []
+    end
+  end
+
+  defp references_in(entries, block_structure, position, variable_name, include_definitions?) do
+    case do_find_definition(variable_name, block_structure, entries, position) do
+      {:ok, %Entry{} = definition_entry} ->
+        references = search_for_references(entries, definition_entry, block_structure)
+
+        entries =
+          if include_definitions? do
+            [definition_entry | references]
+          else
+            references
+          end
+
+        entries =
+          Enum.sort_by(entries, fn %Entry{} = entry ->
+            {entry.range.start.line, entry.range.start.character}
+          end)
+
+        {:ok, entries}
+
       _ ->
-        []
+        :error
     end
   end
 

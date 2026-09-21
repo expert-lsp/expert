@@ -1,5 +1,6 @@
 defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   use ExUnit.Case, async: false
+  use Patch
 
   import Forge.EngineApi.Messages
   import Forge.Test.Fixtures
@@ -38,6 +39,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
     start_supervised!({Indexer, project})
 
     Expert.Project.Store.set_projects([project])
+    Expert.Project.Store.transition(project, :ready)
 
     Expert.Configuration.new() |> Expert.Configuration.set()
 
@@ -88,6 +90,46 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
 
   describe "go to definition" do
     setup [:with_referenced_file]
+
+    test "resolves definitions from the manager index", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 4, 17)
+
+      assert {:ok, %Location{} = location} = handle(request, project)
+      assert Location.uri(location) == referenced_uri
+    end
+
+    test "resolves local variables in the manager", %{project: project} do
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      path = file_path(project, Path.join("lib", "my_definition.ex"))
+      {:ok, request} = build_request(path, 17, 16)
+
+      assert {:ok, %Location{} = location} = handle(request, project)
+      assert Location.uri(location) == Document.Path.ensure_uri(path)
+    end
+
+    test "uses the Engine after an index miss when it is ready", %{project: project} do
+      test_pid = self()
+      assert Expert.Project.Store.transition(project, :ready)
+      on_exit(fn -> Expert.Project.Store.transition(project, :pending) end)
+
+      patch(EngineApi, :definition, fn ^project, _document, _position ->
+        send(test_pid, :engine_fallback)
+        {:ok, nil}
+      end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 8, 7)
+
+      assert {:ok, nil} = handle(request, project)
+      assert_receive :engine_fallback
+    end
 
     test "finds user-defined functions", %{project: project, uri: referenced_uri} do
       uses_file_path = file_path(project, Path.join("lib", "uses.ex"))

@@ -11,11 +11,6 @@ defmodule Expert.Test.ExtractorCase do
       import Forge.Test.CodeSigil
       import Forge.Test.RangeSupport
       import unquote(__MODULE__)
-
-      setup do
-        start_supervised!(Engine.ApplicationCache)
-        :ok
-      end
     end
   end
 

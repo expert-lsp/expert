@@ -128,7 +128,6 @@ defmodule Engine.Build.State do
         project_compile_requested(project: project, build_number: state.build_number)
 
       Engine.broadcast(compile_requested_message)
-      Engine.Compilation.TraceBuffer.discard()
 
       {elapsed_us, result} =
         :timer.tc(fn -> Build.Project.compile(project, state.initial_compile?, force?) end)
@@ -153,7 +152,6 @@ defmodule Engine.Build.State do
             {message, diagnostics}
 
           {:error, diagnostics} ->
-            Engine.Compilation.TraceBuffer.discard()
             message = project_compiled(status: :error, project: project, elapsed_ms: elapsed_ms)
 
             diagnostics =

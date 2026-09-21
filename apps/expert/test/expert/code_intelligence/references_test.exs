@@ -7,22 +7,29 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
   import Forge.Test.Fixtures
   import Forge.Test.RangeSupport
 
-  alias Engine.CodeIntelligence.References
+  alias Expert.EngineApi
   alias Expert.Search.Indexer.Source
+  alias Expert.Search.Store
   alias Forge.Document
   alias Forge.Document.Location
 
   setup do
     project = project()
+    test_pid = self()
 
     Engine.set_project(project)
+
+    patch(EngineApi, :call, fn ^project, Engine, :resolve_entity, [analysis, position] ->
+      send(test_pid, {:engine_resolve_entity, position})
+      Engine.CodeIntelligence.Entity.resolve(analysis, position)
+    end)
+
     {:ok, store} = Agent.start_link(fn -> [] end)
 
-    start_supervised!(Engine.ApplicationCache)
     start_supervised!(Document.Store)
     start_supervised!(Engine.Dispatch)
 
-    patch(Engine.ManagerApi, :search_store_replace, fn ^project, entries ->
+    patch(Store, :replace, fn ^project, entries ->
       Agent.update(store, fn _ -> entries end)
       :ok
     end)
@@ -32,6 +39,14 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
     end)
 
     patch(Engine.ManagerApi, :search_store_prefix, fn ^project, subject, constraints ->
+      {:ok, query_entries(store, subject, constraints, :prefix)}
+    end)
+
+    patch(Expert.Search.Store, :exact, fn ^project, subject, constraints ->
+      {:ok, query_entries(store, subject, constraints, :exact)}
+    end)
+
+    patch(Expert.Search.Store, :prefix, fn ^project, subject, constraints ->
       {:ok, query_entries(store, subject, constraints, :prefix)}
     end)
 
@@ -339,6 +354,7 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
       {_, code} = pop_cursor(query)
 
       assert [ref_1, ref_2] = references(project, query, code)
+      refute_receive {:engine_resolve_entity, _}
 
       assert decorate(code, ref_1.range) =~ "  y = «first» * 2"
       assert decorate(code, ref_2.range) =~ "  z = y * 3 + «first»"
@@ -356,6 +372,7 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
       {_, code} = pop_cursor(query)
 
       assert [definition, _ref_1, _ref_2] = references(project, query, code, true)
+      refute_receive {:engine_resolve_entity, _}
       assert decorate(code, definition.range) =~ "  «first» = 4"
     end
   end
@@ -380,10 +397,13 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
     with {position, referenced} <- pop_cursor(referenced, as: :document),
          {:ok, document} <- project_module(project, code),
          {:ok, entries} <- Source.index(document.path, code),
-         :ok <- Engine.ManagerApi.search_store_replace(project, entries) do
-      referenced
-      |> Forge.Ast.analyze()
-      |> References.references(position, include_definitions?)
+         :ok <- Store.replace(project, entries) do
+      Expert.CodeIntelligence.References.references(
+        project,
+        Forge.Ast.analyze(referenced),
+        position,
+        include_definitions?
+      )
     end
   end
 end

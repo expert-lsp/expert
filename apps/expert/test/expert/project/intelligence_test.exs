@@ -4,10 +4,13 @@ defmodule Expert.Project.IntelligenceTest do
   use Expert.Test.DispatchFake
 
   import Forge.EngineApi.Messages
+  import Forge.Test.EventualAssertions
 
   alias Expert.EngineApi
   alias Expert.Project.Intelligence
+  alias Expert.Search.Store
   alias Expert.Test.DispatchFake
+  alias Forge.Search.Indexer.Entry
   alias Forge.Test.Fixtures
 
   setup do
@@ -43,6 +46,18 @@ defmodule Expert.Project.IntelligenceTest do
 
     Process.sleep(50)
     :ok
+  end
+
+  test "loads indexed struct definitions without requiring loaded modules", %{project: project} do
+    struct_module = Module.concat(__MODULE__, IndexedOnlyStruct)
+
+    patch(Store, :exact, fn ^project, [type: :struct, subtype: :definition] ->
+      {:ok, [%Entry{subject: struct_module}]}
+    end)
+
+    EngineApi.broadcast(project, project_index_ready(project: project))
+
+    assert_eventually Intelligence.defines_struct?(project, struct_module)
   end
 
   describe "defines_struct?/2" do
