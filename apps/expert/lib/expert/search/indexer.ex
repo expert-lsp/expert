@@ -3,6 +3,7 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ManifestStore
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Sources
   alias Forge.ProcessCache
@@ -12,6 +13,7 @@ defmodule Expert.Search.Indexer do
 
   def create_index(%Project{} = project, opts \\ []) do
     with_indexer_context(project, fn ->
+      :ok = ModuleRegistry.clear(project)
       {entries, manifest} = create_index_data(project, opts)
 
       {:ok, entries, manifest}
@@ -24,9 +26,16 @@ defmodule Expert.Search.Indexer do
 
   def update_index(%Project{} = project, path_to_ids, opts \\ []) when is_map(path_to_ids) do
     with_indexer_context(project, fn ->
+      paths = paths_for_project(project, opts)
+      :ok = ModuleRegistry.prune(project, paths.beam_paths)
+      opts = Keyword.put(opts, :paths, paths)
+
       case ManifestStore.load(project) do
-        {:ok, %Manifest{} = manifest} -> refresh_index(project, manifest, path_to_ids, opts)
-        :missing -> replace_index(project, path_to_ids, opts)
+        {:ok, %Manifest{} = manifest} ->
+          refresh_index(project, manifest, path_to_ids, opts)
+
+        :missing ->
+          replace_index(project, path_to_ids, opts)
       end
     end)
   end
@@ -53,13 +62,24 @@ defmodule Expert.Search.Indexer do
     {:ok, entries, paths_to_clear, manifest}
   end
 
-  defp refresh_index(%Project{} = project, %Manifest{} = manifest, path_to_ids, opts) do
-    {entries, paths_to_clear, manifest} = update_index_data(project, manifest, path_to_ids, opts)
+  defp refresh_index(
+         %Project{} = project,
+         %Manifest{} = manifest,
+         path_to_ids,
+         opts
+       ) do
+    {entries, paths_to_clear, manifest} =
+      update_index_data(project, manifest, path_to_ids, opts)
 
     {:ok, entries, paths_to_clear, manifest}
   end
 
-  defp update_index_data(%Project{} = project, %Manifest{} = manifest, path_to_ids, opts) do
+  defp update_index_data(
+         %Project{} = project,
+         %Manifest{} = manifest,
+         path_to_ids,
+         opts
+       ) do
     paths = paths_for_project(project, opts)
 
     plan =
@@ -91,11 +111,11 @@ defmodule Expert.Search.Indexer do
          %Manifest{} = manifest,
          %Paths{} = paths
        ) do
+    {beam_entries, beam_manifest_entries, beam_paths_to_index} =
+      index_beam_plan(project, plan, manifest, paths)
+
     {source_entries, source_manifest_entries} =
       Sources.index(plan.source_paths_to_index, source_indexer(project))
-
-    {beam_entries, beam_manifest_entries, beam_paths_to_index} =
-      index_beam_plan(plan, manifest, paths)
 
     plan = %Manifest.Plan{plan | beam_paths_to_index: beam_paths_to_index}
 
@@ -128,13 +148,13 @@ defmodule Expert.Search.Indexer do
   # in large codebases. As a compromise, this keeps the existing source-path
   # replacement model and only reindexes known BEAMs that share a source path
   # with the new BEAM.
-  defp index_beam_plan(%Manifest.Plan{beam_paths_to_index: []}, _manifest, _paths) do
+  defp index_beam_plan(_project, %Manifest.Plan{beam_paths_to_index: []}, _manifest, _paths) do
     {[], [], []}
   end
 
-  defp index_beam_plan(%Manifest.Plan{} = plan, %Manifest{} = manifest, %Paths{} = paths) do
+  defp index_beam_plan(project, %Manifest.Plan{} = plan, %Manifest{} = manifest, %Paths{} = paths) do
     {entries, manifest_entries} =
-      Beams.index(plan.beam_paths_to_index, applications: paths.applications)
+      Beams.index(plan.beam_paths_to_index, project: project, applications: paths.applications)
 
     sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries)
 
@@ -144,7 +164,7 @@ defmodule Expert.Search.Indexer do
 
       [_ | _] ->
         {sibling_entries, sibling_manifest_entries} =
-          Beams.index(sibling_paths, applications: paths.applications)
+          Beams.index(sibling_paths, project: project, applications: paths.applications)
 
         {entries ++ sibling_entries, manifest_entries ++ sibling_manifest_entries,
          Enum.uniq(plan.beam_paths_to_index ++ sibling_paths)}
@@ -230,11 +250,11 @@ defmodule Expert.Search.Indexer do
   end
 
   defp index_paths(%Project{} = project, %Paths{} = paths) do
+    {beam_entries, beam_manifest_entries} =
+      Beams.index(paths.beam_paths, project: project, applications: paths.applications)
+
     {source_entries, source_manifest_entries} =
       Sources.index(paths.source_paths, source_indexer(project))
-
-    {beam_entries, beam_manifest_entries} =
-      Beams.index(paths.beam_paths, applications: paths.applications)
 
     {merge_entries(source_entries, beam_entries),
      source_manifest_entries ++ beam_manifest_entries}
@@ -284,10 +304,12 @@ defmodule Expert.Search.Indexer do
   defp with_indexer_context(%Project{} = project, fun) when is_function(fun, 0) do
     :ok = EngineApi.clear_application_cache(project)
 
-    ProcessCache.with_cleanup do
-      fun.()
+    try do
+      ProcessCache.with_cleanup do
+        fun.()
+      end
+    after
+      EngineApi.clear_application_cache(project)
     end
-  after
-    EngineApi.clear_application_cache(project)
   end
 end

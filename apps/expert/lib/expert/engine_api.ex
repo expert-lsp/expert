@@ -152,6 +152,9 @@ defmodule Expert.EngineApi do
   def exunit_module?(target, module),
     do: runtime_call(target, Engine.Modules, :exunit_module?, [module])
 
+  def module_exports(target, module),
+    do: runtime_call(target, Engine.Modules, :exports, [module])
+
   def runtime_versions(%Project{} = project) do
     call(project, Engine, :runtime_versions, [])
   end

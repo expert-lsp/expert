@@ -3,6 +3,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
@@ -16,7 +17,7 @@ defmodule Expert.Search.Indexer.Beams do
     {beams, total_bytes} = stat_beams(paths)
 
     beams
-    |> index_beam_chunks(total_bytes)
+    |> index_beam_chunks(total_bytes, opts)
     |> entries_and_manifest_entries(opts)
   end
 
@@ -65,21 +66,25 @@ defmodule Expert.Search.Indexer.Beams do
     end)
   end
 
-  defp index_beam_chunks([], _total_bytes), do: []
+  defp index_beam_chunks([], _total_bytes, _opts), do: []
 
-  defp index_beam_chunks(beams, total_bytes) do
+  defp index_beam_chunks(beams, total_bytes, opts) do
     Progress.with_tracked_progress("Indexing dependencies metadata", total_bytes, fn report ->
       start_time = System.monotonic_time(:millisecond)
 
       results =
         beams
         |> beam_chunks()
-        |> Task.async_stream(&index_beam_chunk(&1, report),
+        |> Task.async_stream(&index_beam_chunk(&1, report, opts),
           max_concurrency: @beam_index_concurrency,
           ordered: false,
           timeout: :infinity
         )
-        |> Enum.flat_map(&task_result!/1)
+        |> Enum.flat_map(fn task_result ->
+          {results, modules} = task_result!(task_result)
+          register_modules(opts[:project], modules)
+          results
+        end)
 
       elapsed = System.monotonic_time(:millisecond) - start_time
       {:done, results, "Completed in #{format_duration(elapsed)}"}
@@ -107,10 +112,22 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp beam_size({_path, %File.Stat{size: size}}), do: size
 
-  defp index_beam_chunk({chunk_bytes, beams}, report) do
-    results = Enum.flat_map(beams, &metadata_from_beam/1)
+  defp index_beam_chunk({chunk_bytes, beams}, report, opts) do
+    {results, modules} =
+      beams
+      |> Enum.map(&metadata_from_beam(&1, opts))
+      |> Enum.unzip()
+
     report.(message: "Indexing dependencies", add: chunk_bytes)
-    results
+    {List.flatten(results), Enum.reject(modules, &is_nil/1)}
+  end
+
+  defp register_modules(nil, _modules), do: :ok
+
+  defp register_modules(project, modules) do
+    Enum.each(modules, fn {module, beam_path, application, exports} ->
+      ModuleRegistry.put(project, module, beam_path, application, exports)
+    end)
   end
 
   defp entries_and_manifest_entries(results, opts) do
@@ -161,10 +178,23 @@ defmodule Expert.Search.Indexer.Beams do
     Map.get(applications, Path.dirname(manifest_entry.input_path))
   end
 
-  defp metadata_from_beam({beam_path, beam_stat}) do
-    case debug_metadata(beam_path) do
-      {:ok, metadata} -> metadata_result_from_beam(beam_path, beam_stat, metadata)
-      :error -> skipped_result_from_beam(beam_path, beam_stat, nil, nil)
+  defp metadata_from_beam({beam_path, beam_stat}, opts) do
+    application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
+
+    with {:ok, beam} <- File.read(beam_path),
+         {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
+      results =
+        case debug_metadata_result do
+          {:ok, metadata} ->
+            metadata_result_from_beam(beam_path, beam_stat, metadata)
+
+          :error ->
+            skipped_result_from_beam(beam_path, beam_stat, nil, nil)
+        end
+
+      {results, {module, beam_path, application, exports}}
+    else
+      _ -> {skipped_result_from_beam(beam_path, beam_stat, nil, nil), nil}
     end
   end
 
@@ -207,28 +237,34 @@ defmodule Expert.Search.Indexer.Beams do
 
   # The debug-info chunk data is backend-owned and opaque. The public contract is
   # to ask the backend to decode it into the Elixir debug-info format we consume.
-  defp debug_metadata(beam_path) do
-    with {:ok, {module, [debug_info: {:debug_info_v1, backend, data}]}} <-
-           :beam_lib.chunks(String.to_charlist(beam_path), [:debug_info]),
-         {:ok, metadata} when is_map(metadata) <- backend.debug_info(:elixir_v1, module, data, []) do
-      {:ok, metadata}
-    else
+  defp metadata_from_binary(beam) do
+    case :beam_lib.chunks(beam, [:debug_info, :exports]) do
+      {:ok, {module, chunks}} ->
+        {:ok, module, chunks[:exports] || [], decode_debug_metadata(module, chunks[:debug_info])}
+
+      _ ->
+        :error
+    end
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp decode_debug_metadata(module, {:debug_info_v1, backend, data}) do
+    case backend.debug_info(:elixir_v1, module, data, []) do
+      {:ok, metadata} when is_map(metadata) -> {:ok, metadata}
       _ -> :error
     end
   catch
     _kind, _reason -> :error
   end
 
+  defp decode_debug_metadata(_module, _debug_info), do: :error
+
   defp debug_metadata_from_binary(beam) do
-    with {:ok, {module, [debug_info: {:debug_info_v1, backend, data}]}} <-
-           :beam_lib.chunks(beam, [:debug_info]),
-         {:ok, metadata} when is_map(metadata) <- backend.debug_info(:elixir_v1, module, data, []) do
-      {:ok, metadata}
-    else
-      _ -> :error
+    case metadata_from_binary(beam) do
+      {:ok, _module, _exports, debug_metadata_result} -> debug_metadata_result
+      :error -> :error
     end
-  catch
-    _kind, _reason -> :error
   end
 
   defp entries_from_metadata(metadata, source_lines, app \\ nil) do

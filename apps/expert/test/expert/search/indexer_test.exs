@@ -10,6 +10,7 @@ defmodule Expert.Search.IndexerTest do
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.Manifest.Entry, as: ManifestEntry
   alias Expert.Search.Indexer.ManifestStore
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Source
   alias Forge.Project
@@ -37,6 +38,8 @@ defmodule Expert.Search.IndexerTest do
 
   setup do
     project = project()
+    start_supervised!({Expert.Project.Store, []})
+    start_registry(project)
     start_supervised!(Engine.ApplicationCache)
 
     patch(Engine.Api.Proxy, :broadcast, fn _ -> :ok end)
@@ -65,11 +68,8 @@ defmodule Expert.Search.IndexerTest do
       _project, Engine.Modules, :exunit_module?, [module] ->
         Engine.Modules.exunit_module?(module)
 
-      _project, Engine.Analyzer.Imports, :at, [analysis, position] ->
-        Engine.Analyzer.Imports.at(analysis, position)
-
-      _project, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity] ->
-        Engine.Analyzer.resolve_local_call(analysis, position, name, arity)
+      _project, Engine.Modules, :exports, [module] ->
+        Engine.Modules.exports(module)
     end)
 
     FakeBackend.set_entries([])
@@ -89,6 +89,12 @@ defmodule Expert.Search.IndexerTest do
 
     assert :ok = Indexer.commit_manifest(project, manifest)
     {entries, paths_to_clear}
+  end
+
+  defp start_registry(project) do
+    start_supervised!({ModuleRegistry, project})
+    Expert.Project.Store.add_projects([project])
+    Expert.Project.Store.transition(project, :ready)
   end
 
   defp write_file!(path, contents) do
@@ -139,6 +145,91 @@ defmodule Expert.Search.IndexerTest do
       assert_receive :application_cache_cleared
     end
 
+    @tag :tmp_dir
+    test "keeps the project registry after indexing", %{project: project, tmp_dir: tmp_dir} do
+      path = write_file!(Path.join(tmp_dir, "failed.ex"), "defmodule Failed do\nend")
+
+      patch(Source, :index, fn ^path, _source, nil, ^project ->
+        {:ok, []}
+      end)
+
+      assert {:ok, [], %Manifest{}} =
+               Indexer.create_index(project,
+                 paths: %Paths{source_paths: [path]},
+                 beams?: false
+               )
+
+      registry = ModuleRegistry.name(project)
+      assert :ets.info(registry, :owner) == Process.whereis(registry)
+    end
+
+    @tag :tmp_dir
+    test "builds the module registry before source indexing", %{
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      test_pid = self()
+      module = Module.concat(BeamDependencyIndexerTest, :CatalogImported)
+
+      dep_source = """
+      defmodule #{inspect(module)} do
+        def imported_function, do: :ok
+        defmacro imported_macro, do: :ok
+      end
+      """
+
+      %{beam_path: beam_path} =
+        with_beam_dependency(tmp_dir,
+          module: module,
+          modules: [module],
+          dep_source: dep_source,
+          rewrite_source?: false
+        )
+
+      :code.purge(module)
+      :code.delete(module)
+
+      source_path =
+        write_file!(Path.join(tmp_dir, "registry_consumer.ex"), """
+        defmodule RegistryConsumer do
+          import #{inspect(module)}
+
+          def run do
+            imported_function()
+            imported_macro()
+          end
+        end
+        """)
+
+      paths = %Paths{
+        source_paths: [source_path],
+        beam_paths: [beam_path],
+        applications: %{Path.dirname(beam_path) => :registry_dependency}
+      }
+
+      patch(Source, :index, fn path, source, extractors, project ->
+        send(test_pid, {:registry_application, ModuleRegistry.application(project, module)})
+        real(Source).index(path, source, extractors, project)
+      end)
+
+      assert {:ok, entries, _manifest} = Indexer.create_index(project, paths: paths)
+      assert_receive {:registry_application, :registry_dependency}
+
+      imported_subjects = [
+        Forge.Formats.mfa(module, :imported_function, 0),
+        Forge.Formats.mfa(module, :imported_macro, 0)
+      ]
+
+      references =
+        Enum.filter(entries, fn entry ->
+          entry.subject in imported_subjects and entry.subtype == :reference
+        end)
+
+      assert Enum.sort(Enum.map(references, & &1.subject)) == Enum.sort(imported_subjects)
+      assert Enum.all?(references, &(&1.application == :registry_dependency))
+      refute Code.loaded?(module)
+    end
+
     test "returns a list of entries", %{project: project} do
       entry_stream = create_index(project)
       entries = Enum.to_list(entry_stream)
@@ -158,6 +249,7 @@ defmodule Expert.Search.IndexerTest do
       bare_project = bare_root |> Forge.Document.Path.to_uri() |> Project.bare()
 
       patch(Engine, :get_project, fn -> bare_project end)
+      start_registry(bare_project)
 
       entries = create_index(bare_project)
       assert Enum.any?(entries, &(&1.path == native_join([bare_root, "bare_file.ex"])))
@@ -166,6 +258,7 @@ defmodule Expert.Search.IndexerTest do
     @tag :tmp_dir
     test "indexes active path dependency beams", %{tmp_dir: tmp_dir} do
       %{module: module, project: project} = with_beam_dependency(tmp_dir)
+      start_registry(project)
 
       entries = create_index(project)
 
@@ -185,6 +278,7 @@ defmodule Expert.Search.IndexerTest do
       %{module: module, project: project} =
         with_beam_dependency(tmp_dir, dep_opts: [path: "deps/beam_dep", app: false])
 
+      start_registry(project)
       entries = create_index(project)
 
       refute Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
@@ -193,6 +287,7 @@ defmodule Expert.Search.IndexerTest do
     @tag :tmp_dir
     test "indexes protocol callback definitions from beam metadata", %{tmp_dir: tmp_dir} do
       %{module: protocol, project: project} = with_protocol_beam_dependency(tmp_dir)
+      start_registry(project)
 
       entries = create_index(project)
 
@@ -214,6 +309,7 @@ defmodule Expert.Search.IndexerTest do
       %{impl_module: impl_module, project: project, protocol: protocol} =
         with_protocol_implementation_beam_dependency(tmp_dir)
 
+      start_registry(project)
       entries = create_index(project)
 
       assert Enum.any?(
@@ -238,6 +334,7 @@ defmodule Expert.Search.IndexerTest do
       %{dep_file: dep_file, project: project, protocol: protocol} =
         with_protocol_implementation_beam_dependency(tmp_dir, rewrite_source?: false)
 
+      start_registry(project)
       line = line_containing(dep_file, "defimpl")
       expected_column = expected_column(dep_file, "defimpl")
       expected_length = line |> String.trim() |> String.length()
@@ -255,6 +352,7 @@ defmodule Expert.Search.IndexerTest do
     @tag :tmp_dir
     test "indexes entries from transitive dependency beams", %{tmp_dir: tmp_dir} do
       %{module: module, project: project} = with_transitive_beam_dependency(tmp_dir)
+      start_registry(project)
 
       entries = create_index(project)
       assert Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
@@ -265,6 +363,7 @@ defmodule Expert.Search.IndexerTest do
       %{dep_file: dep_file, module: module, project: project} =
         with_beam_dependency(tmp_dir, rewrite_source?: false)
 
+      start_registry(project)
       module_name = inspect(module)
       expected_column = expected_column(dep_file, module_name)
 
@@ -281,6 +380,7 @@ defmodule Expert.Search.IndexerTest do
       %{dep_file: dep_file, module: module, project: project} =
         with_nested_beam_dependency(tmp_dir)
 
+      start_registry(project)
       expected_column = expected_column(dep_file, "Inner")
 
       entries = create_index(project)
@@ -296,6 +396,7 @@ defmodule Expert.Search.IndexerTest do
       %{beam_path: beam_path, module: module, project: project} =
         with_beam_dependency(tmp_dir, debug_info?: false, rewrite_source?: false)
 
+      start_registry(project)
       assert {entries, []} = update_index(project)
       assert {:ok, manifest} = ManifestStore.load(project)
 
@@ -310,6 +411,7 @@ defmodule Expert.Search.IndexerTest do
       %{beam_path: beam_path, dep_file: dep_file, module: module, project: project} =
         with_beam_dependency(tmp_dir, rewrite_source?: false)
 
+      start_registry(project)
       File.touch!(dep_file, {{2100, 1, 1}, {0, 0, 0}})
       spy(Source)
 
@@ -336,6 +438,7 @@ defmodule Expert.Search.IndexerTest do
       %{beam_path: beam_path, project: project} =
         with_beam_dependency(tmp_dir, debug_info?: false, rewrite_source?: false)
 
+      start_registry(project)
       assert {entries, []} = update_index(project)
       FakeBackend.set_entries(entries)
       assert {:ok, manifest} = ManifestStore.load(project)
@@ -373,6 +476,7 @@ defmodule Expert.Search.IndexerTest do
       %{beam_path: beam_path, dep_file: dep_file, project: project} =
         with_beam_dependency(tmp_dir)
 
+      start_registry(project)
       entries = create_index(project)
       FakeBackend.set_entries(entries)
 
@@ -385,6 +489,7 @@ defmodule Expert.Search.IndexerTest do
     @tag :tmp_dir
     test "retains compiled definitions when newer source cannot be parsed", %{tmp_dir: tmp_dir} do
       %{dep_file: dep_file, module: module, project: project} = with_beam_dependency(tmp_dir)
+      start_registry(project)
 
       entries = create_index(project)
       FakeBackend.set_entries(entries)
@@ -407,6 +512,7 @@ defmodule Expert.Search.IndexerTest do
       %{beam_path: beam_path, dep_file: dep_file, module: module, project: project} =
         with_beam_dependency(tmp_dir, rewrite_source?: false)
 
+      start_registry(project)
       FakeBackend.set_entries(create_index(project))
 
       File.write!(dep_file, """
@@ -445,6 +551,7 @@ defmodule Expert.Search.IndexerTest do
       %{app_root: app_root, beam_path: beam_path, dep_file: dep_file, project: project} =
         with_beam_dependency(tmp_dir)
 
+      start_registry(project)
       entries = create_index(project)
       FakeBackend.set_entries(entries)
 
@@ -463,6 +570,7 @@ defmodule Expert.Search.IndexerTest do
         project: project
       } = with_beam_dependency(tmp_dir, module_count: 2)
 
+      start_registry(project)
       entries = create_index(project)
       FakeBackend.set_entries(entries)
 
@@ -509,6 +617,8 @@ defmodule Expert.Search.IndexerTest do
           rewrite_source?: false,
           dep_source: dep_source
         )
+
+      start_registry(project)
 
       parent_beam_path =
         Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(parent) <> ".beam"))
@@ -578,6 +688,7 @@ defmodule Expert.Search.IndexerTest do
       write_file!(build_file, "defmodule StaleBuildFile do end")
 
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
+      start_registry(project)
       entries = create_index(project)
 
       FakeBackend.set_entries([%Entry{id: 1, path: build_file} | entries])
@@ -596,6 +707,7 @@ defmodule Expert.Search.IndexerTest do
 
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.bare()
 
+      start_registry(project)
       assert {entries, []} = update_index(project)
       assert [_ | _] = entries
       assert {:ok, old_manifest} = ManifestStore.load(project)

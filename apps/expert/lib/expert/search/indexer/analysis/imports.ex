@@ -8,10 +8,10 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   alias Forge.ProcessCache
 
   @spec at(Analysis.t(), Position.t()) :: [Scope.import_mfa()]
-  def at(%Analysis{} = analysis, %Position{} = position) do
+  def at(%Analysis{} = analysis, %Position{} = position, module_exports \\ &module_exports/1) do
     case Analysis.scopes_at(analysis, position) do
       [%Scope{} = scope | _] ->
-        imports(scope, position)
+        imports(scope, position, module_exports)
 
       _ ->
         []
@@ -23,7 +23,13 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   """
   @spec module_for(Analysis.t(), Position.t(), atom(), non_neg_integer()) ::
           {:ok, module()} | :error
-  def module_for(%Analysis{} = analysis, %Position{} = position, function_name, arity) do
+  def module_for(
+        %Analysis{} = analysis,
+        %Position{} = position,
+        function_name,
+        arity,
+        module_exports \\ &module_exports/1
+      ) do
     case Analysis.scopes_at(analysis, position) do
       [%Scope{} = scope | _] ->
         end_line = Scope.end_line(scope, position)
@@ -35,7 +41,7 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
         |> Enum.find_value(:error, fn %Import{} = import ->
           module = Aliases.resolve_at(scope, import.module, import.range.start.line)
 
-          if import_allows?(module, import.selector, function_name, arity) do
+          if import_allows?(module, import.selector, function_name, arity, module_exports) do
             {:ok, module}
           else
             false
@@ -47,48 +53,48 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     end
   end
 
-  defp import_allows?(module, :all, fun, arity) do
-    not ensure_loaded?(module) or
-      {fun, arity} in function_and_arities_for_module(module, :functions) or
-      {fun, arity} in function_and_arities_for_module(module, :macros)
+  defp import_allows?(module, :all, fun, arity, module_exports) do
+    not loaded?(module, module_exports) or
+      {fun, arity} in fetch_function_and_arities(module, :functions, module_exports) or
+      {fun, arity} in fetch_function_and_arities(module, :macros, module_exports)
   end
 
-  defp import_allows?(module, [only: :functions], fun, arity) do
-    not ensure_loaded?(module) or
-      {fun, arity} in function_and_arities_for_module(module, :functions)
+  defp import_allows?(module, [only: :functions], fun, arity, module_exports) do
+    not loaded?(module, module_exports) or
+      {fun, arity} in fetch_function_and_arities(module, :functions, module_exports)
   end
 
-  defp import_allows?(module, [only: :macros], fun, arity) do
-    not ensure_loaded?(module) or
-      {fun, arity} in function_and_arities_for_module(module, :macros)
+  defp import_allows?(module, [only: :macros], fun, arity, module_exports) do
+    not loaded?(module, module_exports) or
+      {fun, arity} in fetch_function_and_arities(module, :macros, module_exports)
   end
 
-  defp import_allows?(module, [only: :sigils], fun, arity) do
-    not ensure_loaded?(module) or
-      {fun, arity} in function_and_arities_for_module(module, :sigils)
+  defp import_allows?(module, [only: :sigils], fun, arity, module_exports) do
+    not loaded?(module, module_exports) or
+      {fun, arity} in fetch_function_and_arities(module, :sigils, module_exports)
   end
 
-  defp import_allows?(_module, [only: fns], fun, arity) when is_list(fns),
+  defp import_allows?(_module, [only: fns], fun, arity, _module_exports) when is_list(fns),
     do: {fun, arity} in fns
 
-  defp import_allows?(module, [except: fns], fun, arity) when is_list(fns) do
+  defp import_allows?(module, [except: fns], fun, arity, module_exports) when is_list(fns) do
     {fun, arity} not in fns and
-      (not ensure_loaded?(module) or
-         {fun, arity} in function_and_arities_for_module(module, :functions) or
-         {fun, arity} in function_and_arities_for_module(module, :macros))
+      (not loaded?(module, module_exports) or
+         {fun, arity} in fetch_function_and_arities(module, :functions, module_exports) or
+         {fun, arity} in fetch_function_and_arities(module, :macros, module_exports))
   end
 
-  defp import_allows?(_module, _selector, _fun, _arity), do: false
+  defp import_allows?(_module, _selector, _fun, _arity, _module_exports), do: false
 
   @spec imports(Scope.t(), Scope.scope_position()) :: [Scope.import_mfa()]
-  def imports(%Scope{} = scope, position \\ :end) do
+  def imports(%Scope{} = scope, position \\ :end, module_exports \\ &module_exports/1) do
     scope
-    |> import_map(position)
+    |> import_map(position, module_exports)
     |> Map.values()
     |> List.flatten()
   end
 
-  defp import_map(%Scope{} = scope, position) do
+  defp import_map(%Scope{} = scope, position, module_exports) do
     end_line = Scope.end_line(scope, position)
 
     (kernel_imports(scope) ++ scope.imports)
@@ -97,15 +103,20 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     |> Enum.sort_by(& &1.range.start.line)
     |> Enum.take_while(&(&1.range.start.line <= end_line))
     |> Enum.reduce(%{}, fn %Import{} = import, current_imports ->
-      apply_to_scope(import, scope, current_imports)
+      apply_to_scope(import, scope, current_imports, module_exports)
     end)
   end
 
-  defp apply_to_scope(%Import{} = import, current_scope, %{} = current_imports) do
+  defp apply_to_scope(
+         %Import{} = import,
+         current_scope,
+         %{} = current_imports,
+         module_exports
+       ) do
     import_module = Aliases.resolve_at(current_scope, import.module, import.range.start.line)
 
-    functions = mfas_for(import_module, :functions)
-    macros = mfas_for(import_module, :macros)
+    functions = mfas_for(import_module, :functions, module_exports)
+    macros = mfas_for(import_module, :macros, module_exports)
 
     case import.selector do
       :all ->
@@ -118,7 +129,7 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
         Map.put(current_imports, import_module, macros)
 
       [only: :sigils] ->
-        Map.put(current_imports, import_module, mfas_for(import_module, :sigils))
+        Map.put(current_imports, import_module, mfas_for(import_module, :sigils, module_exports))
 
       [only: functions_to_import] ->
         Map.put(
@@ -160,19 +171,27 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     Enum.map(fa_list, fn {function, arity} -> {current_module, function, arity} end)
   end
 
-  defp mfas_for(current_module, type) do
-    if ensure_loaded?(current_module) do
-      fa_list = function_and_arities_for_module(current_module, type)
+  defp mfas_for(current_module, type, module_exports) do
+    case module_exports.(current_module) do
+      {:ok, exports} ->
+        fa_list = function_and_arities_for_module(current_module, type, exports)
+        function_and_arity_to_mfa(current_module, fa_list)
 
-      function_and_arity_to_mfa(current_module, fa_list)
-    else
-      []
+      :error ->
+        []
     end
   end
 
-  defp function_and_arities_for_module(module, :sigils) do
+  defp fetch_function_and_arities(module, type, module_exports) do
+    case module_exports.(module) do
+      {:ok, exports} -> function_and_arities_for_module(module, type, exports)
+      :error -> []
+    end
+  end
+
+  defp function_and_arities_for_module(module, :sigils, exports) do
     ProcessCache.trans({module, :info, :sigils}, fn ->
-      for {name, arity} <- module.__info__(:functions),
+      for {name, arity} <- exports.functions,
           string_name = Atom.to_string(name),
           sigil?(string_name, arity) do
         {name, arity}
@@ -180,10 +199,10 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     end)
   end
 
-  defp function_and_arities_for_module(module, type) do
+  defp function_and_arities_for_module(module, type, exports) do
     ProcessCache.trans({module, :info, type}, fn ->
-      type
-      |> module.__info__()
+      exports
+      |> Map.fetch!(type)
       |> Enum.reject(fn {name, arity} ->
         string_name = Atom.to_string(name)
         String.starts_with?(string_name, "_") or sigil?(string_name, arity)
@@ -205,7 +224,16 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     ]
   end
 
-  defp ensure_loaded?(module) do
-    match?({:module, ^module}, Code.ensure_loaded(module))
+  defp loaded?(module, module_exports), do: match?({:ok, _}, module_exports.(module))
+
+  defp module_exports(module) do
+    ProcessCache.trans({module, :indexing_exports}, fn ->
+      with {:module, ^module} <- Code.ensure_loaded(module),
+           true <- function_exported?(module, :__info__, 1) do
+        {:ok, %{functions: module.__info__(:functions), macros: module.__info__(:macros)}}
+      else
+        _ -> :error
+      end
+    end)
   end
 end

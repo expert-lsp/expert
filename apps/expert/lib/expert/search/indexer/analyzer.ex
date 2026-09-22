@@ -15,6 +15,11 @@ defmodule Expert.Search.Indexer.Analyzer do
   defdelegate imports_at(analysis, position), to: Imports, as: :at
   defdelegate import_module_for(analysis, position, fun, arity), to: Imports, as: :module_for
 
+  def imports_at(%Analysis{} = analysis, %Position{} = position, module_exports)
+      when is_function(module_exports, 1) do
+    Imports.at(analysis, position, module_exports)
+  end
+
   @spec requires_at(Analysis.t(), Position.t()) :: [module()]
   def requires_at(%Analysis{} = analysis, %Position{} = position) do
     analysis
@@ -41,6 +46,25 @@ defmodule Expert.Search.Indexer.Analyzer do
 
   def resolve_local_call(%Analysis{} = analysis, %Position{} = position, function_name, arity) do
     case import_module_for(analysis, position, function_name, arity) do
+      {:ok, module} ->
+        {module, function_name, arity}
+
+      :error ->
+        aliases = aliases_at(analysis, position)
+        current_module = aliases[[:__MODULE__]]
+        {current_module, function_name, arity}
+    end
+  end
+
+  def resolve_local_call(
+        %Analysis{} = analysis,
+        %Position{} = position,
+        function_name,
+        arity,
+        module_exports
+      )
+      when is_function(module_exports, 1) do
+    case Imports.module_for(analysis, position, function_name, arity, module_exports) do
       {:ok, module} ->
         {module, function_name, arity}
 

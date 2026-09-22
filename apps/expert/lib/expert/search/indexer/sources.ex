@@ -3,6 +3,8 @@ defmodule Expert.Search.Indexer.Sources do
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.Source
 
+  require Logger
+
   def index(paths, source_indexer \\ &Source.index/2) when is_list(paths) do
     paths
     |> map_paths("Indexing source code", "Indexing", &index_path(&1, source_indexer))
@@ -52,6 +54,7 @@ defmodule Expert.Search.Indexer.Sources do
         |> Enum.flat_map(&task_result!/1)
 
       elapsed = System.monotonic_time(:millisecond) - start_time
+      Logger.info("Indexed #{length(sized_paths)} source files in #{format_duration(elapsed)}")
       {:done, results, "Completed in #{format_duration(elapsed)}"}
     end)
   end

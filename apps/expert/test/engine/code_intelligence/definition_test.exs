@@ -71,12 +71,16 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
     {:ok, _} = start_supervised(Expert.EngineBuilds)
     {:ok, _} = start_supervised({Forge.NodePortMapper, []})
     project = project(:navigations)
+    start_supervised!({Expert.Project.Store, []})
+    Expert.Project.Store.set_projects([project])
     start_supervised!({Document.Store, derive: [analysis: &Forge.Ast.analyze/1]})
     {:ok, _} = start_supervised({EngineSupervisor, project})
     {:ok, _, _} = EngineNode.start(project)
+    Expert.Project.Store.transition(project, :ready)
     start_supervised!({Sqlite, project})
 
     start_supervised!({Store, [project, Sqlite]})
+    start_supervised!({Search.Indexer.ModuleRegistry, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 

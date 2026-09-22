@@ -74,6 +74,7 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
       start_supervised!({Expert.Project.Store, []})
       Expert.Project.Store.set_projects([project])
       Expert.Project.Store.transition(project, :ready)
+      start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
 
       document =
         Forge.Document.new(
@@ -90,6 +91,7 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
 
       patch(EngineApi, :application, nil)
       patch(EngineApi, :available_module?, false)
+      patch(EngineApi, :module_exports, :error)
 
       patch(EngineApi, :exunit_module?, fn
         ^project, MyApp.DataCase -> true

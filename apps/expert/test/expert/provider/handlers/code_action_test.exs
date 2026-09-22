@@ -33,10 +33,12 @@ defmodule Expert.Provider.Handlers.CodeActionTest do
     backend = Store.backend()
     start_supervised!({backend, project})
     start_supervised!({Store, [project, backend]})
+    start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 
     Expert.Project.Store.set_projects([project])
+    Expert.Project.Store.transition(project, :ready)
     Expert.Configuration.new() |> Expert.Configuration.set()
 
     EngineApi.register_listener(project, self(), [project_compiled(), project_index_ready()])

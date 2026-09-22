@@ -6,13 +6,12 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   with the AST's overall structure, and can focus on extracting content from it.
   """
 
-  alias Expert.EngineApi
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Indexer.Metadata
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Ast.Analysis
   alias Forge.Document.Position
-  alias Forge.Project
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
 
@@ -40,7 +39,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     new_reducer(analysis, extractors, nil)
   end
 
-  def new(%Analysis{} = analysis, extractors, %Project{} = project) do
+  def new(%Analysis{} = analysis, extractors, project) do
     new_reducer(analysis, extractors, project)
   end
 
@@ -66,15 +65,11 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     [hierarchy(reducer) | Enum.reverse(reducer.entries)]
   end
 
-  def application(%__MODULE__{project: nil}, _module), do: nil
+  def application(%__MODULE__{project: project}, module),
+    do: ModuleRegistry.application(project, module)
 
-  def application(%__MODULE__{project: %Project{} = project}, module),
-    do: EngineApi.application(project, module)
-
-  def available_module?(%__MODULE__{project: nil}, _module), do: false
-
-  def available_module?(%__MODULE__{project: %Project{} = project}, module),
-    do: EngineApi.available_module?(project, module)
+  def available_module?(%__MODULE__{project: project}, module),
+    do: ModuleRegistry.available_module?(project, module)
 
   def resolve_local_call(
         %__MODULE__{analysis: analysis, project: nil},
@@ -85,23 +80,31 @@ defmodule Expert.Search.Indexer.Source.Reducer do
       do: Analyzer.resolve_local_call(analysis, position, name, arity)
 
   def resolve_local_call(
-        %__MODULE__{analysis: analysis, project: %Project{} = project},
+        %__MODULE__{analysis: analysis} = reducer,
         position,
         name,
         arity
       ),
-      do: EngineApi.resolve_local_call(project, analysis, position, name, arity)
+      do:
+        Analyzer.resolve_local_call(
+          analysis,
+          position,
+          name,
+          arity,
+          &module_exports(reducer, &1)
+        )
 
   def imports_at(%__MODULE__{analysis: analysis, project: nil}, position),
     do: Analyzer.imports_at(analysis, position)
 
-  def imports_at(%__MODULE__{analysis: analysis, project: %Project{} = project}, position),
-    do: EngineApi.imports_at(project, analysis, position)
+  def imports_at(%__MODULE__{analysis: analysis} = reducer, position),
+    do: Analyzer.imports_at(analysis, position, &module_exports(reducer, &1))
 
-  def exunit_module?(%__MODULE__{project: nil}, _module), do: false
+  def exunit_module?(%__MODULE__{project: project}, module),
+    do: ModuleRegistry.exunit_module?(project, module)
 
-  def exunit_module?(%__MODULE__{project: %Project{} = project}, module),
-    do: EngineApi.exunit_module?(project, module)
+  defp module_exports(%__MODULE__{project: project}, module),
+    do: ModuleRegistry.module_exports(project, module)
 
   def skip(meta) do
     Keyword.put(meta, :__skipped__, true)

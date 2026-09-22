@@ -44,6 +44,19 @@ defmodule Engine.Modules do
 
   def exunit_module?(_module), do: false
 
+  def exports(module) when is_atom(module) do
+    with {:module, ^module} <- Loader.ensure_loaded(module),
+         true <- function_exported?(module, :__info__, 1) do
+      {:ok,
+       %{
+         functions: module.__info__(:functions),
+         macros: module.__info__(:macros)
+       }}
+    else
+      _ -> :error
+    end
+  end
+
   @doc """
   Fetch the docs chunk from BEAM object code.
   """

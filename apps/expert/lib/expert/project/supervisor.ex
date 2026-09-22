@@ -10,6 +10,7 @@ defmodule Expert.Project.Supervisor do
   alias Expert.Project.SearchListener
   alias Expert.Project.Store
   alias Expert.Search
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Project
 
   require Logger
@@ -24,6 +25,7 @@ defmodule Expert.Project.Supervisor do
       {Node, project},
       {Search.Store.backend(), project},
       {Search.Store, [project]},
+      {ModuleRegistry, project},
       {Diagnostics, project},
       {Intelligence, project},
       {SearchListener, project},

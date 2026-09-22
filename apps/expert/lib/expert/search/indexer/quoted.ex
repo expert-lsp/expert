@@ -20,7 +20,7 @@ defmodule Expert.Search.Indexer.Quoted do
 
   def index(analysis, extractors \\ nil), do: do_index(analysis, extractors, nil)
 
-  def index(%Analysis{} = analysis, extractors, %Project{} = project) do
+  def index(%Analysis{} = analysis, extractors, project) do
     do_index(analysis, extractors, project)
   end
 
@@ -28,7 +28,7 @@ defmodule Expert.Search.Indexer.Quoted do
     {:ok, extract_entries(analysis, extractors)}
   end
 
-  defp do_index(%Analysis{valid?: true} = analysis, extractors, %Project{} = project) do
+  defp do_index(%Analysis{valid?: true} = analysis, extractors, project) do
     {:ok, extract_entries(analysis, extractors, project)}
   end
 
@@ -38,7 +38,11 @@ defmodule Expert.Search.Indexer.Quoted do
     do_extract_entries(analysis, Reducer.new(analysis, extractors))
   end
 
-  def extract_entries(%Analysis{} = analysis, extractors, %Project{} = project) do
+  def extract_entries(
+        %Analysis{} = analysis,
+        extractors,
+        project
+      ) do
     do_extract_entries(analysis, Reducer.new(analysis, extractors, project))
   end
 
