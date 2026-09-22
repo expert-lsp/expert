@@ -21,7 +21,28 @@ defmodule Expert.Search.Indexer.BeamsTest do
     :ok
   end
 
-  describe "index/1" do
+  describe "stream/1" do
+    test "uses native source paths from BEAM metadata", %{tmp_dir: tmp_dir} do
+      module = unique_module("NativeSourcePath")
+
+      %{
+        entries: entries,
+        manifest_entries: manifest_entries,
+        source_path: source_path
+      } =
+        index_source!(
+          tmp_dir,
+          "defmodule #{inspect(module)}, do: nil",
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      source_path = Forge.Path.native(source_path)
+
+      assert Enum.all?(entries, &(&1.path == source_path))
+      assert [%{output_path: ^source_path, source_path: ^source_path}] = manifest_entries
+    end
+
     test "indexes public functions and macros from beam metadata", %{tmp_dir: tmp_dir} do
       module = unique_module("Definitions")
       public_fun = Formats.mfa(module, :public_fun, 0)
@@ -105,7 +126,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
           rewrite_source?: false
         )
 
-      {entries, _manifest_entries} = Beams.index([Map.fetch!(beam_paths_by_module, module)])
+      {entries, _manifest_entries} = index_beams([Map.fetch!(beam_paths_by_module, module)])
 
       for {subject, type} <- [
             {module, :module},
@@ -154,7 +175,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
         )
 
       {entries, _manifest_entries} =
-        Beams.index([Map.fetch!(beam_paths_by_module, target_module)])
+        index_beams([Map.fetch!(beam_paths_by_module, target_module)])
 
       generated_fun = Formats.mfa(target_module, :gen, 0)
 
@@ -309,7 +330,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
         )
 
       {entries, _manifest_entries} =
-        Beams.index([Map.fetch!(beam_paths_by_module, indexed_module)])
+        index_beams([Map.fetch!(beam_paths_by_module, indexed_module)])
 
       indexed_trim = Formats.mfa(indexed_module, :trim, 1)
       skipped_downcase = Formats.mfa(skipped_module, :downcase, 1)
@@ -352,7 +373,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
         )
 
       {entries, _manifest_entries} =
-        Beams.index([Map.fetch!(beam_paths_by_module, parent_module)])
+        index_beams([Map.fetch!(beam_paths_by_module, parent_module)])
 
       child_downcase = Formats.mfa(child_module, :downcase, 1)
 
@@ -397,7 +418,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       assert [_first, _second | _rest] = beam_paths
 
-      {entries, _manifest_entries} = Beams.index(beam_paths)
+      {entries, _manifest_entries} = index_beams(beam_paths)
 
       for module <- modules do
         assert Enum.any?(
@@ -560,16 +581,33 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
   defp index_source!(tmp_dir, source, opts) do
     context = compile_source!(tmp_dir, source, opts)
-    {entries, manifest_entries} = Beams.index(context.beam_paths)
+    {entries, manifest_entries} = index_beams(context.beam_paths)
 
     context
     |> Map.put(:entries, entries)
     |> Map.put(:manifest_entries, manifest_entries)
   end
 
+  defp index_beams(paths) do
+    paths
+    |> Beams.stream()
+    |> Enum.reduce({[], []}, fn
+      {nil, manifest_entries}, {entries, manifests} ->
+        {entries, [manifest_entries | manifests]}
+
+      {entry, manifest_entries}, {entries, manifests} ->
+        {[entry | entries], [manifest_entries | manifests]}
+    end)
+    |> then(fn {entries, manifests} ->
+      {Enum.reverse(entries), manifests |> Enum.reverse() |> List.flatten()}
+    end)
+  end
+
   defp compile_source!(tmp_dir, source, opts) do
     source_path =
-      Path.join([tmp_dir, "lib", "beam_source_#{System.unique_integer([:positive])}.ex"])
+      [tmp_dir, "lib", "beam_source_#{System.unique_integer([:positive])}.ex"]
+      |> Path.join()
+      |> Forge.Path.native()
 
     ebin_path =
       Path.join([tmp_dir, "ebin", Integer.to_string(System.unique_integer([:positive]))])

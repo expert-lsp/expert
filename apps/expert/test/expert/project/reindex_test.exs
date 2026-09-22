@@ -51,12 +51,12 @@ defmodule Expert.Project.ReindexTest do
 
   test "it eventually becomes available", %{project: project} do
     assert :ok = Reindex.perform(project)
-    refute_eventually Reindex.running?(project)
+    refute_eventually(Reindex.running?(project))
   end
 
   test "another reindex can be enqueued", %{project: project} do
     assert :ok = Reindex.perform(project)
-    assert_eventually :ok = Reindex.perform(project)
+    assert_eventually(:ok = Reindex.perform(project))
   end
 
   def put_entries(uri, entries) do
@@ -111,9 +111,7 @@ defmodule Expert.Project.ReindexTest do
   describe "perform/1 with the default reindexer" do
     @tag reindex_fun: :default
     test "broadcasts success when refreshing the search index succeeds", %{project: project} do
-      patch(Indexer, :create_index, fn ^project -> {:ok, [], :manifest} end)
-      patch(Indexer, :commit_manifest, fn ^project, :manifest -> :ok end)
-      patch(Store, :replace, fn ^project, [] -> :ok end)
+      patch(Indexer, :create_index, fn ^project -> :ok end)
 
       test_pid = self()
 
@@ -145,36 +143,6 @@ defmodule Expert.Project.ReindexTest do
 
       assert_receive {:broadcast,
                       project_reindexed(project: ^project, status: {:error, :refresh_failed})}
-    end
-
-    @tag reindex_fun: :default
-    test "does not commit the manifest when replacing the search store fails", %{project: project} do
-      test_pid = self()
-
-      patch(Indexer, :create_index, fn ^project -> {:ok, [], :manifest} end)
-
-      patch(Indexer, :commit_manifest, fn ^project, :manifest ->
-        send(test_pid, :commit_manifest)
-        :ok
-      end)
-
-      patch(Store, :replace, fn ^project, [] ->
-        {:error, :replace_failed}
-      end)
-
-      patch(EngineApi, :broadcast, fn ^project, message ->
-        send(test_pid, {:broadcast, message})
-        :ok
-      end)
-
-      assert :ok = Reindex.perform(project)
-
-      assert_receive {:broadcast, project_reindex_requested(project: ^project)}
-
-      assert_receive {:broadcast,
-                      project_reindexed(project: ^project, status: {:error, :replace_failed})}
-
-      refute_receive :commit_manifest
     end
   end
 

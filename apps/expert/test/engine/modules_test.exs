@@ -1,7 +1,6 @@
 defmodule Expert.Engine.ModulesTest do
   use ExUnit.Case
 
-  import Forge.EngineApi.Messages
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
@@ -15,8 +14,8 @@ defmodule Expert.Engine.ModulesTest do
       # Regression test for https://github.com/expert-lsp/expert/issues/317
       #
       # When a project configures a custom time_zone_database (e.g. Tzdata),
-      # the engine node inherits this config when Mix.Task.run(:loadconfig)
-      # is called during project compilation (in Engine.Build.Project).
+      # the engine node inherits this config when bootstrap runs
+      # Mix.Task.run(:loadconfig).
       # However, the tzdata application itself is not started on the engine node.
       #
       # This caused DateTime.add/3 to fail in Engine.Modules.rebuild_cache/0
@@ -40,12 +39,6 @@ defmodule Expert.Engine.ModulesTest do
       {:ok, _} = start_supervised(Forge.NodePortMapper)
       {:ok, _} = start_supervised({EngineSupervisor, project})
       {:ok, _, _} = EngineNode.start(project)
-
-      EngineApi.register_listener(project, self(), [:all])
-
-      # Trigger initial compile which runs `mix loadconfig`
-      EngineApi.schedule_compile(project, true)
-      assert_receive project_compiled(), :timer.seconds(30)
 
       # Verify the time_zone_database config was loaded on the engine node
       tz_db = EngineApi.call(project, Application, :get_env, [:elixir, :time_zone_database])

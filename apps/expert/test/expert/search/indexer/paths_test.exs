@@ -26,7 +26,7 @@ defmodule Expert.Search.Indexer.PathsTest do
       project = root |> Forge.Document.Path.to_uri() |> Project.bare()
       project = %{project | kind: :mix}
       build = Path.join(root, ".expert/build/target/test")
-      source = Path.join(root, "lib/source.ex")
+      source = native_join([root, "lib", "source.ex"])
       generated = Path.join(root, "target_build/generated.ex")
       dependency_source = Path.join(root, "vendor/lib/dependency.ex")
       project_beam = Path.join([build, "lib", "example", "ebin", "Example.beam"])
@@ -79,7 +79,7 @@ defmodule Expert.Search.Indexer.PathsTest do
       assert File.cwd!() == cwd
       assert System.get_env("MIX_BUILD_PATH") == Path.join(root, "manager_build/dev")
 
-      added = Path.join(root, "lib/added.ex")
+      added = native_join([root, "lib", "added.ex"])
       write_file!(added, "fixture")
       updated = Paths.for_project(project, fn ^project -> {:ok, info} end)
       assert Enum.sort(updated.source_paths) == Enum.sort([source, added])
@@ -87,7 +87,7 @@ defmodule Expert.Search.Indexer.PathsTest do
 
     @tag :tmp_dir
     test "bare discovery needs no engine configuration", %{tmp_dir: root} do
-      source = Path.join(root, "deps/source.ex")
+      source = native_join([root, "deps", "source.ex"])
       write_file!(source, "defmodule BareDependency, do: :ok")
       project = root |> Forge.Document.Path.to_uri() |> Project.bare()
       paths = Paths.for_project(project, fn _ -> flunk("Bare discovery must be local") end)

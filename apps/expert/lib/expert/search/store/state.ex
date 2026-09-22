@@ -83,6 +83,19 @@ defmodule Expert.Search.Store.State do
     end
   end
 
+  def insert(%__MODULE__{} = state, entries) do
+    with :ok <- state.backend.insert(state.project, entries),
+         :ok <- maybe_sync(state) do
+      {:ok,
+       %__MODULE__{
+         state
+         | loaded?: true,
+           load_status: :ready,
+           fuzzy: Fuzzy.add(state.fuzzy, entries)
+       }}
+    end
+  end
+
   def exact(%__MODULE__{loaded?: false}, _subject, _constraints), do: {:error, :loading}
 
   def exact(%__MODULE__{} = state, subject, constraints) do

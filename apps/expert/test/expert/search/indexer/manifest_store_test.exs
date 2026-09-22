@@ -1,5 +1,6 @@
 defmodule Expert.Search.Indexer.ManifestStoreTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+  use Patch
 
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.Manifest.Entry, as: ManifestEntry
@@ -159,6 +160,16 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
       :ok = ManifestStore.invalidate(project)
 
       assert ManifestStore.load(project) == :missing
+    end
+
+    test "returns an error when the manifest cannot be removed", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+      :ok = ManifestStore.commit(project, manifest(tmp_dir))
+      path = manifest_path(project)
+
+      patch(File, :rm, fn ^path -> {:error, :eacces} end)
+
+      assert {:error, :eacces} = ManifestStore.invalidate(project)
     end
   end
 
