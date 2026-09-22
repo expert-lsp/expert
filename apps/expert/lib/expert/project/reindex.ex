@@ -8,7 +8,6 @@ defmodule Expert.Project.Reindex do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
-  alias Expert.Progress
   alias Expert.Search
   alias Forge.Document
   alias Forge.Project
@@ -210,11 +209,7 @@ defmodule Expert.Project.Reindex do
     EngineApi.broadcast(project, project_reindex_requested(project: project))
 
     {elapsed_us, result} =
-      :timer.tc(fn ->
-        with {:ok, entries, manifest} <- Search.Indexer.create_index(project) do
-          persist_index(project, entries, manifest)
-        end
-      end)
+      :timer.tc(fn -> Search.Indexer.create_index(project) end)
 
     EngineApi.broadcast(
       project,
@@ -235,16 +230,5 @@ defmodule Expert.Project.Reindex do
 
   defp schedule_gc do
     Process.send_after(self(), :gc, :timer.seconds(5))
-  end
-
-  defp persist_index(%Project{} = project, entries, manifest) do
-    Progress.with_progress("Persisting index", fn _token ->
-      result =
-        with :ok <- Search.Store.replace(project, entries) do
-          Search.Indexer.commit_manifest(project, manifest)
-        end
-
-      {:done, result}
-    end)
   end
 end

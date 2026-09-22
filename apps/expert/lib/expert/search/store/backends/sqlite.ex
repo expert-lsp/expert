@@ -329,10 +329,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   def do_replace_all(%State{} = state, entries) when is_list(entries) do
     with :ok <-
            transaction(state, fn ->
-             with :ok <- exec(state, "DELETE FROM entry_blobs"),
+             with :ok <- drop_indexes(state),
+                  :ok <- exec(state, "DELETE FROM entry_blobs"),
                   :ok <- exec(state, "DELETE FROM entries"),
-                  :ok <- exec(state, "DELETE FROM structures") do
-               insert_entries(state, entries)
+                  :ok <- exec(state, "DELETE FROM structures"),
+                  :ok <- insert_entries(state, entries) do
+               create_indexes(state)
              end
            end) do
       exec(state, "PRAGMA optimize = 0x10002")
@@ -670,6 +672,16 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         state,
         "CREATE INDEX IF NOT EXISTS entries_definitions_idx ON entries (subject, id, path, type) WHERE subtype = 'definition'"
       )
+    end
+  end
+
+  defp drop_indexes(%State{} = state) do
+    with :ok <- exec(state, "DROP INDEX IF EXISTS entries_subject_idx"),
+         :ok <- exec(state, "DROP INDEX IF EXISTS entries_block_idx"),
+         :ok <- exec(state, "DROP INDEX IF EXISTS entries_id_idx"),
+         :ok <- exec(state, "DROP INDEX IF EXISTS entries_path_id_idx"),
+         :ok <- exec(state, "DROP INDEX IF EXISTS entries_type_subtype_idx") do
+      exec(state, "DROP INDEX IF EXISTS entries_definitions_idx")
     end
   end
 

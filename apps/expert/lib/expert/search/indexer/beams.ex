@@ -13,12 +13,40 @@ defmodule Expert.Search.Indexer.Beams do
   @beam_index_concurrency 16
   @beam_index_chunk_bytes 128 * 1024
 
-  def index(paths, opts \\ []) when is_list(paths) do
+  def stream(paths, opts \\ []) when is_list(paths) do
+    paths
+    |> result_chunks(opts)
+    |> Stream.flat_map(fn results ->
+      {entries, manifest_entries} = entries_and_manifest_entries(results, opts)
+      stream_items(entries, manifest_entries)
+    end)
+  end
+
+  defp result_chunks(paths, opts) do
     {beams, total_bytes} = stat_beams(paths)
 
-    beams
-    |> index_beam_chunks(total_bytes, opts)
-    |> entries_and_manifest_entries(opts)
+    if beams == [] do
+      Stream.concat([])
+    else
+      beams
+      |> beam_chunks()
+      |> Task.async_stream(&index_beam_chunk(&1, opts),
+        max_concurrency: @beam_index_concurrency,
+        ordered: false,
+        timeout: :infinity
+      )
+      |> Stream.transform(
+        fn -> start_progress("Indexing dependencies metadata") end,
+        fn task_result, progress ->
+          {chunk_bytes, results, modules} = task_result!(task_result)
+          register_modules(opts[:project], modules)
+
+          {[results],
+           report_progress(progress, chunk_bytes, total_bytes, "Indexing dependencies")}
+        end,
+        &complete_progress/1
+      )
+    end
   end
 
   def extract_definitions_from_binary(beam, source_path)
@@ -66,31 +94,6 @@ defmodule Expert.Search.Indexer.Beams do
     end)
   end
 
-  defp index_beam_chunks([], _total_bytes, _opts), do: []
-
-  defp index_beam_chunks(beams, total_bytes, opts) do
-    Progress.with_tracked_progress("Indexing dependencies metadata", total_bytes, fn report ->
-      start_time = System.monotonic_time(:millisecond)
-
-      results =
-        beams
-        |> beam_chunks()
-        |> Task.async_stream(&index_beam_chunk(&1, report, opts),
-          max_concurrency: @beam_index_concurrency,
-          ordered: false,
-          timeout: :infinity
-        )
-        |> Enum.flat_map(fn task_result ->
-          {results, modules} = task_result!(task_result)
-          register_modules(opts[:project], modules)
-          results
-        end)
-
-      elapsed = System.monotonic_time(:millisecond) - start_time
-      {:done, results, "Completed in #{format_duration(elapsed)}"}
-    end)
-  end
-
   defp beam_chunks(beams) do
     {chunks, current_chunk} =
       Enum.reduce(beams, {[], {0, []}}, fn beam, {chunks, {chunk_bytes, chunk_beams}} ->
@@ -112,14 +115,13 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp beam_size({_path, %File.Stat{size: size}}), do: size
 
-  defp index_beam_chunk({chunk_bytes, beams}, report, opts) do
+  defp index_beam_chunk({chunk_bytes, beams}, opts) do
     {results, modules} =
       beams
       |> Enum.map(&metadata_from_beam(&1, opts))
       |> Enum.unzip()
 
-    report.(message: "Indexing dependencies", add: chunk_bytes)
-    {List.flatten(results), Enum.reject(modules, &is_nil/1)}
+    {chunk_bytes, List.flatten(results), Enum.reject(modules, &is_nil/1)}
   end
 
   defp register_modules(nil, _modules), do: :ok
@@ -130,6 +132,12 @@ defmodule Expert.Search.Indexer.Beams do
     end)
   end
 
+  defp stream_items([], manifest_entries), do: [{nil, manifest_entries}]
+
+  defp stream_items([entry | entries], manifest_entries) do
+    [{entry, manifest_entries} | Enum.map(entries, &{&1, []})]
+  end
+
   defp entries_and_manifest_entries(results, opts) do
     {indexed_results, skipped_results} = Enum.split_with(results, &indexed_result?/1)
     entries = entries_from_indexed_results(indexed_results, opts)
@@ -138,8 +146,44 @@ defmodule Expert.Search.Indexer.Beams do
     {entries, manifest_entries}
   end
 
-  defp indexed_result?({:indexed, _source_path, _metadata, _manifest_entry}), do: true
+  defp indexed_result?({:indexed, _source_path, _metadata, _manifest_entry}),
+    do: true
+
   defp indexed_result?(_result), do: false
+
+  defp task_result!({:ok, result}), do: result
+
+  defp task_result!({:exit, reason}),
+    do: raise("Indexing task failed: #{Exception.format_exit(reason)}")
+
+  defp start_progress(title) do
+    token =
+      case Progress.begin(title, percentage: 0) do
+        {:ok, token} -> token
+        {:error, :rejected} -> nil
+      end
+
+    {token, 0, System.monotonic_time(:millisecond)}
+  end
+
+  defp report_progress({token, current, start_time}, size, total, message) do
+    current = current + size
+
+    if token do
+      percentage = if total > 0, do: min(100, div(current * 100, total)), else: 0
+      Progress.report(token, message: message, percentage: percentage)
+    end
+
+    {token, current, start_time}
+  end
+
+  defp complete_progress({token, _current, start_time}) do
+    elapsed = System.monotonic_time(:millisecond) - start_time
+
+    if token do
+      Progress.complete(token, message: "Completed in #{format_duration(elapsed)}")
+    end
+  end
 
   defp manifest_entries_from_results(results) do
     Enum.map(results, fn
@@ -154,7 +198,9 @@ defmodule Expert.Search.Indexer.Beams do
     source_lines_by_path = source_lines_by_path(results)
 
     results
-    |> Enum.group_by(fn {:indexed, source_path, _metadata, _manifest_entry} -> source_path end)
+    |> Enum.group_by(fn
+      {:indexed, source_path, _metadata, _manifest_entry} -> source_path
+    end)
     |> Enum.flat_map(fn {source_path, results} ->
       entries_from_group(source_path, results, source_lines_by_path, opts)
     end)
@@ -162,12 +208,13 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp entries_from_group(source_path, results, source_lines_by_path, opts) do
     entries =
-      Enum.flat_map(results, fn {:indexed, _source_path, metadata, manifest_entry} ->
-        entries_from_metadata(
-          metadata,
-          Map.get(source_lines_by_path, source_path, %{}),
-          application(manifest_entry, opts)
-        )
+      Enum.flat_map(results, fn
+        {:indexed, _source_path, metadata, manifest_entry} ->
+          entries_from_metadata(
+            metadata,
+            Map.get(source_lines_by_path, source_path, %{}),
+            application(manifest_entry, opts)
+          )
       end)
 
     [Entry.block_structure(source_path, %{root: %{}}) | entries]
@@ -199,6 +246,12 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp metadata_result_from_beam(beam_path, beam_stat, metadata) do
+    metadata =
+      case Map.get(metadata, :file) do
+        path when is_binary(path) -> Map.put(metadata, :file, Forge.Path.native(path))
+        _ -> metadata
+      end
+
     source_path = Map.get(metadata, :file)
     source_stat_result = stat_source(source_path)
 
@@ -210,7 +263,12 @@ defmodule Expert.Search.Indexer.Beams do
         [{:indexed, source_path, metadata, manifest_entry}]
 
       :error ->
-        skipped_result_from_beam(beam_path, beam_stat, source_path, source_stat_result)
+        skipped_result_from_beam(
+          beam_path,
+          beam_stat,
+          source_path,
+          source_stat_result
+        )
     end
   end
 
@@ -223,7 +281,12 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp stat_source(_source_path), do: :error
 
-  defp skipped_result_from_beam(beam_path, beam_stat, source_path, source_stat_result) do
+  defp skipped_result_from_beam(
+         beam_path,
+         beam_stat,
+         source_path,
+         source_stat_result
+       ) do
     {:ok, manifest_entry} =
       Manifest.Entry.skipped_beam(
         beam_path,
@@ -915,11 +978,6 @@ defmodule Expert.Search.Indexer.Beams do
   defp synthetic_line(line_number, column) do
     line(text: String.duplicate(" ", max(column - 1, 0)), ending: "", line_number: line_number)
   end
-
-  defp task_result!({:ok, items}), do: items
-
-  defp task_result!({:exit, reason}),
-    do: raise("Indexing task failed: #{Exception.format_exit(reason)}")
 
   defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
   defp format_duration(ms), do: "#{Float.round(ms / 1000, 1)}s"

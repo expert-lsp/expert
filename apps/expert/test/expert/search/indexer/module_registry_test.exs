@@ -46,7 +46,8 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     start_supervised!({ModuleRegistry, project})
 
     [beam_path]
-    |> Beams.index(project: project, applications: %{beam_dir => :registry_app})
+    |> Beams.stream(project: project, applications: %{beam_dir => :registry_app})
+    |> Enum.to_list()
 
     beam_reads = Enum.filter(history(File), &match?({:read, [^beam_path]}, &1))
     assert [{:read, [^beam_path]}] = beam_reads

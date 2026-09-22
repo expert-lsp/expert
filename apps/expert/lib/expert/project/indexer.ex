@@ -8,7 +8,6 @@ defmodule Expert.Project.Indexer do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
-  alias Expert.Progress
   alias Expert.Project.Node
   alias Expert.Search
   alias Forge.Project
@@ -47,7 +46,7 @@ defmodule Expert.Project.Indexer do
         [
           task_supervisor: task_supervisor_name(project),
           create_index: &Search.Indexer.create_index/1,
-          update_index: &Search.Indexer.update_index/2,
+          update_index: &Search.Indexer.update_index/1,
           initial_compile?: false
         ],
         opts
@@ -145,40 +144,28 @@ defmodule Expert.Project.Indexer do
   end
 
   defp persist_index(%Project{} = project, :empty, create_index, _update_index) do
-    with {:ok, entries, manifest} <- create_index.(project) do
-      persist_full_index(project, entries, manifest)
-    end
+    persist_full_index(project, create_index)
   end
 
   defp persist_index(%Project{} = project, _status, create_index, update_index) do
     persist_incremental_index(project, create_index, update_index)
   end
 
-  defp persist_full_index(%Project{} = project, entries, manifest) do
-    Progress.with_progress("Persisting index", fn _token ->
-      result =
-        with :ok <- Search.Store.replace(project, entries) do
-          Search.Indexer.commit_manifest(project, manifest)
-        end
-
-      {:done, result}
-    end)
+  defp persist_full_index(%Project{} = project, create_index) do
+    create_index.(project)
   end
 
   defp persist_incremental_index(%Project{} = project, create_index, update_index) do
-    with path_to_ids when is_map(path_to_ids) <- Search.Store.path_to_ids(project),
-         {:ok, updated_entries, paths_to_clear, manifest} <- update_index.(project, path_to_ids) do
-      case Search.Store.apply_index_update(project, updated_entries, paths_to_clear) do
-        :ok ->
-          Search.Indexer.commit_manifest(project, manifest)
+    case update_index.(project) do
+      {:error, {:store, reason}} ->
+        Logger.warning(
+          "Could not persist incremental index update, rebuilding full index: #{inspect(reason)}"
+        )
 
-        {:error, reason} ->
-          Logger.warning(
-            "Could not persist incremental index update, rebuilding full index: #{inspect(reason)}"
-          )
+        persist_index(project, :empty, create_index, update_index)
 
-          persist_index(project, :empty, create_index, update_index)
-      end
+      result ->
+        result
     end
   end
 

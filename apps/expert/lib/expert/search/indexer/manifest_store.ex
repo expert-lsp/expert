@@ -34,8 +34,11 @@ defmodule Expert.Search.Indexer.ManifestStore do
   end
 
   def invalidate(%Project{} = project) do
-    File.rm(manifest_path(project))
-    :ok
+    case File.rm(manifest_path(project)) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, _} = error -> error
+    end
   end
 
   defp write_file(path, binary) do

@@ -6,38 +6,24 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Sources
-  alias Forge.ProcessCache
+  alias Expert.Search.Store
   alias Forge.Project
 
-  require ProcessCache
+  @entry_chunk_size 4_000
 
-  def create_index(%Project{} = project, opts \\ []) do
-    with_indexer_context(project, fn ->
-      :ok = ModuleRegistry.clear(project)
-      {entries, manifest} = create_index_data(project, opts)
-
-      {:ok, entries, manifest}
-    end)
+  def create_index(%Project{} = project, opts \\ []) when is_list(opts) do
+    with :ok <- ManifestStore.invalidate(project),
+         :ok <- store_result(Store.replace(project, [])),
+         {:ok, manifest} <- build_index(project, opts) do
+      ManifestStore.commit(project, manifest)
+    end
   end
 
-  def commit_manifest(%Project{} = project, %Manifest{} = manifest) do
-    ManifestStore.commit(project, manifest)
-  end
-
-  def update_index(%Project{} = project, path_to_ids, opts \\ []) when is_map(path_to_ids) do
-    with_indexer_context(project, fn ->
-      paths = paths_for_project(project, opts)
-      :ok = ModuleRegistry.prune(project, paths.beam_paths)
-      opts = Keyword.put(opts, :paths, paths)
-
-      case ManifestStore.load(project) do
-        {:ok, %Manifest{} = manifest} ->
-          refresh_index(project, manifest, path_to_ids, opts)
-
-        :missing ->
-          replace_index(project, path_to_ids, opts)
-      end
-    end)
+  def update_index(%Project{} = project, opts \\ []) when is_list(opts) do
+    with path_to_ids when is_map(path_to_ids) <- Store.path_to_ids(project),
+         {:ok, manifest} <- update_index(project, path_to_ids, opts) do
+      ManifestStore.commit(project, manifest)
+    end
   end
 
   def document(%Project{} = project, uri) do
@@ -48,33 +34,58 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp create_index_data(%Project{} = project, opts) do
-    paths = paths_for_project(project, opts)
-    {entries, manifest_entries} = index_paths(project, paths)
+  defp build_index(%Project{} = project, opts) do
+    :ok = EngineApi.clear_application_cache(project)
+    :ok = ModuleRegistry.clear(project)
 
-    {entries, Manifest.new(manifest_entries)}
+    try do
+      paths = paths_for_project(project, opts)
+
+      with {:ok, state} <-
+             paths
+             |> index_stream(project)
+             |> persist_stream(new_stream_state(), project) do
+        {:ok, Manifest.new(manifest_entries(state))}
+      end
+    after
+      EngineApi.clear_application_cache(project)
+    end
+  end
+
+  defp update_index(%Project{} = project, path_to_ids, opts) do
+    :ok = EngineApi.clear_application_cache(project)
+    paths = paths_for_project(project, opts)
+    :ok = ModuleRegistry.prune(project, paths.beam_paths)
+    opts = Keyword.put(opts, :paths, paths)
+
+    try do
+      case ManifestStore.load(project) do
+        {:ok, %Manifest{} = manifest} ->
+          with :ok <- ManifestStore.invalidate(project) do
+            refresh_index(project, manifest, path_to_ids, opts)
+          end
+
+        :missing ->
+          replace_index(project, path_to_ids, opts)
+      end
+    after
+      EngineApi.clear_application_cache(project)
+    end
   end
 
   defp replace_index(%Project{} = project, path_to_ids, opts) do
-    {entries, manifest} = create_index_data(project, opts)
-    paths_to_clear = stored_paths_to_clear(path_to_ids, entries)
+    paths = paths_for_project(project, opts)
+    {entries, state} = paths |> index_stream(project) |> collect_stream(new_stream_state())
 
-    {:ok, entries, paths_to_clear, manifest}
+    indexed_paths = MapSet.new(entries, & &1.path)
+    paths_to_clear = stored_paths_to_clear(path_to_ids, indexed_paths)
+
+    with :ok <- store_result(Store.apply_index_update(project, entries, paths_to_clear)) do
+      {:ok, Manifest.new(manifest_entries(state))}
+    end
   end
 
   defp refresh_index(
-         %Project{} = project,
-         %Manifest{} = manifest,
-         path_to_ids,
-         opts
-       ) do
-    {entries, paths_to_clear, manifest} =
-      update_index_data(project, manifest, path_to_ids, opts)
-
-    {:ok, entries, paths_to_clear, manifest}
-  end
-
-  defp update_index_data(
          %Project{} = project,
          %Manifest{} = manifest,
          path_to_ids,
@@ -85,42 +96,44 @@ defmodule Expert.Search.Indexer do
     plan =
       manifest
       |> Manifest.plan(paths)
-      |> include_missing_stored_outputs(manifest, paths, path_to_ids)
+      |> reindex_missing_outputs(manifest, paths, path_to_ids)
 
-    {entries, manifest_entries, plan} = index_plan(project, plan, manifest, paths)
+    initial_stream =
+      index_stream(
+        project,
+        plan.source_paths_to_index,
+        plan.beam_paths_to_index,
+        paths.applications,
+        paths.source_paths
+      )
 
+    {initial_entries, state} = collect_stream(initial_stream, new_stream_state())
+    sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries(state))
+
+    {sibling_entries, state} =
+      sibling_paths
+      |> beam_stream(project, paths.applications)
+      |> collect_stream(state)
+
+    plan = %Manifest.Plan{
+      plan
+      | beam_paths_to_index: Enum.uniq(plan.beam_paths_to_index ++ sibling_paths)
+    }
+
+    entries = initial_entries ++ sibling_entries
+    manifest_entries = manifest_entries(state)
     paths_to_clear = Manifest.output_paths_to_clear(manifest, plan, manifest_entries)
-    manifest = Manifest.apply_update(manifest, plan, manifest_entries)
 
-    {entries, paths_to_clear, manifest}
+    with :ok <- store_result(Store.apply_index_update(project, entries, paths_to_clear)) do
+      manifest = Manifest.apply_update(manifest, plan, manifest_entries)
+
+      {:ok, manifest}
+    end
   end
 
   defp paths_for_project(%Project{} = project, opts) do
     %Paths{} = paths = Keyword.get_lazy(opts, :paths, fn -> Paths.for_project(project) end)
-
-    if Keyword.get(opts, :beams?, true) do
-      paths
-    else
-      %Paths{paths | beam_paths: []}
-    end
-  end
-
-  defp index_plan(
-         %Project{} = project,
-         %Manifest.Plan{} = plan,
-         %Manifest{} = manifest,
-         %Paths{} = paths
-       ) do
-    {beam_entries, beam_manifest_entries, beam_paths_to_index} =
-      index_beam_plan(project, plan, manifest, paths)
-
-    {source_entries, source_manifest_entries} =
-      Sources.index(plan.source_paths_to_index, source_indexer(project))
-
-    plan = %Manifest.Plan{plan | beam_paths_to_index: beam_paths_to_index}
-
-    {merge_entries(source_entries, beam_entries),
-     source_manifest_entries ++ beam_manifest_entries, plan}
+    paths
   end
 
   # Search entries use the source file path as their `path`. They do not carry the
@@ -148,29 +161,6 @@ defmodule Expert.Search.Indexer do
   # in large codebases. As a compromise, this keeps the existing source-path
   # replacement model and only reindexes known BEAMs that share a source path
   # with the new BEAM.
-  defp index_beam_plan(_project, %Manifest.Plan{beam_paths_to_index: []}, _manifest, _paths) do
-    {[], [], []}
-  end
-
-  defp index_beam_plan(project, %Manifest.Plan{} = plan, %Manifest{} = manifest, %Paths{} = paths) do
-    {entries, manifest_entries} =
-      Beams.index(plan.beam_paths_to_index, project: project, applications: paths.applications)
-
-    sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries)
-
-    case sibling_paths do
-      [] ->
-        {entries, manifest_entries, plan.beam_paths_to_index}
-
-      [_ | _] ->
-        {sibling_entries, sibling_manifest_entries} =
-          Beams.index(sibling_paths, project: project, applications: paths.applications)
-
-        {entries ++ sibling_entries, manifest_entries ++ sibling_manifest_entries,
-         Enum.uniq(plan.beam_paths_to_index ++ sibling_paths)}
-    end
-  end
-
   defp beam_sibling_paths(
          %Manifest.Plan{} = plan,
          %Manifest{} = manifest,
@@ -204,7 +194,7 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp include_missing_stored_outputs(
+  defp reindex_missing_outputs(
          %Manifest.Plan{} = plan,
          %Manifest{} = manifest,
          paths,
@@ -249,32 +239,6 @@ defmodule Expert.Search.Indexer do
     }
   end
 
-  defp index_paths(%Project{} = project, %Paths{} = paths) do
-    {beam_entries, beam_manifest_entries} =
-      Beams.index(paths.beam_paths, project: project, applications: paths.applications)
-
-    {source_entries, source_manifest_entries} =
-      Sources.index(paths.source_paths, source_indexer(project))
-
-    {merge_entries(source_entries, beam_entries),
-     source_manifest_entries ++ beam_manifest_entries}
-  end
-
-  defp merge_entries(source_entries, beam_entries) do
-    source_identities = MapSet.new(source_entries, &entry_identity/1)
-
-    source_block_paths =
-      source_entries |> Enum.filter(&(&1.subtype == :block_structure)) |> MapSet.new(& &1.path)
-
-    beam_supplements =
-      Enum.reject(beam_entries, fn entry ->
-        MapSet.member?(source_identities, entry_identity(entry)) or
-          (entry.subtype == :block_structure and MapSet.member?(source_block_paths, entry.path))
-      end)
-
-    source_entries ++ beam_supplements
-  end
-
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: {kind, _}})
        when kind in [:function, :macro],
        do: {path, subject, subtype, kind}
@@ -282,13 +246,13 @@ defmodule Expert.Search.Indexer do
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: type}),
     do: {path, subject, subtype, type}
 
-  defp source_indexer(%Project{} = project) do
-    fn path, source -> Expert.Search.Indexer.Source.index(path, source, nil, project) end
+  defp source_indexer(project) do
+    fn path, source ->
+      Expert.Search.Indexer.Source.index(path, source, nil, project)
+    end
   end
 
-  defp stored_paths_to_clear(path_to_ids, entries) do
-    indexed_paths = MapSet.new(entries, & &1.path)
-
+  defp stored_paths_to_clear(path_to_ids, indexed_paths) do
     path_to_ids
     |> stored_paths()
     |> MapSet.difference(indexed_paths)
@@ -301,15 +265,135 @@ defmodule Expert.Search.Indexer do
     |> MapSet.new()
   end
 
-  defp with_indexer_context(%Project{} = project, fun) when is_function(fun, 0) do
-    :ok = EngineApi.clear_application_cache(project)
+  defp index_stream(%Paths{} = paths, project) do
+    index_stream(
+      project,
+      paths.source_paths,
+      paths.beam_paths,
+      paths.applications,
+      paths.source_paths
+    )
+  end
 
-    try do
-      ProcessCache.with_cleanup do
-        fun.()
+  defp index_stream(
+         project,
+         source_paths,
+         beam_paths,
+         applications,
+         current_source_paths
+       ) do
+    beam_items =
+      beam_paths
+      |> Beams.stream(project: project, applications: applications)
+      |> Enum.to_list()
+
+    beam_manifest_entries =
+      Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
+
+    source_paths = include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
+
+    source_paths
+    |> Sources.stream(source_indexer(project))
+    |> tag_stream(:source)
+    |> Stream.concat(tag_stream(beam_items, :beam))
+  end
+
+  defp include_beam_sources(source_paths, current_source_paths, manifest_entries) do
+    # A BEAM batch replaces all entries for its source path. Parse that source in the same batch.
+    current_source_paths = MapSet.new(current_source_paths)
+
+    beam_source_paths =
+      for %Manifest.Entry{kind: :beam, output_path: output_path} <- manifest_entries,
+          MapSet.member?(current_source_paths, output_path) do
+        output_path
       end
-    after
-      EngineApi.clear_application_cache(project)
+
+    Enum.uniq(source_paths ++ beam_source_paths)
+  end
+
+  defp beam_stream(paths, project, applications) do
+    paths
+    |> Beams.stream(project: project, applications: applications)
+    |> tag_stream(:beam)
+  end
+
+  defp tag_stream(stream, origin) do
+    Stream.map(stream, fn {entry, manifest_entries} -> {origin, entry, manifest_entries} end)
+  end
+
+  defp new_stream_state do
+    %{
+      manifest_entries: [],
+      source_keys: MapSet.new()
+    }
+  end
+
+  defp persist_stream(stream, state, project) do
+    stream
+    |> Stream.chunk_every(@entry_chunk_size)
+    |> Enum.reduce_while({:ok, state}, fn chunk, {:ok, state} ->
+      {entries, state} = consume_chunk(chunk, state)
+
+      case insert_entries(project, entries) do
+        :ok ->
+          {:cont, {:ok, state}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp collect_stream(stream, state) do
+    {entries, state} =
+      stream
+      |> Stream.chunk_every(@entry_chunk_size)
+      |> Enum.reduce({[], state}, fn chunk, {entries, state} ->
+        {chunk_entries, state} = consume_chunk(chunk, state)
+        {Enum.reverse(chunk_entries, entries), state}
+      end)
+
+    {Enum.reverse(entries), state}
+  end
+
+  defp consume_chunk(chunk, state) do
+    {entries, state} =
+      Enum.reduce(chunk, {[], state}, fn {origin, entry, manifest_entries}, {entries, state} ->
+        state = remember_manifest_entries(state, manifest_entries)
+        consume_entry(origin, entry, entries, state)
+      end)
+
+    {Enum.reverse(entries), state}
+  end
+
+  defp consume_entry(_origin, nil, entries, state), do: {entries, state}
+
+  defp consume_entry(:source, entry, entries, state) do
+    state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
+
+    {[entry | entries], state}
+  end
+
+  defp consume_entry(:beam, entry, entries, state) do
+    if MapSet.member?(state.source_keys, source_key(entry)) do
+      {entries, state}
+    else
+      {[entry | entries], state}
     end
   end
+
+  defp source_key(%{path: path, subtype: :block_structure}), do: {:block_structure, path}
+  defp source_key(entry), do: {:entry, entry_identity(entry)}
+
+  defp remember_manifest_entries(state, manifest_entries) do
+    %{state | manifest_entries: Enum.reverse(manifest_entries, state.manifest_entries)}
+  end
+
+  defp insert_entries(_project, []), do: :ok
+  defp insert_entries(project, entries), do: store_result(Store.insert(project, entries))
+
+  defp store_result(:ok), do: :ok
+  defp store_result({:error, reason}), do: {:error, {:store, reason}}
+
+  defp manifest_entries(state), do: Enum.reverse(state.manifest_entries)
 end

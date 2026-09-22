@@ -5,10 +5,27 @@ defmodule Expert.Search.Indexer.Sources do
 
   require Logger
 
-  def index(paths, source_indexer \\ &Source.index/2) when is_list(paths) do
-    paths
-    |> map_paths("Indexing source code", "Indexing", &index_path(&1, source_indexer))
-    |> entries_and_manifest_entries()
+  def stream(paths, source_indexer \\ &Source.index/2) when is_list(paths) do
+    {sized_paths, total_bytes} = stat_paths(paths)
+
+    if sized_paths == [] do
+      Stream.concat([])
+    else
+      sized_paths
+      |> Task.async_stream(
+        fn {path, size} -> {size, index_path(path, source_indexer)} end,
+        ordered: false,
+        timeout: :infinity
+      )
+      |> Stream.transform(
+        fn -> start_progress("Indexing source code") end,
+        fn task_result, progress ->
+          {size, result} = task_result!(task_result)
+          {stream_items(result), report_progress(progress, size, total_bytes, "Indexing")}
+        end,
+        &complete_progress(&1, length(sized_paths))
+      )
+    end
   end
 
   defp index_path(path, source_indexer) do
@@ -26,37 +43,10 @@ defmodule Expert.Search.Indexer.Sources do
     Enum.any?(entries, fn entry -> entry.subtype != :block_structure end)
   end
 
-  defp entries_and_manifest_entries(results) do
-    entries = Enum.flat_map(results, fn {entries, _manifest_entry} -> entries end)
-    manifest_entries = Enum.map(results, fn {_entries, manifest_entry} -> manifest_entry end)
+  defp stream_items([]), do: []
 
-    {entries, manifest_entries}
-  end
-
-  defp map_paths([], _title, _message, _processor), do: []
-
-  defp map_paths(paths, title, message, processor) do
-    {sized_paths, total_bytes} = stat_paths(paths)
-
-    Progress.with_tracked_progress(title, total_bytes, fn report ->
-      start_time = System.monotonic_time(:millisecond)
-
-      results =
-        sized_paths
-        |> Task.async_stream(
-          fn {path, size} ->
-            result = processor.(path)
-            report.(message: message, add: size)
-            result
-          end,
-          timeout: :infinity
-        )
-        |> Enum.flat_map(&task_result!/1)
-
-      elapsed = System.monotonic_time(:millisecond) - start_time
-      Logger.info("Indexed #{length(sized_paths)} source files in #{format_duration(elapsed)}")
-      {:done, results, "Completed in #{format_duration(elapsed)}"}
-    end)
+  defp stream_items([{[entry | entries], manifest_entry}]) do
+    [{entry, [manifest_entry]} | Enum.map(entries, &{&1, []})]
   end
 
   defp stat_paths(paths) do
@@ -73,10 +63,40 @@ defmodule Expert.Search.Indexer.Sources do
     end
   end
 
-  defp task_result!({:ok, items}), do: items
+  defp task_result!({:ok, result}), do: result
 
   defp task_result!({:exit, reason}),
     do: raise("Indexing task failed: #{Exception.format_exit(reason)}")
+
+  defp start_progress(title) do
+    token =
+      case Progress.begin(title, percentage: 0) do
+        {:ok, token} -> token
+        {:error, :rejected} -> nil
+      end
+
+    {token, 0, System.monotonic_time(:millisecond)}
+  end
+
+  defp report_progress({token, current, start_time}, size, total, message) do
+    current = current + size
+
+    if token do
+      percentage = if total > 0, do: min(100, div(current * 100, total)), else: 0
+      Progress.report(token, message: message, percentage: percentage)
+    end
+
+    {token, current, start_time}
+  end
+
+  defp complete_progress({token, _current, start_time}, path_count) do
+    elapsed = System.monotonic_time(:millisecond) - start_time
+    Logger.info("Indexed #{path_count} source files in #{format_duration(elapsed)}")
+
+    if token do
+      Progress.complete(token, message: "Completed in #{format_duration(elapsed)}")
+    end
+  end
 
   defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
   defp format_duration(ms), do: "#{Float.round(ms / 1000, 1)}s"

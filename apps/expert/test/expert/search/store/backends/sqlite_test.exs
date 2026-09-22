@@ -225,6 +225,61 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, :stale} = Sqlite.prepare(pid)
       assert [^entry] = Sqlite.find_by_subject(project, Persisted.Module, :_, :_)
     end
+
+    test "restores entries and indexes when replacement fails", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      old_entry = %Entry{
+        id: 1,
+        subject: Persisted.Module,
+        path: "/persisted.ex",
+        type: :module,
+        subtype: :definition,
+        block_id: :root
+      }
+
+      invalid_entry = %Entry{
+        id: 2,
+        subject: Invalid.Module,
+        path: nil,
+        type: :module,
+        subtype: :definition,
+        block_id: :root
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [old_entry])
+      assert {:error, _reason} = Sqlite.replace_all(project, [invalid_entry])
+
+      assert [^old_entry] = Sqlite.find_by_subject(project, Persisted.Module, :_, :_)
+
+      database_path = Sqlite.database_path(project, runtime_versions)
+      {:ok, conn} = Exqlite.Basic.open(database_path)
+      result = Exqlite.Basic.exec(conn, "SELECT name FROM sqlite_master WHERE type = 'index'")
+      assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
+      assert :ok = Exqlite.Basic.close(conn)
+
+      index_names = MapSet.new(rows, fn [name] -> name end)
+
+      assert MapSet.subset?(
+               MapSet.new([
+                 "entries_subject_idx",
+                 "entries_block_idx",
+                 "entries_id_idx",
+                 "entries_path_id_idx",
+                 "entries_type_subtype_idx",
+                 "entries_definitions_idx"
+               ]),
+               index_names
+             )
+    end
   end
 
   describe "replace_all/2 with indexed source entries" do
