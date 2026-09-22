@@ -65,11 +65,8 @@ defmodule Expert.Search.IndexerTest do
       _project, Engine.Modules, :exunit_module?, [module] ->
         Engine.Modules.exunit_module?(module)
 
-      _project, Engine.Analyzer.Imports, :at, [analysis, position] ->
-        Engine.Analyzer.Imports.at(analysis, position)
-
-      _project, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity] ->
-        Engine.Analyzer.resolve_local_call(analysis, position, name, arity)
+      _project, Engine.Modules, :exports, [module] ->
+        Engine.Modules.exports(module)
     end)
 
     FakeBackend.set_entries([])
@@ -137,6 +134,26 @@ defmodule Expert.Search.IndexerTest do
       assert {:ok, [], %Manifest{}} = Indexer.create_index(project, paths: %Paths{})
       assert_receive :application_cache_cleared
       assert_receive :application_cache_cleared
+    end
+
+    @tag :tmp_dir
+    test "deletes the index cache after indexing", %{project: project, tmp_dir: tmp_dir} do
+      test_pid = self()
+      path = write_file!(Path.join(tmp_dir, "failed.ex"), "defmodule Failed do\nend")
+
+      patch(Source, :index, fn ^path, _source, nil, ^project, cache ->
+        send(test_pid, {:cache, cache})
+        {:ok, []}
+      end)
+
+      assert {:ok, [], %Manifest{}} =
+               Indexer.create_index(project,
+                 paths: %Paths{source_paths: [path]},
+                 beams?: false
+               )
+
+      assert_received {:cache, cache}
+      assert :undefined = :ets.info(cache)
     end
 
     test "returns a list of entries", %{project: project} do

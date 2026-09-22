@@ -9,6 +9,7 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
   alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Indexer.Source
   alias Forge.CodeIntelligence.Symbols.Document
+  alias Forge.ProcessCache
 
   setup do
     start_supervised!(Engine.ApplicationCache)
@@ -29,11 +30,8 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
       ^project, Engine.Modules, :exunit_module?, [module] ->
         Engine.Modules.exunit_module?(module)
 
-      ^project, Engine.Analyzer.Imports, :at, [analysis, position] ->
-        Engine.Analyzer.Imports.at(analysis, position)
-
-      ^project, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity] ->
-        Engine.Analyzer.resolve_local_call(analysis, position, name, arity)
+      ^project, Engine.Modules, :exports, [module] ->
+        Engine.Modules.exports(module)
     end)
 
     symbols = Symbols.for_document(project, doc)
@@ -73,6 +71,21 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
   end
 
   describe "document symbols" do
+    test "clears process cache entries" do
+      ProcessCache.trans(:document_symbols_test, fn -> :cached end)
+
+      ~q[
+      defmodule ExampleTest do
+        use ExUnit.Case
+
+        test "works", do: :ok
+      end
+      ]
+      |> document_symbols()
+
+      assert :error = ProcessCache.fetch(:document_symbols_test)
+    end
+
     test "a top level module is found" do
       {[%Document{} = module], doc} =
         ~q[

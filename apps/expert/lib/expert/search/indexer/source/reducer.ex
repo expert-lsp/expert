@@ -22,6 +22,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     :position,
     :blocks,
     :block_hierarchy,
+    :cache,
     :project,
     extractors: []
   ]
@@ -37,18 +38,19 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   ]
 
   def new(%Analysis{} = analysis, extractors \\ nil) do
-    new_reducer(analysis, extractors, nil)
+    new_reducer(analysis, extractors, nil, nil)
   end
 
-  def new(%Analysis{} = analysis, extractors, %Project{} = project) do
-    new_reducer(analysis, extractors, project)
+  def new(%Analysis{} = analysis, extractors, %Project{} = project, cache \\ nil) do
+    new_reducer(analysis, extractors, project, cache)
   end
 
-  defp new_reducer(%Analysis{} = analysis, extractors, project) do
+  defp new_reducer(%Analysis{} = analysis, extractors, project, cache) do
     %__MODULE__{
       analysis: analysis,
       block_hierarchy: %{root: %{}},
       blocks: [Block.root()],
+      cache: cache,
       entries: [],
       extractors: extractors || @extractors,
       position: {0, 0},
@@ -68,13 +70,13 @@ defmodule Expert.Search.Indexer.Source.Reducer do
 
   def application(%__MODULE__{project: nil}, _module), do: nil
 
-  def application(%__MODULE__{project: %Project{} = project}, module),
-    do: EngineApi.application(project, module)
+  def application(%__MODULE__{project: %Project{} = project, cache: cache}, module),
+    do: fetch(cache, :application, module, &EngineApi.application(project, &1))
 
   def available_module?(%__MODULE__{project: nil}, _module), do: false
 
-  def available_module?(%__MODULE__{project: %Project{} = project}, module),
-    do: EngineApi.available_module?(project, module)
+  def available_module?(%__MODULE__{project: %Project{} = project, cache: cache}, module),
+    do: fetch(cache, :available_module, module, &EngineApi.available_module?(project, &1))
 
   def resolve_local_call(
         %__MODULE__{analysis: analysis, project: nil},
@@ -85,23 +87,69 @@ defmodule Expert.Search.Indexer.Source.Reducer do
       do: Analyzer.resolve_local_call(analysis, position, name, arity)
 
   def resolve_local_call(
-        %__MODULE__{analysis: analysis, project: %Project{} = project},
+        %__MODULE__{analysis: analysis, project: %Project{} = project, cache: cache},
         position,
         name,
         arity
       ),
-      do: EngineApi.resolve_local_call(project, analysis, position, name, arity)
+      do:
+        Analyzer.resolve_local_call(
+          analysis,
+          position,
+          name,
+          arity,
+          &module_exports(project, cache, &1)
+        )
 
   def imports_at(%__MODULE__{analysis: analysis, project: nil}, position),
     do: Analyzer.imports_at(analysis, position)
 
-  def imports_at(%__MODULE__{analysis: analysis, project: %Project{} = project}, position),
-    do: EngineApi.imports_at(project, analysis, position)
+  def imports_at(
+        %__MODULE__{analysis: analysis, project: %Project{} = project, cache: cache},
+        position
+      ),
+      do: Analyzer.imports_at(analysis, position, &module_exports(project, cache, &1))
 
   def exunit_module?(%__MODULE__{project: nil}, _module), do: false
 
-  def exunit_module?(%__MODULE__{project: %Project{} = project}, module),
-    do: EngineApi.exunit_module?(project, module)
+  def exunit_module?(%__MODULE__{project: %Project{} = project, cache: cache}, module),
+    do: fetch(cache, :exunit_module, module, &EngineApi.exunit_module?(project, &1))
+
+  defp module_exports(%Project{} = project, cache, module) do
+    fetch(
+      cache,
+      :module_exports,
+      module,
+      &EngineApi.module_exports(project, &1),
+      &match?({:ok, _}, &1)
+    )
+  end
+
+  defp fetch(cache, operation, module, remote_call) do
+    fetch(cache, operation, module, remote_call, fn _value -> true end)
+  end
+
+  defp fetch(nil, _operation, module, remote_call, _cache?) do
+    remote_call.(module)
+  end
+
+  defp fetch(cache, operation, module, remote_call, cache?) do
+    key = {operation, module}
+
+    case :ets.lookup(cache, key) do
+      [{^key, value}] ->
+        value
+
+      [] ->
+        value = remote_call.(module)
+
+        if cache?.(value) do
+          true = :ets.insert(cache, {key, value})
+        end
+
+        value
+    end
+  end
 
   def skip(meta) do
     Keyword.put(meta, :__skipped__, true)

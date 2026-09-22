@@ -18,28 +18,33 @@ defmodule Expert.Search.Indexer.Quoted do
     end
   end
 
-  def index(analysis, extractors \\ nil), do: do_index(analysis, extractors, nil)
+  def index(analysis, extractors \\ nil), do: do_index(analysis, extractors, nil, nil)
 
-  def index(%Analysis{} = analysis, extractors, %Project{} = project) do
-    do_index(analysis, extractors, project)
+  def index(%Analysis{} = analysis, extractors, %Project{} = project, cache \\ nil) do
+    do_index(analysis, extractors, project, cache)
   end
 
-  defp do_index(%Analysis{valid?: true} = analysis, extractors, nil) do
+  defp do_index(%Analysis{valid?: true} = analysis, extractors, nil, nil) do
     {:ok, extract_entries(analysis, extractors)}
   end
 
-  defp do_index(%Analysis{valid?: true} = analysis, extractors, %Project{} = project) do
-    {:ok, extract_entries(analysis, extractors, project)}
+  defp do_index(%Analysis{valid?: true} = analysis, extractors, %Project{} = project, cache) do
+    {:ok, extract_entries(analysis, extractors, project, cache)}
   end
 
-  defp do_index(%Analysis{valid?: false}, _extractors, _project), do: {:ok, []}
+  defp do_index(%Analysis{valid?: false}, _extractors, _project, _cache), do: {:ok, []}
 
   def extract_entries(%Analysis{} = analysis, extractors) do
     do_extract_entries(analysis, Reducer.new(analysis, extractors))
   end
 
-  def extract_entries(%Analysis{} = analysis, extractors, %Project{} = project) do
-    do_extract_entries(analysis, Reducer.new(analysis, extractors, project))
+  def extract_entries(
+        %Analysis{} = analysis,
+        extractors,
+        %Project{} = project,
+        cache \\ nil
+      ) do
+    do_extract_entries(analysis, Reducer.new(analysis, extractors, project, cache))
   end
 
   defp do_extract_entries(%Analysis{} = analysis, reducer) do

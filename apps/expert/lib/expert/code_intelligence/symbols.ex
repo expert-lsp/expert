@@ -6,8 +6,11 @@ defmodule Expert.CodeIntelligence.Symbols do
   alias Forge.CodeIntelligence.Symbols
   alias Forge.Document
   alias Forge.Document.Range
+  alias Forge.ProcessCache
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
+
+  require ProcessCache
 
   @block_types [
     :ex_unit_describe,
@@ -33,10 +36,16 @@ defmodule Expert.CodeIntelligence.Symbols do
     analysis = Ast.analyze(document)
 
     entries =
-      if analysis.ast == nil do
-        []
-      else
-        Indexer.Quoted.extract_entries(analysis, @symbol_extractors, project)
+      ProcessCache.with_cleanup do
+        if analysis.ast == nil do
+          []
+        else
+          Indexer.Quoted.extract_entries(
+            analysis,
+            @symbol_extractors,
+            project
+          )
+        end
       end
 
     definitions = Enum.filter(entries, &(&1.subtype == :definition))

@@ -49,4 +49,16 @@ defmodule Engine.ModulesTest do
                Modules.with_prefix("GenEvent", {Kernel, :macro_exported?, [:__using__, 1]})
     end
   end
+
+  describe "exports/1" do
+    test "returns Elixir functions and macros" do
+      assert {:ok, exports} = Modules.exports(Kernel)
+      assert {:is_map, 1} in exports.functions
+      assert {:def, 2} in exports.macros
+    end
+
+    test "returns an error for an unavailable module" do
+      assert :error = Modules.exports(DoesNotExist)
+    end
+  end
 end

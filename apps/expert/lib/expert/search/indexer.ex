@@ -8,11 +8,14 @@ defmodule Expert.Search.Indexer do
   alias Forge.ProcessCache
   alias Forge.Project
 
+  require Logger
   require ProcessCache
 
+  @cache_options [:set, :public, read_concurrency: true, write_concurrency: true]
+
   def create_index(%Project{} = project, opts \\ []) do
-    with_indexer_context(project, fn ->
-      {entries, manifest} = create_index_data(project, opts)
+    with_indexer_context(project, fn cache ->
+      {entries, manifest} = create_index_data(project, cache, opts)
 
       {:ok, entries, manifest}
     end)
@@ -23,10 +26,13 @@ defmodule Expert.Search.Indexer do
   end
 
   def update_index(%Project{} = project, path_to_ids, opts \\ []) when is_map(path_to_ids) do
-    with_indexer_context(project, fn ->
+    with_indexer_context(project, fn cache ->
       case ManifestStore.load(project) do
-        {:ok, %Manifest{} = manifest} -> refresh_index(project, manifest, path_to_ids, opts)
-        :missing -> replace_index(project, path_to_ids, opts)
+        {:ok, %Manifest{} = manifest} ->
+          refresh_index(project, cache, manifest, path_to_ids, opts)
+
+        :missing ->
+          replace_index(project, cache, path_to_ids, opts)
       end
     end)
   end
@@ -39,27 +45,40 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp create_index_data(%Project{} = project, opts) do
+  defp create_index_data(%Project{} = project, cache, opts) do
     paths = paths_for_project(project, opts)
-    {entries, manifest_entries} = index_paths(project, paths)
+    {entries, manifest_entries} = index_paths(project, cache, paths)
 
     {entries, Manifest.new(manifest_entries)}
   end
 
-  defp replace_index(%Project{} = project, path_to_ids, opts) do
-    {entries, manifest} = create_index_data(project, opts)
+  defp replace_index(%Project{} = project, cache, path_to_ids, opts) do
+    {entries, manifest} = create_index_data(project, cache, opts)
     paths_to_clear = stored_paths_to_clear(path_to_ids, entries)
 
     {:ok, entries, paths_to_clear, manifest}
   end
 
-  defp refresh_index(%Project{} = project, %Manifest{} = manifest, path_to_ids, opts) do
-    {entries, paths_to_clear, manifest} = update_index_data(project, manifest, path_to_ids, opts)
+  defp refresh_index(
+         %Project{} = project,
+         cache,
+         %Manifest{} = manifest,
+         path_to_ids,
+         opts
+       ) do
+    {entries, paths_to_clear, manifest} =
+      update_index_data(project, cache, manifest, path_to_ids, opts)
 
     {:ok, entries, paths_to_clear, manifest}
   end
 
-  defp update_index_data(%Project{} = project, %Manifest{} = manifest, path_to_ids, opts) do
+  defp update_index_data(
+         %Project{} = project,
+         cache,
+         %Manifest{} = manifest,
+         path_to_ids,
+         opts
+       ) do
     paths = paths_for_project(project, opts)
 
     plan =
@@ -67,7 +86,7 @@ defmodule Expert.Search.Indexer do
       |> Manifest.plan(paths)
       |> include_missing_stored_outputs(manifest, paths, path_to_ids)
 
-    {entries, manifest_entries, plan} = index_plan(project, plan, manifest, paths)
+    {entries, manifest_entries, plan} = index_plan(project, cache, plan, manifest, paths)
 
     paths_to_clear = Manifest.output_paths_to_clear(manifest, plan, manifest_entries)
     manifest = Manifest.apply_update(manifest, plan, manifest_entries)
@@ -87,12 +106,13 @@ defmodule Expert.Search.Indexer do
 
   defp index_plan(
          %Project{} = project,
+         cache,
          %Manifest.Plan{} = plan,
          %Manifest{} = manifest,
          %Paths{} = paths
        ) do
     {source_entries, source_manifest_entries} =
-      Sources.index(plan.source_paths_to_index, source_indexer(project))
+      Sources.index(plan.source_paths_to_index, source_indexer(project, cache))
 
     {beam_entries, beam_manifest_entries, beam_paths_to_index} =
       index_beam_plan(plan, manifest, paths)
@@ -229,9 +249,9 @@ defmodule Expert.Search.Indexer do
     }
   end
 
-  defp index_paths(%Project{} = project, %Paths{} = paths) do
+  defp index_paths(%Project{} = project, cache, %Paths{} = paths) do
     {source_entries, source_manifest_entries} =
-      Sources.index(paths.source_paths, source_indexer(project))
+      Sources.index(paths.source_paths, source_indexer(project, cache))
 
     {beam_entries, beam_manifest_entries} =
       Beams.index(paths.beam_paths, applications: paths.applications)
@@ -262,8 +282,8 @@ defmodule Expert.Search.Indexer do
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: type}),
     do: {path, subject, subtype, type}
 
-  defp source_indexer(%Project{} = project) do
-    fn path, source -> Expert.Search.Indexer.Source.index(path, source, nil, project) end
+  defp source_indexer(%Project{} = project, cache) do
+    fn path, source -> Expert.Search.Indexer.Source.index(path, source, nil, project, cache) end
   end
 
   defp stored_paths_to_clear(path_to_ids, entries) do
@@ -281,13 +301,29 @@ defmodule Expert.Search.Indexer do
     |> MapSet.new()
   end
 
-  defp with_indexer_context(%Project{} = project, fun) when is_function(fun, 0) do
+  defp with_indexer_context(%Project{} = project, fun) when is_function(fun, 1) do
     :ok = EngineApi.clear_application_cache(project)
+    cache = open_cache()
 
-    ProcessCache.with_cleanup do
-      fun.()
+    try do
+      ProcessCache.with_cleanup do
+        fun.(cache)
+      end
+    after
+      close_cache(cache)
+      EngineApi.clear_application_cache(project)
     end
-  after
-    EngineApi.clear_application_cache(project)
+  end
+
+  defp open_cache do
+    :ets.new(__MODULE__, @cache_options)
+  end
+
+  defp close_cache(cache) do
+    entries = :ets.info(cache, :size)
+    bytes = :ets.info(cache, :memory) * :erlang.system_info(:wordsize)
+
+    Logger.info("Index cache used #{entries} entries and #{bytes} bytes")
+    :ets.delete(cache)
   end
 end
