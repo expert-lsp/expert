@@ -66,7 +66,7 @@ defmodule Engine.Search.Indexer.Extractors.FunctionReference do
       Engine.Analyzer.resolve_local_call(reducer.analysis, position, fn_name, arity)
 
     reducer
-    |> entry(end_metadata, arity_meta, module, fn_name, arity)
+    |> entry(end_metadata, arity_meta, resolved_module(module, module), fn_name, arity)
     |> without_further_analysis()
   end
 
@@ -135,7 +135,7 @@ defmodule Engine.Search.Indexer.Extractors.FunctionReference do
       {module, _, _} =
         Engine.Analyzer.resolve_local_call(reducer.analysis, position, fn_name, arity)
 
-      entry(reducer, meta, meta, [module], fn_name, args)
+      entry(reducer, meta, meta, resolved_module(module, [module]), fn_name, args)
     end
   end
 
@@ -170,7 +170,7 @@ defmodule Engine.Search.Indexer.Extractors.FunctionReference do
         :ignored
 
       _ ->
-        case Engine.Analyzer.expand_alias(module, reducer.analysis, range.start) do
+        case expand_module(module, reducer.analysis, range.start) do
           {:ok, module} ->
             mfa = Subject.mfa(module, function_name, arity)
 
@@ -195,6 +195,19 @@ defmodule Engine.Search.Indexer.Extractors.FunctionReference do
         end
     end
   end
+
+  defp expand_module({:resolved, module}, _analysis, _position)
+       when is_atom(module) and not is_nil(module),
+       do: {:ok, module}
+
+  defp expand_module(module, analysis, position) do
+    Engine.Analyzer.expand_alias(module, analysis, position)
+  end
+
+  defp resolved_module(module, _fallback) when is_atom(module) and not is_nil(module),
+    do: {:resolved, module}
+
+  defp resolved_module(_module, fallback), do: fallback
 
   defp get_reference_range(document, start_metadata, end_metadata, function_name) do
     if valid_position_metadata?(start_metadata) and valid_position_metadata?(end_metadata) do

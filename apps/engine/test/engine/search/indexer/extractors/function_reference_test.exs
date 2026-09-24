@@ -272,6 +272,24 @@ defmodule Engine.Search.Indexer.Extractors.FunctionReferenceTest do
       assert reference.subtype == :reference
       assert "public_fun/1" == extract(code, reference.range)
     end
+
+    test "keeps the resolved module when an alias has the same name" do
+      code = ~q[
+      defmodule Parent do
+        alias Other.Parent
+
+        def public_fun(x), do: x
+        def call(x), do: public_fun(x)
+      end
+      ]
+
+      assert {:ok, [reference], _} = index(code)
+      assert reference.subject == "Parent.public_fun/1"
+    end
+
+    test "ignores an unresolved capture outside a module" do
+      assert {:ok, [], _} = index("capture = &unknown/1")
+    end
   end
 
   describe "imported function references" do
@@ -301,6 +319,18 @@ defmodule Engine.Search.Indexer.Extractors.FunctionReferenceTest do
       assert {:ok, [downcase_reference], _} = index(code)
       assert downcase_reference.subject == "String.downcase/1"
       assert "downcase/1" == extract(code, downcase_reference.range)
+    end
+
+    test "keeps the resolved import when an alias has the same name" do
+      code = ~q{
+        import String, only: [downcase: 1]
+        alias Other.String
+
+        f = &downcase/1
+      }
+
+      assert {:ok, [reference], _} = index(code)
+      assert reference.subject == "String.downcase/1"
     end
 
     test "works with multiple imports" do
