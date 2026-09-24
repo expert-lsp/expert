@@ -51,7 +51,7 @@ defmodule Engine.MixProject do
       {:elixir_sense,
        github: "elixir-lsp/elixir_sense", ref: "da065ae9ccc125d05b901b9eb6981ff559a8f9f1"},
       {:forge, path: "../forge"},
-      {:gen_lsp, "~> 0.11.3"},
+      {:gen_lsp, "~> 0.11.4"},
       {:logger_backends, "~> 1.0"},
       {:patch, "~> 0.15", only: [:dev, :test], runtime: false},
       {:quokka, "~> 2.12", only: [:dev, :test], runtime: false},

@@ -221,7 +221,7 @@ let
 
       gen_lsp =
         let
-          version = "0.11.3";
+          version = "0.11.4";
           drv = buildMix {
             inherit version;
             name = "gen_lsp";
@@ -230,7 +230,7 @@ let
             src = fetchHex {
               inherit version;
               pkg = "gen_lsp";
-              sha256 = "a674de4b06cbc56311d13a0fdf69066837785ba9c90da54984e58f485fd019cb";
+              sha256 = "0daf1f35658b61af8edecfc86ae1d1261cf291a1581e1fcb70d8ecf5d976a2e3";
             };
 
             beamDeps = [

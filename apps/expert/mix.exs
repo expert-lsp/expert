@@ -120,7 +120,7 @@ defmodule Expert.MixProject do
       {:engine, path: "../engine", only: [:test]},
       {:exqlite, "~> 0.36.0"},
       {:forge, path: "../forge"},
-      {:gen_lsp, "~> 0.11.3"},
+      {:gen_lsp, "~> 0.11.4"},
       {:hex_core, "~> 0.10"},
       {:jason, "~> 1.4"},
       {:patch, "~> 0.15", runtime: false, only: [:dev, :test]},

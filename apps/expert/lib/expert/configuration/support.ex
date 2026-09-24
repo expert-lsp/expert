@@ -17,6 +17,11 @@ defmodule Expert.Configuration.Support do
       :code_action,
       :resolve_support
     ],
+    watched_files_dynamic_registration: [
+      :workspace,
+      :did_change_watched_files,
+      :dynamic_registration
+    ],
     hierarchical_symbols: [
       :text_document,
       :document_symbol,
@@ -56,6 +61,7 @@ defmodule Expert.Configuration.Support do
 
   defstruct code_action_dynamic_registration: false,
             code_action_resolve: false,
+            watched_files_dynamic_registration: false,
             hierarchical_symbols: false,
             snippet: false,
             deprecated: false,

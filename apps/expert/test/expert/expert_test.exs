@@ -125,7 +125,10 @@ defmodule ExpertTest do
         initializationOptions: %{},
         capabilities: %{
           workspace: %{
-            workspaceFolders: true
+            workspaceFolders: true,
+            didChangeWatchedFiles: %{
+              dynamicRegistration: Keyword.get(opts, :watched_files_dynamic_registration, true)
+            }
           },
           window: %{
             showMessage: %{}
@@ -185,6 +188,66 @@ defmodule ExpertTest do
       assert project.root_uri == main_project.root_uri
 
       assert_project_alive?(main_project)
+    end
+
+    test "starts a project without registering file watchers when the client lacks support", %{
+      client: client,
+      project_root: project_root,
+      main_project: main_project
+    } do
+      assert :ok =
+               request(
+                 client,
+                 initialize_request(project_root,
+                   id: 1,
+                   projects: [main_project],
+                   watched_files_dynamic_registration: false
+                 )
+               )
+
+      assert_result(1, _)
+      assert :ok = notify(client, initialized_notification())
+
+      assert_project_alive?(main_project)
+      refute_receive %{"method" => "client/registerCapability"}, 100
+    end
+
+    test "continues after the client rejects file watcher registration", %{
+      client: client,
+      project_root: project_root,
+      main_project: main_project
+    } do
+      assert :ok =
+               request(
+                 client,
+                 initialize_request(project_root, id: 1, projects: [main_project])
+               )
+
+      assert_result(1, _)
+      assert :ok = notify(client, initialized_notification())
+
+      assert_receive %{
+        "jsonrpc" => "2.0",
+        "id" => registration_id,
+        "method" => "client/registerCapability"
+      }
+
+      assert :ok =
+               request(client, %{
+                 jsonrpc: "2.0",
+                 id: registration_id,
+                 error: %{code: -32_601, message: "Method not found"}
+               })
+
+      assert_notification("window/logMessage", %{
+        "message" => "Client rejected file watcher registration (-32601): Method not found",
+        "type" => 2
+      })
+
+      assert_project_alive?(main_project)
+
+      assert :ok = request(client, %{jsonrpc: "2.0", id: 2, method: "shutdown"})
+      assert_result(2, nil)
     end
 
     test "uses the umbrella root for an initial sub-app workspace folder", %{
