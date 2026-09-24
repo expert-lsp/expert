@@ -4,6 +4,8 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
   import Forge.Test.Fixtures
 
   alias Expert.Search.Store.Backends.Sqlite
+  alias Forge.Document.Position
+  alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
 
   setup do
@@ -105,13 +107,23 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
     } do
       database_path = Sqlite.database_path(project, runtime_versions)
 
+      block_range = %Range{
+        start: %Position{line: 1, character: 1},
+        end: %Position{line: 2, character: 1}
+      }
+
+      range = %Range{
+        start: %Position{line: 3, character: 1},
+        end: %Position{line: 4, character: 1}
+      }
+
       entry = %Entry{
         application: :sample,
         id: 1,
         block_id: :root,
-        block_range: %{start: 1, end: 2},
+        block_range: block_range,
         path: "/a/path/that/must/not/be/duplicated.ex",
-        range: %{start: 3, end: 4},
+        range: range,
         subject: "Lean.Module.function/0",
         subtype: :definition,
         type: :module,
@@ -132,8 +144,13 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, [[entry_blob]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
 
-      assert {nil, :sample, %{start: 1, end: 2}, %{start: 3, end: 4}, %{detail: :kept}} =
-               :erlang.binary_to_term(entry_blob)
+      assert {
+               nil,
+               :sample,
+               {{1, 1, false, nil, 0, 1}, {2, 1, false, nil, 0, 1}},
+               {{3, 1, false, nil, 0, 1}, {4, 1, false, nil, 0, 1}},
+               %{detail: :kept}
+             } = :erlang.binary_to_term(entry_blob)
 
       assert [^entry] = Sqlite.find_by_subject(project, "Lean.Module.function/0", :_, :_)
     end
@@ -173,7 +190,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[4]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[5]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end

@@ -5,13 +5,15 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   alias Expert.EngineApi
   alias Expert.Search.Store.Backend
+  alias Forge.Document.Position
+  alias Forge.Document.Range
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
   require Entry
   require Logger
 
-  @schema_version 4
+  @schema_version 5
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -1109,7 +1111,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp build_entry_blob(%Entry{} = entry) do
     subject_override = if !is_binary(entry.subject), do: entry.subject
 
-    blob({subject_override, entry.application, entry.block_range, entry.range, entry.metadata})
+    blob({
+      subject_override,
+      entry.application,
+      compact_range(entry.block_range),
+      compact_range(entry.range),
+      entry.metadata
+    })
   end
 
   defp decode_entry([id, path, subject_key, type_blob, subtype, block_id, entry_blob]) do
@@ -1125,13 +1133,49 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       application: application,
       id: id,
       block_id: block_id(block_id),
-      block_range: block_range,
+      block_range: expand_range(block_range),
       path: path,
-      range: range,
+      range: expand_range(range),
       subject: subject,
       subtype: String.to_existing_atom(subtype),
       type: decode_term(type_blob),
       metadata: metadata
+    }
+  end
+
+  defp compact_range(nil), do: nil
+
+  defp compact_range(%Range{start: start_position, end: end_position}) do
+    {compact_position(start_position), compact_position(end_position)}
+  end
+
+  defp compact_position(%Position{} = position) do
+    {
+      position.line,
+      position.character,
+      position.valid?,
+      position.context_line,
+      position.document_line_count,
+      position.starting_index
+    }
+  end
+
+  defp expand_range(nil), do: nil
+
+  defp expand_range({start_position, end_position}) do
+    %Range{start: expand_position(start_position), end: expand_position(end_position)}
+  end
+
+  defp expand_position(
+         {line, character, valid?, context_line, document_line_count, starting_index}
+       ) do
+    %Position{
+      line: line,
+      character: character,
+      valid?: valid?,
+      context_line: context_line,
+      document_line_count: document_line_count,
+      starting_index: starting_index
     }
   end
 
