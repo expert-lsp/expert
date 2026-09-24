@@ -185,11 +185,18 @@ defmodule Expert do
   defp document_request?(_), do: false
 
   def handle_notification(%GenLSP.Notifications.Initialized{}, lsp) do
-    Logger.info("Server initialized, registering capabilities")
-    registrations = registrations()
+    if Expert.Configuration.client_support(:watched_files_dynamic_registration) do
+      Logger.info("Server initialized, registering capabilities")
 
-    if nil != GenLSP.request(lsp, registrations) do
-      Logger.error("Failed to register capability")
+      case GenLSP.request(lsp, registrations()) do
+        nil ->
+          :ok
+
+        %GenLSP.ErrorResponse{code: code, message: message} ->
+          Logger.warning("Client rejected file watcher registration (#{code}): #{message}")
+      end
+    else
+      Logger.info("Server initialized")
     end
 
     for project <- Store.projects() do
