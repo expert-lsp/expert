@@ -27,7 +27,7 @@ defmodule Expert.Search.StoreTest do
     start_supervised!({Store, [project, Sqlite]})
 
     Store.enable(project)
-    assert_eventually Store.loaded?(project), 1500
+    assert_eventually(Store.loaded?(project), 1500)
 
     on_exit(fn -> Sqlite.destroy_all(project) end)
 
@@ -43,6 +43,17 @@ defmodule Expert.Search.StoreTest do
     assert entry.id == 1
   end
 
+  test "inserts index chunks", %{project: project} do
+    old_entry = definition(id: 1, subject: Old.Module, path: "/old.ex")
+    new_entry = definition(id: 2, subject: New.Module, path: "/new.ex")
+
+    assert :ok = Store.replace(project, [old_entry])
+    assert :ok = Store.insert(project, [new_entry])
+
+    assert {:ok, [^old_entry]} = Store.fuzzy(project, "Old", subtype: :definition)
+    assert {:ok, [^new_entry]} = Store.fuzzy(project, "New", subtype: :definition)
+  end
+
   test "updates replace entries for the same path", %{project: project} do
     path = "/path/to/file.ex"
 
@@ -50,8 +61,10 @@ defmodule Expert.Search.StoreTest do
     assert :ok = Store.update(project, path, [definition(id: 2, subject: New.Module, path: path)])
     send(Process.whereis(Store.name(project)), :flush_updates)
 
-    assert_eventually {:ok, [entry]} =
-                        Store.fuzzy(project, "New", type: :module, subtype: :definition)
+    assert_eventually(
+      {:ok, [entry]} =
+        Store.fuzzy(project, "New", type: :module, subtype: :definition)
+    )
 
     assert entry.id == 2
     assert {:ok, []} = Store.exact(project, Old.Module, subtype: :definition)

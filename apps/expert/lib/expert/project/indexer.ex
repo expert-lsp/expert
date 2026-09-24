@@ -8,7 +8,6 @@ defmodule Expert.Project.Indexer do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
-  alias Expert.Progress
   alias Expert.Project.Node
   alias Expert.Search
   alias Forge.Project
@@ -22,7 +21,6 @@ defmodule Expert.Project.Indexer do
       :task_supervisor,
       :create_index,
       :update_index,
-      :trace_batch,
       :initial_compile?,
       pending?: false
     ]
@@ -48,7 +46,7 @@ defmodule Expert.Project.Indexer do
         [
           task_supervisor: task_supervisor_name(project),
           create_index: &Search.Indexer.create_index/1,
-          update_index: &Search.Indexer.update_index/2,
+          update_index: &Search.Indexer.update_index/1,
           initial_compile?: false
         ],
         opts
@@ -95,8 +93,6 @@ defmodule Expert.Project.Indexer do
   @impl GenServer
   def handle_info(project_compiled(status: status), %State{} = state)
       when status in [:success, :successful, :error] do
-    trace_batch = if status == :error, do: %{}, else: drain_trace_definitions(state)
-    state = %State{state | trace_batch: trace_batch}
     {:noreply, start_or_queue_index(state)}
   end
 
@@ -133,20 +129,12 @@ defmodule Expert.Project.Indexer do
     do: start_or_queue_index(%State{state | task: nil, pending?: false})
 
   defp complete_index(%State{} = state, :ok) do
-    state = %State{state | task: nil}
-
-    case apply_trace_definitions(state.project, state.trace_batch) do
-      :ok ->
-        broadcast_index_ready(state)
-
-      {:error, reason} ->
-        Logger.warning("Could not apply compiler trace index supplement: #{inspect(reason)}")
-        broadcast_index_ready(state)
-    end
+    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
+    %State{state | task: nil}
   end
 
   defp complete_index(%State{} = state, _result) do
-    %State{state | task: nil, trace_batch: nil}
+    %State{state | task: nil}
   end
 
   defp run_index(%Project{} = project, create_index, update_index) do
@@ -155,108 +143,29 @@ defmodule Expert.Project.Indexer do
     end
   end
 
-  defp broadcast_index_ready(%State{} = state) do
-    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
-    %State{state | trace_batch: nil}
-  end
-
-  defp drain_trace_definitions(%State{project: project}) do
-    case EngineApi.call(project, Engine.Compilation.TraceBuffer, :drain_definitions, []) do
-      {:ok, entries_by_path} when is_map(entries_by_path) ->
-        entries_by_path
-
-      {:error, reason} ->
-        Logger.warning("Could not drain compiler trace index supplement: #{inspect(reason)}")
-        %{}
-    end
-  end
-
-  defp apply_trace_definitions(_project, trace_batch) when map_size(trace_batch) == 0, do: :ok
-
-  defp apply_trace_definitions(%Project{} = project, trace_batch) when is_map(trace_batch) do
-    with {:ok, current_entries} <- Search.Store.all(project, paths: Map.keys(trace_batch)) do
-      current_entries = Enum.reject(current_entries, &use_definition?/1)
-      trace_entries = missing_trace_entries(current_entries, trace_batch)
-
-      Search.Store.apply_index_update(
-        project,
-        current_entries ++ trace_entries,
-        Map.keys(trace_batch)
-      )
-    end
-  end
-
-  defp use_definition?(%{subtype: :definition, metadata: %{via: :use}}),
-    do: true
-
-  defp use_definition?(_entry), do: false
-
-  defp missing_trace_entries(current_entries, trace_batch) do
-    current_keys =
-      current_entries
-      |> Enum.filter(&definition?/1)
-      |> MapSet.new(&definition_identity/1)
-
-    trace_entries =
-      trace_batch
-      |> Enum.flat_map(fn {_path, entries} -> entries end)
-      |> Enum.filter(&definition?/1)
-
-    {_keys, missing_entries} =
-      Enum.reduce(trace_entries, {current_keys, []}, fn entry, {keys, entries} ->
-        key = definition_identity(entry)
-
-        if MapSet.member?(keys, key),
-          do: {keys, entries},
-          else: {MapSet.put(keys, key), [entry | entries]}
-      end)
-
-    Enum.reverse(missing_entries)
-  end
-
-  defp definition?(%{subtype: :definition}), do: true
-  defp definition?(_entry), do: false
-
-  defp definition_identity(%{path: path, subject: subject, subtype: :definition, type: type}) do
-    {path, subject, :definition, type}
-  end
-
   defp persist_index(%Project{} = project, :empty, create_index, _update_index) do
-    with {:ok, entries, after_apply} <- create_index.(project) do
-      persist_full_index(project, entries, after_apply)
-    end
+    persist_full_index(project, create_index)
   end
 
   defp persist_index(%Project{} = project, _status, create_index, update_index) do
     persist_incremental_index(project, create_index, update_index)
   end
 
-  defp persist_full_index(%Project{} = project, entries, after_apply) do
-    Progress.with_progress("Persisting index", fn _token ->
-      result =
-        with :ok <- Search.Store.replace(project, entries) do
-          after_apply.()
-        end
-
-      {:done, result}
-    end)
+  defp persist_full_index(%Project{} = project, create_index) do
+    create_index.(project)
   end
 
   defp persist_incremental_index(%Project{} = project, create_index, update_index) do
-    with path_to_ids when is_map(path_to_ids) <- Search.Store.path_to_ids(project),
-         {:ok, updated_entries, paths_to_clear, after_apply} <-
-           update_index.(project, path_to_ids) do
-      case Search.Store.apply_index_update(project, updated_entries, paths_to_clear) do
-        :ok ->
-          after_apply.()
+    case update_index.(project) do
+      {:error, {:store, reason}} ->
+        Logger.warning(
+          "Could not persist incremental index update, rebuilding full index: #{inspect(reason)}"
+        )
 
-        {:error, reason} ->
-          Logger.warning(
-            "Could not persist incremental index update, rebuilding full index: #{inspect(reason)}"
-          )
+        persist_index(project, :empty, create_index, update_index)
 
-          persist_index(project, :empty, create_index, update_index)
-      end
+      result ->
+        result
     end
   end
 

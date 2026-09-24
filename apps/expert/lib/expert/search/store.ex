@@ -30,6 +30,9 @@ defmodule Expert.Search.Store do
     )
   end
 
+  def insert(%Project{} = project, entries),
+    do: GenServer.call(name(project), {:insert, entries}, :infinity)
+
   @spec exact(Project.t(), Entry.subject_query(), Entry.constraints()) ::
           {:ok, [Entry.t()]} | {:error, term()} | []
   def exact(%Project{} = project, subject \\ :_, constraints) do
@@ -166,6 +169,16 @@ defmodule Expert.Search.Store do
     {reply, new_state} =
       case State.replace(state, entries) do
         {:ok, new_state} -> {:ok, State.drop_buffered_updates(new_state)}
+        {:error, _} = error -> {error, state}
+      end
+
+    {:reply, reply, {ref, new_state}}
+  end
+
+  def handle_call({:insert, entries}, _from, {ref, %State{} = state}) do
+    {reply, new_state} =
+      case State.insert(state, entries) do
+        {:ok, new_state} -> {:ok, new_state}
         {:error, _} = error -> {error, state}
       end
 

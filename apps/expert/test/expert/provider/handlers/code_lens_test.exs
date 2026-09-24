@@ -8,6 +8,7 @@ defmodule Expert.Provider.Handlers.CodeLensTest do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Project.Reindex
   alias Expert.Protocol.Convert
   alias Expert.Protocol.Id
   alias Expert.Provider.Handlers
@@ -45,7 +46,7 @@ defmodule Expert.Provider.Handlers.CodeLensTest do
   end
 
   defp with_indexing_enabled(_) do
-    patch(EngineApi, :index_running?, false)
+    patch(Reindex, :running?, false)
     :ok
   end
 

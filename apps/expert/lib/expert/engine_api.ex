@@ -101,19 +101,6 @@ defmodule Expert.EngineApi do
     call(project, Engine, :hover, [document, position])
   end
 
-  def references(
-        %Project{} = project,
-        %Analysis{} = analysis,
-        %Position{} = position,
-        include_definitions?
-      ) do
-    call(project, Engine, :references, [
-      analysis,
-      position,
-      include_definitions?
-    ])
-  end
-
   def modules_with_prefix(%Project{} = project, prefix)
       when is_binary(prefix) or is_atom(prefix) do
     call(project, Engine, :modules_with_prefix, [prefix])
@@ -141,33 +128,45 @@ defmodule Expert.EngineApi do
     call(project, Engine, :broadcast, [message])
   end
 
-  def reindex(%Project{} = project) do
-    call(project, Engine, :reindex, [])
-  end
-
-  def index_running?(%Project{} = project) do
-    call(project, Engine, :index_running?, [])
-  end
-
   def resolve_entity(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
     call(project, Engine, :resolve_entity, [analysis, position])
   end
 
-  def struct_definitions(%Project{} = project) do
-    call(project, Engine, :struct_definitions, [])
+  def application(target, module),
+    do: runtime_call(target, Engine.ApplicationCache, :application, [module])
+
+  def available_module?(target, module),
+    do: runtime_call(target, Engine.ApplicationCache, :available_module?, [module])
+
+  def clear_application_cache(%Project{} = project),
+    do: call(project, Engine.ApplicationCache, :clear, [])
+
+  def resolve_local_call(target, %Analysis{} = analysis, %Position{} = position, name, arity) do
+    runtime_call(target, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity])
   end
 
-  def document_symbols(%Project{} = project, %Document{} = document) do
-    call(project, Engine, :document_symbols, [document])
+  def imports_at(target, %Analysis{} = analysis, %Position{} = position) do
+    runtime_call(target, Engine.Analyzer.Imports, :at, [analysis, position])
   end
 
-  def workspace_symbols(%Project{} = project, query) do
-    call(project, Engine, :workspace_symbols, [query])
-  end
+  def exunit_module?(target, module),
+    do: runtime_call(target, Engine.Modules, :exunit_module?, [module])
+
+  def module_exports(target, module),
+    do: runtime_call(target, Engine.Modules, :exports, [module])
 
   def runtime_versions(%Project{} = project) do
     call(project, Engine, :runtime_versions, [])
   end
+
+  def project_configuration(%Project{} = engine_project, %Project{} = configured_project),
+    do: call(engine_project, Engine.Mix, :project_configuration, [configured_project])
+
+  defp runtime_call(%Project{} = project, module, function, arguments),
+    do: call(project, module, function, arguments)
+
+  defp runtime_call(node, module, function, arguments) when is_atom(node),
+    do: :erpc.call(node, module, function, arguments)
 
   defdelegate stop(project), to: EngineNode
 end

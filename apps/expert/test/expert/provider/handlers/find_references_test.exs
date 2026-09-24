@@ -4,8 +4,8 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
 
   import Forge.Test.Fixtures
 
+  alias Expert.CodeIntelligence.References
   alias Expert.Document.Context
-  alias Expert.EngineApi
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
   alias Forge.Ast.Analysis
@@ -59,10 +59,10 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
     test "returns locations that the entity returns", %{project: project, uri: uri} do
       project_uri = project.root_uri
 
-      patch(EngineApi, :references, fn %{root_uri: ^project_uri},
-                                       %Analysis{document: document},
-                                       _position,
-                                       _ ->
+      patch(References, :references, fn %{root_uri: ^project_uri},
+                                        %Analysis{document: document},
+                                        _position,
+                                        _ ->
         locations = [
           Location.new(
             Document.Range.new(
@@ -83,7 +83,7 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
     end
 
     test "returns nothing if the entity can't resolve it", %{project: project, uri: uri} do
-      patch(EngineApi, :references, nil)
+      patch(References, :references, nil)
 
       {:ok, request} = build_request(uri, 1, 5)
 
