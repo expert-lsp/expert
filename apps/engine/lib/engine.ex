@@ -46,6 +46,8 @@ defmodule Engine do
     to: Engine.Completion,
     as: :struct_fields
 
+  defdelegate declaration(document, position), to: CodeIntelligence.Declaration
+
   defdelegate definition(document, position), to: CodeIntelligence.Definition
 
   defdelegate hover(document, position), to: CodeIntelligence.Hover
