@@ -147,6 +147,59 @@ defmodule Engine.CodeMod.Format.CacheTest do
     assert_called(Resolver.resolve(_, _), 1)
   end
 
+  test "formatter functions are cached per file path",
+       %{ex_path: ex_path, other_ex_path: other_ex_path} = ctx do
+    # Force the resolver to use the context project's root for the formatter
+    Engine.set_project(ctx.project)
+
+    invalid_source = "def foo(a, ), do: true"
+
+    assert {:ok, ex_formatter, _opts} =
+             Cache.fetch_formatter(ctx.project, ex_path)
+
+    assert {:ok, other_ex_formatter, _opts} =
+             Cache.fetch_formatter(ctx.project, other_ex_path)
+
+    assert {:error, %SyntaxError{file: ^ex_path}} =
+             ex_formatter.(invalid_source)
+
+    assert {:error, %SyntaxError{file: ^other_ex_path}} =
+             other_ex_formatter.(invalid_source)
+  end
+
+  test "closing one file does not break another cached formatter", ctx do
+    Engine.set_project(ctx.project)
+
+    assert {:ok, _, _} =
+             Cache.fetch_formatter(ctx.project, ctx.ex_path)
+
+    assert {:ok, other_formatter, other_opts} =
+             Cache.fetch_formatter(ctx.project, ctx.other_ex_path)
+
+    :ok =
+      ctx.ex_path
+      |> Document.Path.to_uri()
+      |> Document.Store.close()
+
+    refresh()
+
+    assert {:ok, ^other_formatter, ^other_opts} =
+             Cache.fetch_formatter(ctx.project, ctx.other_ex_path)
+  end
+
+  test "a resolution failure is not cached", ctx do
+    patch(Resolver, :resolve, fn _project, _file_path ->
+      raise "boom"
+    end)
+
+    assert :error = Cache.fetch_formatter(ctx.project, ctx.ex_path)
+
+    patch_resolver()
+
+    assert {:ok, _, _} =
+             Cache.fetch_formatter(ctx.project, ctx.ex_path)
+  end
+
   defp create_file(dir, name, contents \\ "") do
     path = Path.join(dir, name)
     File.mkdir_p!(dir)
