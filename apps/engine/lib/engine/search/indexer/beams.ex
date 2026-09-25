@@ -197,9 +197,12 @@ defmodule Engine.Search.Indexer.Beams do
     [{:skipped, manifest_entry}]
   end
 
+  @doc """
+  Returns the debug_info metadata chunk from the provided beam path.
+  """
   # The debug-info chunk data is backend-owned and opaque. The public contract is
   # to ask the backend to decode it into the Elixir debug-info format we consume.
-  defp debug_metadata(beam_path) do
+  def debug_metadata(beam_path) do
     with {:ok, {module, [debug_info: {:debug_info_v1, backend, data}]}} <-
            :beam_lib.chunks(String.to_charlist(beam_path), [:debug_info]),
          {:ok, metadata} when is_map(metadata) <- backend.debug_info(:elixir_v1, module, data, []) do
@@ -207,11 +210,12 @@ defmodule Engine.Search.Indexer.Beams do
     else
       _ -> :error
     end
-  catch
-    _kind, _reason -> :error
   end
 
-  defp debug_metadata_from_binary(beam) do
+  @doc """
+  Returns the debug_info metadata chunk from the provided beam binary.
+  """
+  def debug_metadata_from_binary(beam) do
     with {:ok, {module, [debug_info: {:debug_info_v1, backend, data}]}} <-
            :beam_lib.chunks(beam, [:debug_info]),
          {:ok, metadata} when is_map(metadata) <- backend.debug_info(:elixir_v1, module, data, []) do
@@ -219,8 +223,6 @@ defmodule Engine.Search.Indexer.Beams do
     else
       _ -> :error
     end
-  catch
-    _kind, _reason -> :error
   end
 
   defp entries_from_metadata(metadata, source_lines) do
