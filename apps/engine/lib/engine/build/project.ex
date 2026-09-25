@@ -5,22 +5,13 @@ defmodule Engine.Build.Project do
   alias Engine.Progress
   alias Forge.Internet
   alias Forge.Project
-  alias Mix.Task.Compiler.Diagnostic
 
   require Logger
 
   def compile(%Project{kind: :mix} = project, initial?, force?) do
-    Engine.Mix.in_project(fn _ ->
-      Logger.info("Building #{Project.display_name(project)}")
-
-      Progress.with_progress("Building #{Project.display_name(project)}", fn token ->
-        Build.set_progress_token(token)
-
-        try do
-          {:done, do_compile(project, initial?, force?, token)}
-        after
-          Build.clear_progress_token()
-        end
+    Engine.Mix.reload_project(project, fn loaded ->
+      with_progress("Building #{Project.display_name(loaded)}", fn token ->
+        do_compile(loaded, initial?, force?, token)
       end)
     end)
   end
@@ -30,66 +21,64 @@ defmodule Engine.Build.Project do
   end
 
   def fetch_deps(%Project{kind: :mix} = project) do
-    Engine.Mix.in_project(project, fn _ ->
-      Logger.info("Fetching dependencies for #{Project.display_name(project)}")
+    result =
+      Engine.Mix.reload_project(project, fn loaded ->
+        Logger.info("Fetching dependencies for #{Project.display_name(project)}")
 
-      Progress.with_progress(
-        "Fetching dependencies for #{Project.display_name(project)}",
-        fn token ->
-          Build.set_progress_token(token)
-
-          try do
+        with_progress(
+          "Fetching dependencies for #{Project.display_name(project)}",
+          fn token ->
             prepare_for_project_build(token)
-            Engine.Mix.record_deps(project)
-            {:done, :ok}
-          after
-            Build.clear_progress_token()
+            Engine.Mix.record_deps(loaded)
+            {:ok, []}
           end
-        end
-      )
-    end)
+        )
+      end)
+
+    case result do
+      {:ok, _diagnostics} -> :ok
+      error -> error
+    end
   end
 
   def fetch_deps(%Project{}) do
     :ok
   end
 
+  defp with_progress(message, fun) do
+    Progress.with_progress(message, fn token ->
+      Build.set_progress_token(token)
+
+      try do
+        {:done, fun.(token)}
+      after
+        Build.clear_progress_token()
+      end
+    end)
+  end
+
   defp do_compile(project, initial?, force?, token) do
     Mix.Task.clear()
 
-    if initial? do
-      prepare_for_project_build(token)
-    end
+    case Isolation.with_diagnostics(Project.mix_exs_path(project), fn ->
+           if initial?, do: prepare_for_project_build(token)
 
-    Engine.Mix.record_deps(project)
+           Engine.Mix.record_deps(project)
+           Mix.Task.clear()
+           Progress.report(token, message: "Compiling #{Project.display_name(project)}")
+           result = Mix.Task.run(:compile, Build.State.mix_compile_opts(force?))
+           Engine.Mix.ensure_hex_and_rebar()
+           Mix.Task.run(:loadpaths)
+           result
+         end) do
+      {:ok, {status, diagnostics}, captured} when status in [:ok, :noop, :error] ->
+        maybe_load_modules()
+        status = if status == :error, do: :error, else: :ok
+        diagnostics = Build.Error.refine_diagnostics(diagnostics)
+        {status, captured ++ diagnostics}
 
-    compile_fun = fn ->
-      Mix.Task.clear()
-      Progress.report(token, message: "Compiling #{Project.display_name(project)}")
-      result = compile_in_isolation(force?)
-      maybe_load_modules()
-      Engine.Mix.ensure_hex_and_rebar()
-      Mix.Task.run(:loadpaths)
-      result
-    end
-
-    case compile_fun.() do
       {:error, diagnostics} ->
-        diagnostics =
-          diagnostics
-          |> List.wrap()
-          |> Build.Error.refine_diagnostics()
-
         {:error, diagnostics}
-
-      {status, diagnostics} when status in [:ok, :noop] ->
-        Logger.info(
-          "Compile completed with status #{status} " <>
-            "Produced #{length(diagnostics)} diagnostics " <>
-            inspect(diagnostics)
-        )
-
-        Build.Error.refine_diagnostics(diagnostics)
     end
   end
 
@@ -102,29 +91,6 @@ defmodule Engine.Build.Project do
 
       Logger.info("Loading #{length(modules_to_load)} modules")
       Loader.load_all(modules_to_load)
-    end
-  end
-
-  defp compile_in_isolation(force?) do
-    compile_fun = fn ->
-      Engine.Mix.ensure_hex_and_rebar()
-      Mix.Task.run(:compile, Build.State.mix_compile_opts(force?))
-    end
-
-    case Isolation.invoke(compile_fun) do
-      {:ok, result} ->
-        result
-
-      {:error, {exception, [{_mod, _fun, _arity, meta} | _]}} ->
-        diagnostic = %Diagnostic{
-          file: Keyword.get(meta, :file),
-          severity: :error,
-          message: Exception.message(exception),
-          compiler_name: "Elixir",
-          position: Keyword.get(meta, :line, 1)
-        }
-
-        {:error, [diagnostic]}
     end
   end
 
@@ -141,9 +107,6 @@ defmodule Engine.Build.Project do
     else
       Logger.warning("Could not connect to hex.pm, dependencies will not be fetched")
     end
-
-    Progress.report(token, message: "mix loadconfig")
-    Mix.Task.run(:loadconfig)
 
     if not Elixir.Features.compile_keeps_current_directory?() do
       Progress.report(token, message: "mix deps.compile")

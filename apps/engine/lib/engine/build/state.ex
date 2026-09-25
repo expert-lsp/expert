@@ -102,10 +102,7 @@ defmodule Engine.Build.State do
         Logger.warning("Failed to remove build path #{path}: #{inspect(reason)}")
     end
 
-    result =
-      project
-      |> Engine.Build.Project.fetch_deps()
-      |> normalize_fetch_deps_result()
+    result = Engine.Build.Project.fetch_deps(project)
 
     %{state | last_deps_fetch_result: result}
   end
@@ -116,66 +113,68 @@ defmodule Engine.Build.State do
     Application.get_env(:engine, :edit_window_millis, 100)
   end
 
-  defp normalize_fetch_deps_result({:ok, :ok}), do: :ok
-  defp normalize_fetch_deps_result(result), do: result
-
   defp compile_project(%__MODULE__{} = state, force?) do
     state = increment_build_number(state)
     project = state.project
 
-    Build.with_lock(fn ->
-      compile_requested_message =
-        project_compile_requested(project: project, build_number: state.build_number)
+    project =
+      Build.with_lock(fn ->
+        compile_requested_message =
+          project_compile_requested(project: project, build_number: state.build_number)
 
-      Engine.broadcast(compile_requested_message)
-      Engine.Compilation.TraceBuffer.discard()
+        Engine.broadcast(compile_requested_message)
+        Engine.Compilation.TraceBuffer.discard()
 
-      {elapsed_us, result} =
-        :timer.tc(fn -> Build.Project.compile(project, state.initial_compile?, force?) end)
+        {elapsed_us, result} =
+          :timer.tc(fn -> Build.Project.compile(project, state.initial_compile?, force?) end)
 
-      elapsed_ms = to_ms(elapsed_us)
+        elapsed_ms = to_ms(elapsed_us)
+        project = Engine.get_project() || project
 
-      {compile_message, diagnostics} =
-        case result do
-          :ok ->
-            message = project_compiled(status: :success, project: project, elapsed_ms: elapsed_ms)
+        {compile_message, diagnostics} =
+          case result do
+            :ok ->
+              message =
+                project_compiled(status: :success, project: project, elapsed_ms: elapsed_ms)
 
-            {message, []}
+              {message, []}
 
-          {:ok, diagnostics} ->
-            message = project_compiled(status: :success, project: project, elapsed_ms: elapsed_ms)
+            {:ok, diagnostics} ->
+              message =
+                project_compiled(status: :success, project: project, elapsed_ms: elapsed_ms)
 
-            diagnostics =
-              diagnostics
-              |> List.wrap()
-              |> Enum.filter(&match?(%Diagnostic{}, &1))
+              diagnostics =
+                diagnostics
+                |> List.wrap()
+                |> Enum.filter(&match?(%Diagnostic{}, &1))
 
-            {message, diagnostics}
+              {message, diagnostics}
 
-          {:error, diagnostics} ->
-            Engine.Compilation.TraceBuffer.discard()
-            message = project_compiled(status: :error, project: project, elapsed_ms: elapsed_ms)
+            {:error, diagnostics} ->
+              Engine.Compilation.TraceBuffer.discard()
+              message = project_compiled(status: :error, project: project, elapsed_ms: elapsed_ms)
 
-            diagnostics =
-              diagnostics
-              |> List.wrap()
-              |> Enum.filter(&match?(%Diagnostic{}, &1))
+              diagnostics =
+                diagnostics
+                |> List.wrap()
+                |> Enum.filter(&match?(%Diagnostic{}, &1))
 
-            {message, diagnostics}
-        end
+              {message, diagnostics}
+          end
 
-      diagnostics_message =
-        project_diagnostics(
-          project: project,
-          build_number: state.build_number,
-          diagnostics: diagnostics
-        )
+        diagnostics_message =
+          project_diagnostics(
+            project: project,
+            build_number: state.build_number,
+            diagnostics: diagnostics
+          )
 
-      Engine.broadcast(compile_message)
-      Engine.broadcast(diagnostics_message)
-    end)
+        Engine.broadcast(compile_message)
+        Engine.broadcast(diagnostics_message)
+        project
+      end)
 
-    %__MODULE__{state | initial_compile?: false}
+    %__MODULE__{state | project: project, initial_compile?: false}
   end
 
   def compile_file(%__MODULE__{} = state, %Document{} = document) do
@@ -189,50 +188,49 @@ defmodule Engine.Build.State do
 
       elapsed_ms = to_ms(elapsed_us)
 
-      {compile_message, diagnostics} =
+      {status, diagnostics} =
         case result do
           {:ok, diagnostics} ->
-            message =
-              file_compiled(
-                project: project,
-                build_number: state.build_number,
-                status: :success,
-                uri: document.uri,
-                elapsed_ms: elapsed_ms
-              )
+            {:success, diagnostics}
 
-            {message, diagnostics}
+          {:error, :project_not_loaded} ->
+            {:error, :unchanged}
 
           {:error, diagnostics} ->
-            message =
-              file_compiled(
-                project: project,
-                build_number: state.build_number,
-                status: :error,
-                uri: document.uri,
-                elapsed_ms: elapsed_ms
-              )
-
-            {message, diagnostics}
+            {:error, diagnostics}
         end
 
-      diagnostics =
-        file_diagnostics(
+      Engine.broadcast(
+        file_compiled(
           project: project,
           build_number: state.build_number,
+          status: status,
           uri: document.uri,
-          diagnostics: List.wrap(diagnostics)
+          elapsed_ms: elapsed_ms
         )
+      )
 
-      Engine.broadcast(compile_message)
-      Engine.broadcast(diagnostics)
+      if diagnostics != :unchanged do
+        Engine.broadcast(
+          file_diagnostics(
+            project: project,
+            build_number: state.build_number,
+            uri: document.uri,
+            diagnostics: List.wrap(diagnostics)
+          )
+        )
+      end
     end)
 
     state
   end
 
   defp compile_document(%Project{kind: :mix}, document) do
-    Engine.Mix.in_project(fn _ -> Build.Document.compile(document) end)
+    if Engine.Mix.project_file?(document.path) do
+      Build.Document.compile(document)
+    else
+      Engine.Mix.in_project(fn _ -> Build.Document.compile(document) end)
+    end
   end
 
   defp compile_document(%Project{}, document) do

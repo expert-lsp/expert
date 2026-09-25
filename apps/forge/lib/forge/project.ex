@@ -57,7 +57,7 @@ defmodule Forge.Project do
 
   @spec set_project_module(t(), module() | nil) :: t()
   def set_project_module(%__MODULE__{} = project, nil) do
-    project
+    %__MODULE__{project | project_module: nil}
   end
 
   def set_project_module(%__MODULE__{} = project, module) when is_atom(module) do
@@ -115,6 +115,13 @@ defmodule Forge.Project do
             config
         end
     end
+  end
+
+  @doc "Updates the configuration after a saved Mix project reload."
+  @spec put_config(t(), keyword()) :: :ok
+  def put_config(%__MODULE__{} = project, config) do
+    :persistent_term.put({__MODULE__, project.root_uri, :config}, config)
+    :ok
   end
 
   @doc """
