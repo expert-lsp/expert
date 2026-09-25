@@ -50,6 +50,10 @@ defmodule Engine do
 
   defdelegate hover(document, position), to: CodeIntelligence.Hover
 
+  defdelegate signature_help(document, position),
+    to: CodeIntelligence.SignatureHelp,
+    as: :signature
+
   defdelegate references(analysis, position, include_definitions?),
     to: CodeIntelligence.References
 
