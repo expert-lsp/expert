@@ -6,7 +6,10 @@ defmodule Expert.ConfigurationTest do
   alias Expert.Configuration
   alias Expert.Configuration.WorkspaceSymbols
   alias GenLSP.Notifications.WorkspaceDidChangeConfiguration
+  alias GenLSP.Structures.ClientCapabilities
   alias GenLSP.Structures.DidChangeConfigurationParams
+  alias GenLSP.Structures.DidChangeWatchedFilesClientCapabilities
+  alias GenLSP.Structures.WorkspaceClientCapabilities
 
   setup do
     :persistent_term.erase(Expert.Configuration)
@@ -545,6 +548,22 @@ defmodule Expert.ConfigurationTest do
   end
 
   describe "on_change/1 watched files registration" do
+    test "does not register watched files when the client lacks support" do
+      change = build_change(%{"additionalWatchedExtensions" => [".heex"]})
+
+      assert {:ok, _updated} = Configuration.on_change(change)
+    end
+
+    test "registers watched files when the client supports dynamic registration" do
+      put_watched_files_support(true)
+      change = build_change(%{"additionalWatchedExtensions" => [".heex"]})
+
+      assert {:ok, _updated, %GenLSP.Requests.ClientRegisterCapability{} = request} =
+               Configuration.on_change(change)
+
+      assert [%{method: "workspace/didChangeWatchedFiles"}] = request.params.registrations
+    end
+
     test "does not register watched files for non-map settings" do
       assert {:ok, updated} = Configuration.on_change(build_change(nil))
 
@@ -575,5 +594,17 @@ defmodule Expert.ConfigurationTest do
         settings: settings
       }
     }
+  end
+
+  defp put_watched_files_support(dynamic_registration) do
+    %ClientCapabilities{
+      workspace: %WorkspaceClientCapabilities{
+        did_change_watched_files: %DidChangeWatchedFilesClientCapabilities{
+          dynamic_registration: dynamic_registration
+        }
+      }
+    }
+    |> Configuration.new("test-client")
+    |> Configuration.set()
   end
 end

@@ -304,17 +304,10 @@ defmodule Expert.Configuration do
   end
 
   defp maybe_watched_extensions_request(
-         %__MODULE__{} = config,
-         %{"additionalWatchedExtensions" => []}
-       ) do
-    {:ok, config}
-  end
-
-  defp maybe_watched_extensions_request(
-         %__MODULE__{} = config,
+         %__MODULE__{support: %Support{watched_files_dynamic_registration: true}} = config,
          %{"additionalWatchedExtensions" => extensions}
        )
-       when is_list(extensions) do
+       when is_list(extensions) and extensions != [] do
     register_id = Id.next()
     request_id = Id.next()
 
