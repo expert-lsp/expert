@@ -36,6 +36,19 @@ defmodule Expert.Search.Store do
     call_or_default(project, {:exact, subject, constraints}, [])
   end
 
+  @spec exact_many(Project.t(), [Entry.subject()], Entry.constraints()) ::
+          {:ok, [Entry.t()]} | {:error, term()} | []
+  def exact_many(%Project{} = project, subjects, constraints) when is_list(subjects) do
+    call_or_default(project, {:exact_many, subjects, constraints}, [])
+  end
+
+  @spec by_caller(Project.t(), Entry.caller(), Path.t(), Entry.constraints()) ::
+          {:ok, [Entry.t()]} | {:error, term()} | []
+  def by_caller(%Project{} = project, caller, path, constraints \\ [])
+      when is_binary(caller) and is_binary(path) do
+    call_or_default(project, {:by_caller, caller, path, constraints}, [])
+  end
+
   @spec prefix(Project.t(), String.t(), Entry.constraints()) ::
           {:ok, [Entry.t()]} | {:error, term()} | []
   def prefix(%Project{} = project, prefix, constraints) do
@@ -189,6 +202,20 @@ defmodule Expert.Search.Store do
   def handle_call({:exact, subject, constraints}, _from, {ref, %State{} = state}) do
     state
     |> State.exact(subject, constraints)
+    |> maybe_broadcast_loading(state)
+    |> then(&{:reply, &1, {ref, state}})
+  end
+
+  def handle_call({:exact_many, subjects, constraints}, _from, {ref, %State{} = state}) do
+    state
+    |> State.exact_many(subjects, constraints)
+    |> maybe_broadcast_loading(state)
+    |> then(&{:reply, &1, {ref, state}})
+  end
+
+  def handle_call({:by_caller, caller, path, constraints}, _from, {ref, %State{} = state}) do
+    state
+    |> State.by_caller(caller, path, constraints)
     |> maybe_broadcast_loading(state)
     |> then(&{:reply, &1, {ref, state}})
   end

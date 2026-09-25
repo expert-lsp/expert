@@ -54,6 +54,14 @@ defmodule Engine.Search.Indexer.Extractors.Module do
     end
   end
 
+  # Keyword-do syntax puts `for:` and `do:` in one list; split them for the extractor below.
+  def extract(
+        {:defimpl, metadata, [protocol, [for_block, {{:__block__, _, [:do]}, _} = body]]},
+        %Reducer{} = reducer
+      ) do
+    extract({:defimpl, metadata, [protocol, [for_block], [body]]}, reducer)
+  end
+
   # defimpl MyProtocol, for: MyStruct do ...
   def extract(
         {:defimpl, _, [{:__aliases__, _, module_name}, [for_block], _impl_body]} = defimpl_ast,
@@ -217,7 +225,19 @@ defmodule Engine.Search.Indexer.Extractors.Module do
         {:ok, range}
 
       nil ->
-        :error
+        case protocol_ast do
+          {:defimpl, _, [_, _, [{{:__block__, do_meta, [:do]}, _}]]} ->
+            document = reducer.analysis.document
+
+            {:ok,
+             Range.new(
+               Position.new(document, start[:line], start[:column]),
+               Position.new(document, do_meta[:line], do_meta[:column] + 3)
+             )}
+
+          _ ->
+            :error
+        end
     end
   end
 

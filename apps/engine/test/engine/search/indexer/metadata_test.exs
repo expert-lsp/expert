@@ -11,6 +11,12 @@ defmodule Engine.Search.Indexer.MetadataTest do
   alias Forge.Document.Range
 
   describe "blocks in modules" do
+    test "finds the body rather than the target of a keyword-do implementation" do
+      code = "defimpl Action, for: Atom, do: Target.run()"
+
+      assert "defimpl Action, for: Atom, «do: Target.run()»" == decorate_location(code)
+    end
+
     test "finds a block in an empty module" do
       code = ~q[
         defmodule MyModule do

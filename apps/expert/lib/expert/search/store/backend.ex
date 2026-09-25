@@ -35,6 +35,10 @@ defmodule Expert.Search.Store.Backend do
                 Entry.t()
               ]
               | {:error, any()}
+  @callback find_by_subjects(Project.t(), [Entry.subject()], type_query(), subtype_query()) ::
+              [Entry.t()] | {:error, any()}
+  @callback find_by_caller(Project.t(), Entry.caller(), Path.t(), type_query(), subtype_query()) ::
+              [Entry.t()] | {:error, any()}
   @callback find_by_prefix(Project.t(), subject_query(), type_query(), subtype_query()) ::
               [
                 Entry.t()

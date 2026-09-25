@@ -9,7 +9,7 @@ defmodule Engine.Search.Indexer.Metadata do
       block_end = position(metadata, :end_of_expression) || position(metadata, :end)
       {:block, position, block_start, block_end}
     else
-      maybe_handle_terse_function(ast)
+      maybe_handle_terse_block(ast)
     end
   end
 
@@ -36,18 +36,25 @@ defmodule Engine.Search.Indexer.Metadata do
     |> position()
   end
 
-  @defines [:def, :defp, :defmacro, :defmacrop, :fn]
-  # a terse function is one without a do/end block
-  defp maybe_handle_terse_function({define, metadata, [_name_and_args | [[block | _]]]})
+  @defines [:def, :defp, :defmacro, :defmacrop, :fn, :defmodule, :defprotocol]
+  defp maybe_handle_terse_block(
+         {:defimpl, metadata, [_, [_, {{:__block__, _, [:do]}, _} = block]]}
+       ) do
+    block_location(block, metadata)
+  end
+
+  # def foo(), do: :ok or defmodule Foo, do: :ok
+  defp maybe_handle_terse_block({define, metadata, [_name_and_args | [[block | _]]]})
        when define in @defines do
     block_location(block, metadata)
   end
 
-  defp maybe_handle_terse_function({:fn, metadata, _} = ast) do
+  defp maybe_handle_terse_block({define, metadata, _} = ast)
+       when define in @defines do
     block_location(ast, metadata)
   end
 
-  defp maybe_handle_terse_function({_, metadata, _}) do
+  defp maybe_handle_terse_block({_, metadata, _}) do
     {:expression, position(metadata)}
   end
 
