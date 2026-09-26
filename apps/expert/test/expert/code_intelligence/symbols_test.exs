@@ -75,7 +75,7 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Forge.Project.new()
       start_supervised!({Expert.Project.Store, []})
       Expert.Project.Store.set_projects([project])
-      Expert.Project.Store.transition(project, :ready)
+      patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
       start_supervised!({Sqlite, [project, runtime_versions: %{erlang: "test", elixir: "test"}]})
       start_supervised!({Expert.Search.Store, [project, Sqlite]})
       start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})

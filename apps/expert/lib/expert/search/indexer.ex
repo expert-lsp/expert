@@ -45,8 +45,19 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  def record_integrations(%Project{} = project) do
-    ManifestStore.record_integrations(project, Integrations.indexer_module_names())
+  def update_from_disk(%Project{} = project, opts \\ []) when is_list(opts) do
+    paths = Keyword.get_lazy(opts, :paths, fn -> Paths.from_disk(project) end)
+    update_index(project, Keyword.merge(opts, paths: paths, engine?: false))
+  end
+
+  def record_integrations(%Project{} = project, engine? \\ true) do
+    ManifestStore.record_integrations(project, integration_indexers(engine?))
+  end
+
+  defp integration_indexers(true), do: Integrations.indexer_module_names()
+
+  defp integration_indexers(false) do
+    Enum.map(Integrations.indexer_module_names(), &(&1 <> " without the engine"))
   end
 
   def document(%Project{} = project, %Forge.Document{} = document, imported_calls) do
@@ -64,24 +75,24 @@ defmodule Expert.Search.Indexer do
   end
 
   defp build_index(%Project{} = project, opts) do
-    :ok = EngineApi.clear_application_cache(project)
+    :ok = clear_application_cache(project, opts)
 
     try do
       replace_index(project, opts)
     after
-      EngineApi.clear_application_cache(project)
+      clear_application_cache(project, opts)
     end
   end
 
   defp update_index(%Project{} = project, path_to_ids, opts) do
-    :ok = EngineApi.clear_application_cache(project)
+    :ok = clear_application_cache(project, opts)
     paths = paths_for_project(project, opts)
     opts = Keyword.put(opts, :paths, paths)
 
     try do
       case ManifestStore.load(project) do
         {:ok, %Manifest{} = manifest} ->
-          indexer_module_names = Integrations.indexer_module_names()
+          indexer_module_names = integration_indexers(Keyword.get(opts, :engine?, true))
 
           integrations_changed? =
             ManifestStore.integrations_changed?(project, manifest, indexer_module_names)
@@ -96,7 +107,15 @@ defmodule Expert.Search.Indexer do
           replace_index(project, opts)
       end
     after
+      clear_application_cache(project, opts)
+    end
+  end
+
+  defp clear_application_cache(%Project{} = project, opts) do
+    if Keyword.get(opts, :engine?, true) do
       EngineApi.clear_application_cache(project)
+    else
+      :ok
     end
   end
 
@@ -104,7 +123,9 @@ defmodule Expert.Search.Indexer do
     :ok = ModuleRegistry.clear(project)
     paths = paths_for_project(project, opts)
 
-    with {:ok, state} <- replace_store(paths, new_stream_state(), project, true),
+    engine? = Keyword.get(opts, :engine?, true)
+
+    with {:ok, state} <- replace_store(paths, new_stream_state(), project, engine?),
          :ok <- replace_modules(project) do
       {:ok, Manifest.new(manifest_entries(state))}
     end
@@ -153,8 +174,17 @@ defmodule Expert.Search.Indexer do
         beam_manifest_entries
       )
 
+    engine? = Keyword.get(opts, :engine?, true)
+
     with {:ok, state} <-
-           refresh_store(source_paths, beam_items, paths_to_clear, new_stream_state(), project),
+           refresh_store(
+             source_paths,
+             beam_items,
+             paths_to_clear,
+             new_stream_state(),
+             project,
+             engine?
+           ),
          :ok <- update_modules(project, plan) do
       manifest = Manifest.apply_update(manifest, plan, manifest_entries(state))
 
@@ -407,10 +437,10 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp refresh_store(source_paths, beam_items, paths_to_clear, state, project) do
+  defp refresh_store(source_paths, beam_items, paths_to_clear, state, project, engine?) do
     update = fn write_batch, write_state ->
       source_paths
-      |> index_stream(beam_items, project, true)
+      |> index_stream(beam_items, project, engine?)
       |> stream_into_store(state, write_batch, write_state)
     end
 
