@@ -16,7 +16,18 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
     patch(Store, :modules, fn ^project -> [] end)
     start_supervised!({ModuleRegistry, project})
     start_supervised!({Cache, project})
+    start_supervised!({Expert.Project.Store, []})
+    Expert.Project.Store.set_projects([project])
+    Expert.Project.Store.transition(project, :ready)
     %{project: project}
+  end
+
+  test "calls nothing before the engine is ready", %{project: project} do
+    module = register_callback(project)
+    Expert.Project.Store.transition(project, :pending)
+    patch(EngineApi, :call, fn _, _, _, _ -> flunk("called the Engine") end)
+
+    assert :error = Callbacks.fetch_by_name(project, module, "options")
   end
 
   test "fetches an exported function by the name of an option", %{project: project} do

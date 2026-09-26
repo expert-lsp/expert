@@ -7,8 +7,8 @@ defmodule Expert.Project.NodeTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
-  alias Expert.Project.Indexer
   alias Expert.Project.Node, as: EngineNode
+  alias Expert.Project.SearchListener
 
   setup do
     project = project()
@@ -95,7 +95,7 @@ defmodule Expert.Project.NodeTest do
     )
 
     assert_receive {:registered, new_pid, [project_compiled() | _]}, :timer.seconds(15)
-    assert new_pid == Process.whereis(Indexer.name(project))
+    assert new_pid == Process.whereis(SearchListener.name(project))
     assert_receive {:compile, _force?}, :timer.seconds(15)
     refute_receive {:compile, _}
   end

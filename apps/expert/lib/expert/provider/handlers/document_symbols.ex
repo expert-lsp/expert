@@ -10,6 +10,9 @@ defmodule Expert.Provider.Handlers.DocumentSymbols do
   alias GenLSP.Structures
 
   @impl Expert.Provider.Handler
+  def requires_engine?, do: false
+
+  @impl Expert.Provider.Handler
   def handle(%Requests.TextDocumentDocumentSymbol{}, %Context{} = context) do
     %Context{document: document, project: project} = context
 

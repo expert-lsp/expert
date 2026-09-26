@@ -3,7 +3,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   use GenServer
 
-  alias Expert.EngineApi
   alias Expert.Protocol.Conversions
   alias Expert.Search.Store.Backend
   alias Forge.Document.Position
@@ -2072,6 +2071,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     do: Entry.is_block(left_entry) == Entry.is_block(right_entry)
 
   defp runtime_versions(%Project{} = project, opts) do
-    Keyword.get_lazy(opts, :runtime_versions, fn -> EngineApi.runtime_versions(project) end)
+    Keyword.get_lazy(opts, :runtime_versions, fn ->
+      {:ok, versions} = Expert.Project.MixProject.runtime_versions(project)
+      versions
+    end)
   end
 end

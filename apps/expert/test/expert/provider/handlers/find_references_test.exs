@@ -64,12 +64,14 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
 
   describe "find references" do
     test "returns locations that the entity returns", %{project: project, uri: uri} do
+      assert Handlers.FindReferences.requires_engine?() == false
       project_uri = project.root_uri
 
       patch(References, :references, fn %{root_uri: ^project_uri},
                                         %Analysis{document: document},
                                         _position,
-                                        _ ->
+                                        _,
+                                        false ->
         locations = [
           Location.new(
             Document.Range.new(
@@ -98,14 +100,14 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
     end
 
     test "does not resolve a literal as its enclosing function call", %{project: project} do
-      patch(EngineApi, :resolve_entity, {:error, :unresolved})
+      patch(EngineApi, :resolve_entity, fn _, _, _ -> flunk("called the Engine") end)
 
       path = file_path(project, Path.join("lib", "uses.ex"))
       {:ok, request} = build_request(path, 4, 25)
       assert {:ok, []} = handle(request, project)
     end
 
-    test "finds indexed references from a function declaration", %{
+    test "finds references from a function declaration before the Engine is ready", %{
       project: project,
       uri: uri
     } do
