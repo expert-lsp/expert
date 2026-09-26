@@ -22,6 +22,28 @@ defmodule Expert.Search.Indexer.Beams do
     end)
   end
 
+  def register_modules(paths, project, applications)
+      when is_list(paths) and is_map(applications) do
+    paths
+    |> Task.async_stream(&module_metadata(&1, applications),
+      max_concurrency: @beam_index_concurrency,
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Enum.each(fn
+      {:ok, {module, beam_path, application, exports}} ->
+        ModuleRegistry.put(project, module, beam_path, application, exports)
+
+      {:ok, :error} ->
+        :ok
+
+      {:exit, reason} ->
+        raise("Reading BEAM metadata failed: #{Exception.format_exit(reason)}")
+    end)
+
+    :ok
+  end
+
   defp result_chunks(paths, opts) do
     {beams, total_bytes} = stat_beams(paths)
 
@@ -242,6 +264,17 @@ defmodule Expert.Search.Indexer.Beams do
       {results, {module, beam_path, application, exports}}
     else
       _ -> {skipped_result_from_beam(beam_path, beam_stat, nil, nil), nil}
+    end
+  end
+
+  defp module_metadata(beam_path, applications) do
+    application = Map.get(applications, Path.dirname(beam_path))
+
+    with {:ok, beam} <- File.read(beam_path),
+         {:ok, {module, chunks}} <- :beam_lib.chunks(beam, [:exports]) do
+      {module, beam_path, application, chunks[:exports] || []}
+    else
+      _ -> :error
     end
   end
 

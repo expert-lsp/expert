@@ -8,6 +8,7 @@ defmodule Expert.Project.Reindex do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
+  alias Expert.Project.EngineRuntime
   alias Expert.Search
   alias Forge.Document
   alias Forge.Project
@@ -130,11 +131,11 @@ defmodule Expert.Project.Reindex do
 
   def uri(%Project{} = project, uri), do: GenServer.cast(name(project), {:reindex_uri, uri})
   def perform(%Project{} = project), do: GenServer.call(name(project), :perform)
+
   def running?(%Project{} = project), do: GenServer.call(name(project), :running?)
 
   @impl GenServer
   def init([%Project{} = project, opts]) do
-    EngineApi.register_listener(project, self(), [file_compile_requested(), filesystem_event()])
     Process.flag(:fullsweep_after, 5)
     schedule_gc()
 
@@ -168,6 +169,19 @@ defmodule Expert.Project.Reindex do
   end
 
   @impl GenServer
+  def handle_info({:DOWN, ref, :process, pid, reason}, %State{index_task: {pid, ref}} = state) do
+    if reason != :normal do
+      Logger.error("Reindex failed: #{Exception.format_exit(reason)}")
+    end
+
+    new_state =
+      state
+      |> State.flush_pending_updates()
+      |> State.clear_task()
+
+    {:noreply, new_state}
+  end
+
   def handle_info(file_compile_requested(uri: uri), %State{} = state) do
     {:noreply, State.reindex_uri(state, uri)}
   end
@@ -178,18 +192,7 @@ defmodule Expert.Project.Reindex do
     {:noreply, state}
   end
 
-  def handle_info(filesystem_event(), %State{} = state) do
-    {:noreply, state}
-  end
-
-  def handle_info({:DOWN, ref, :process, pid, _reason}, %State{index_task: {pid, ref}} = state) do
-    new_state =
-      state
-      |> State.flush_pending_updates()
-      |> State.clear_task()
-
-    {:noreply, new_state}
-  end
+  def handle_info(filesystem_event(), %State{} = state), do: {:noreply, state}
 
   def handle_info(:gc, %State{} = state) do
     :erlang.garbage_collect()
@@ -206,21 +209,24 @@ defmodule Expert.Project.Reindex do
   end
 
   defp do_reindex(%Project{} = project) do
-    EngineApi.broadcast(project, project_reindex_requested(project: project))
+    if EngineRuntime.available?(project) do
+      EngineApi.broadcast(project, project_reindex_requested(project: project))
 
-    {elapsed_us, result} =
-      :timer.tc(fn -> Search.Indexer.create_index(project) end)
+      {elapsed_us, result} = :timer.tc(fn -> Search.Indexer.create_index(project) end)
 
-    EngineApi.broadcast(
-      project,
-      project_reindexed(
-        project: project,
-        elapsed_ms: round(elapsed_us / 1000),
-        status: reindex_status(result)
+      EngineApi.broadcast(
+        project,
+        project_reindexed(
+          project: project,
+          elapsed_ms: round(elapsed_us / 1000),
+          status: reindex_status(result)
+        )
       )
-    )
 
-    result
+      result
+    else
+      Search.Indexer.warmup(project)
+    end
   end
 
   defp reindex_status(:ok), do: :success

@@ -3,13 +3,14 @@ defmodule Expert.Project.SearchListener do
 
   import Forge.EngineApi.Messages
 
+  alias Expert.Configuration
   alias Expert.EngineApi
+  alias Expert.Project.Diagnostics
   alias Expert.Project.Indexer
   alias Expert.Project.Node
-  alias Expert.Protocol.Id
-  alias Forge.Formats
+  alias Expert.Project.Reindex
+  alias Expert.Project.Store
   alias Forge.Project
-  alias GenLSP.Requests
 
   require Logger
 
@@ -23,19 +24,26 @@ defmodule Expert.Project.SearchListener do
 
   @impl GenServer
   def init([%Project{} = project]) do
+    Diagnostics.register(project)
+
     EngineApi.register_listener(project, self(), [
       project_compiled(),
-      project_reindex_requested(),
-      project_reindexed(),
-      search_store_loading()
+      search_store_loading(),
+      file_compile_requested(),
+      filesystem_event()
     ])
+
+    if Configuration.compilation_enabled?(), do: Store.transition(project, :ready)
 
     {:ok, project, {:continue, :compile}}
   end
 
   @impl GenServer
   def handle_continue(:compile, project) do
-    Node.trigger_build(project, false)
+    if Configuration.compilation_enabled?() do
+      Node.trigger_build(project, false)
+    end
+
     {:noreply, project}
   end
 
@@ -43,28 +51,6 @@ defmodule Expert.Project.SearchListener do
   def handle_info(project_compiled(status: status), %Project{} = project)
       when status in [:success, :successful, :error] do
     Indexer.refresh(project)
-    {:noreply, project}
-  end
-
-  def handle_info(project_reindex_requested(), %Project{} = project) do
-    Logger.info("project reindex requested")
-    GenLSP.request(Expert.get_lsp(), %Requests.WorkspaceCodeLensRefresh{id: Id.next()})
-
-    {:noreply, project}
-  end
-
-  def handle_info(project_reindexed(elapsed_ms: elapsed), %Project{} = project) do
-    message = "Reindexed #{Project.name(project)} in #{Formats.time(elapsed, unit: :millisecond)}"
-    Logger.info(message)
-    GenLSP.request(Expert.get_lsp(), %Requests.WorkspaceCodeLensRefresh{id: Id.next()})
-
-    GenLSP.notify(Expert.get_lsp(), %GenLSP.Notifications.WindowShowMessage{
-      params: %GenLSP.Structures.ShowMessageParams{
-        type: GenLSP.Enumerations.MessageType.info(),
-        message: message
-      }
-    })
-
     {:noreply, project}
   end
 
@@ -79,6 +65,16 @@ defmodule Expert.Project.SearchListener do
       }
     })
 
+    {:noreply, project}
+  end
+
+  def handle_info(file_compile_requested() = message, %Project{} = project) do
+    send(Reindex.name(project), message)
+    {:noreply, project}
+  end
+
+  def handle_info(filesystem_event() = message, %Project{} = project) do
+    send(Reindex.name(project), message)
     {:noreply, project}
   end
 end

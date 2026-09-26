@@ -9,6 +9,8 @@ defmodule ExpertTest do
   alias Forge.Document
   alias Forge.Project
 
+  require Logger
+
   setup_all do
     start_supervised!({Document.Store, derive: [analysis: &Forge.Ast.analyze/1]})
     start_supervised!({Task.Supervisor, name: :expert_task_queue})
@@ -75,13 +77,15 @@ defmodule ExpertTest do
     # that.
     test_pid = self()
 
-    patch(Expert.Project.Supervisor, :start, fn project ->
+    patch(Expert.Project.Supervisor, :ensure_node_started, fn project ->
       send(test_pid, {:project_alive, project.root_uri})
+      Logger.info("Started Engine for #{Project.name(project)}")
       {:ok, nil}
     end)
 
-    patch(Expert.Project.Supervisor, :stop, fn project ->
+    patch(Expert.Project.Supervisor, :stop_node, fn project ->
       send(test_pid, {:project_stopped, project.root_uri})
+      Logger.info("Stopping project #{Project.name(project)}")
       :ok
     end)
 
@@ -116,20 +120,27 @@ defmodule ExpertTest do
         end)
       end
 
+    workspace_capabilities = %{
+      workspaceFolders: true,
+      didChangeWatchedFiles: %{
+        dynamicRegistration: Keyword.get(opts, :watched_files_dynamic_registration, true)
+      }
+    }
+
+    workspace_capabilities =
+      if opts[:workspace_configuration],
+        do: Map.put(workspace_capabilities, :configuration, true),
+        else: workspace_capabilities
+
     %{
       method: "initialize",
       id: id,
       jsonrpc: "2.0",
       params: %{
         rootUri: root_uri,
-        initializationOptions: %{},
+        initializationOptions: Keyword.get(opts, :initialization_options, %{}),
         capabilities: %{
-          workspace: %{
-            workspaceFolders: true,
-            didChangeWatchedFiles: %{
-              dynamicRegistration: Keyword.get(opts, :watched_files_dynamic_registration, true)
-            }
-          },
+          workspace: workspace_capabilities,
           window: %{
             showMessage: %{}
           }
@@ -158,6 +169,41 @@ defmodule ExpertTest do
   end
 
   describe "initialize request" do
+    test "loads configuration before project startup and registers a BEAM watcher", %{
+      client: client,
+      project_root: project_root,
+      main_project: main_project
+    } do
+      assert :ok =
+               request(
+                 client,
+                 initialize_request(project_root,
+                   id: 1,
+                   projects: [main_project],
+                   workspace_configuration: true
+                 )
+               )
+
+      assert_result(1, _)
+      assert :ok = notify(client, initialized_notification())
+
+      assert_request(client, "workspace/configuration", fn %{"items" => [%{}]} ->
+        [%{"enableCompilation" => false}]
+      end)
+
+      assert_request(client, "client/registerCapability", fn params ->
+        assert [registration] = params["registrations"]
+        assert registration["method"] == "workspace/didChangeWatchedFiles"
+
+        watchers = registration["registerOptions"]["watchers"]
+        assert Enum.any?(watchers, &(&1["globPattern"] == "**/*.{beam,ex,exs}"))
+        nil
+      end)
+
+      refute Expert.Configuration.compilation_enabled?()
+      assert_project_alive?(main_project)
+    end
+
     test "starts a project at the initial workspace folders", %{
       client: client,
       project_root: project_root,
@@ -177,7 +223,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(main_project)}"
+      expected_message = "Started Engine for #{Project.name(main_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -271,7 +317,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(umbrella_project)}"
+      expected_message = "Started Engine for #{Project.name(umbrella_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -306,7 +352,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(umbrella_project)}"
+      expected_message = "Started Engine for #{Project.name(umbrella_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -339,7 +385,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(main_project)}"
+      expected_message = "Started Engine for #{Project.name(main_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -365,7 +411,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Started project node for #{Project.name(secondary_project)}"
+      expected_message = "Started Engine for #{Project.name(secondary_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -397,7 +443,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(main_project)}"
+      expected_message = "Started Engine for #{Project.name(main_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -425,7 +471,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Stopping project node for #{Project.name(main_project)}"
+      expected_message = "Stopping project #{Project.name(main_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -471,7 +517,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Started project node for #{Project.name(secondary_project)}"
+      expected_message = "Started Engine for #{Project.name(secondary_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -502,7 +548,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Stopping project node for #{Project.name(secondary_project)}"
+      expected_message = "Stopping project #{Project.name(secondary_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -646,7 +692,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Started project node for #{Project.name(secondary_project)}"
+      expected_message = "Started Engine for #{Project.name(secondary_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -678,7 +724,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(main_project)}"
+      expected_message = "Started Engine for #{Project.name(main_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -704,7 +750,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Started project node for #{Project.name(secondary_project)}"
+      expected_message = "Started Engine for #{Project.name(secondary_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -754,7 +800,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Started project node for #{Project.name(nested_subproject)}"
+      expected_message = "Started Engine for #{Project.name(nested_subproject)}"
 
       assert_notification(
         "window/logMessage",
@@ -800,7 +846,7 @@ defmodule ExpertTest do
                  }
                )
 
-      expected_message = "Started project node for #{Project.name(nested_root_project)}"
+      expected_message = "Started Engine for #{Project.name(nested_root_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -875,7 +921,7 @@ defmodule ExpertTest do
 
       assert_request(client, "client/registerCapability", fn _params -> nil end)
 
-      expected_message = "Started project node for #{Project.name(nested_root_project)}"
+      expected_message = "Started Engine for #{Project.name(nested_root_project)}"
 
       assert_notification(
         "window/logMessage",
@@ -912,7 +958,7 @@ defmodule ExpertTest do
         end
       )
 
-      expected_message = "Started project node for #{Project.name(nested_subproject)}"
+      expected_message = "Started Engine for #{Project.name(nested_subproject)}"
 
       assert_notification(
         "window/logMessage",
@@ -950,7 +996,7 @@ defmodule ExpertTest do
                )
 
       assert_result(1, _)
-      assert Expert.Project.Store.transition(main_project, :ready)
+      patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
 
       file_uri =
         Document.Path.to_uri(Path.join([project_root, "main", "lib", "sequential_changes.ex"]))
@@ -1018,7 +1064,7 @@ defmodule ExpertTest do
                )
 
       assert_result(1, _)
-      assert Expert.Project.Store.transition(main_project, :ready)
+      patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
 
       file_uri = Document.Path.to_uri(Path.join([project_root, "main", "lib", "on_type.ex"]))
 
@@ -1098,7 +1144,7 @@ defmodule ExpertTest do
       assert_result(1, _)
 
       file_uri = Document.Path.to_uri(Path.join(project_root, "lib/test_file.ex"))
-      initial_text = "defmodule Test do\nend"
+      initial_text = "defmodule Test do"
 
       assert :ok =
                notify(client, %{
@@ -1121,6 +1167,11 @@ defmodule ExpertTest do
         end
       )
 
+      assert_notification(
+        "textDocument/publishDiagnostics",
+        %{"uri" => ^file_uri, "diagnostics" => [_diagnostic]}
+      )
+
       new_text = "defmodule Updated do\nend"
 
       assert :ok =
@@ -1141,6 +1192,11 @@ defmodule ExpertTest do
           _ ->
             false
         end
+      )
+
+      assert_notification(
+        "textDocument/publishDiagnostics",
+        %{"uri" => ^file_uri, "diagnostics" => []}
       )
 
       refute_any_call(Expert.EngineApi.broadcast())
@@ -1168,7 +1224,7 @@ defmodule ExpertTest do
                )
 
       assert_result(1, _)
-      assert Expert.Project.Store.transition(main_project, :ready)
+      patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
 
       file_uri = Document.Path.to_uri(Path.join([project_root, "main", "lib", "ready_save.ex"]))
       initial_text = "defmodule ReadySave do\nend"
@@ -1200,7 +1256,7 @@ defmodule ExpertTest do
       assert root_uri == main_project.root_uri
     end
 
-    test "didSave does not schedule compile while project engine is pending", %{
+    test "didSave refreshes the local index while the project engine is unavailable", %{
       client: client,
       project_root: project_root,
       main_project: main_project
@@ -1234,6 +1290,11 @@ defmodule ExpertTest do
       assert_request(client, "client/registerCapability", fn _params -> nil end)
       assert_receive {:engine_start_attempted, engine_task, _root_uri}
 
+      patch(Expert.Project.Indexer, :refresh, fn project ->
+        send(test_pid, {:refreshed_index, project.root_uri})
+        :ok
+      end)
+
       file_uri = Document.Path.to_uri(Path.join([project_root, "main", "lib", "pending_save.ex"]))
       initial_text = "defmodule PendingSave do\nend"
 
@@ -1261,6 +1322,8 @@ defmodule ExpertTest do
                })
 
       refute_receive {:scheduled_compile, _, _}, 100
+      assert_receive {:refreshed_index, root_uri}
+      assert root_uri == main_project.root_uri
       send(engine_task, :release_engine_start)
     end
 
@@ -1469,13 +1532,8 @@ defmodule ExpertTest do
         :ok
       end)
 
-      patch(Expert.Project.Supervisor, :stop_node, fn _project ->
-        send(test_pid, :project_stopped)
-        :ok
-      end)
-
-      patch(Expert.Project.Supervisor, :ensure_node_started, fn _project, opts ->
-        send(test_pid, {:project_restarted, opts})
+      patch(Expert.Project.Supervisor, :restart_engine, fn _project ->
+        send(test_pid, :engine_restarted)
         {:ok, self()}
       end)
 
@@ -1497,8 +1555,8 @@ defmodule ExpertTest do
       )
 
       assert_receive :deps_fetched, 5000
-      assert_receive :project_stopped, 5000
-      assert_receive {:project_restarted, [blocked?: false]}, 5000
+      assert_receive :engine_restarted, 5000
+      refute Expert.Project.Store.blocked?(main_project)
     end
 
     test "does not prompt again while deps fetch is already in progress", %{
@@ -1519,13 +1577,8 @@ defmodule ExpertTest do
         end
       end)
 
-      patch(Expert.Project.Supervisor, :stop_node, fn _project ->
-        send(test_pid, :project_stopped)
-        :ok
-      end)
-
-      patch(Expert.Project.Supervisor, :ensure_node_started, fn _project, opts ->
-        send(test_pid, {:project_restarted, opts})
+      patch(Expert.Project.Supervisor, :restart_engine, fn _project ->
+        send(test_pid, :engine_restarted)
         {:ok, self()}
       end)
 
@@ -1554,8 +1607,7 @@ defmodule ExpertTest do
 
       send(fetch_pid, :continue_deps_fetch)
 
-      assert_receive :project_stopped, 5000
-      assert_receive {:project_restarted, [blocked?: false]}, 5000
+      assert_receive :engine_restarted, 5000
     end
 
     test "does not run deps.get when user declines", %{
@@ -1711,13 +1763,8 @@ defmodule ExpertTest do
         end
       end)
 
-      patch(Expert.Project.Supervisor, :stop_node, fn _project ->
-        send(test_pid, :project_stopped)
-        :ok
-      end)
-
-      patch(Expert.Project.Supervisor, :ensure_node_started, fn _project, opts ->
-        send(test_pid, {:project_restarted, opts})
+      patch(Expert.Project.Supervisor, :restart_engine, fn _project ->
+        send(test_pid, :engine_restarted)
         {:ok, self()}
       end)
 
@@ -1749,8 +1796,7 @@ defmodule ExpertTest do
 
       assert_receive :deps_fetch_failed, 5000
       assert_receive :deps_fetch_succeeded, 5000
-      assert_receive :project_stopped, 5000
-      assert_receive {:project_restarted, [blocked?: false]}, 5000
+      assert_receive :engine_restarted, 5000
     end
   end
 

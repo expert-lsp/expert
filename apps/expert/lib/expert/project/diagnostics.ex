@@ -5,6 +5,10 @@ defmodule Expert.Project.Diagnostics do
 
   alias Expert.EngineApi
   alias Expert.Project.Diagnostics.State
+  alias Expert.Project.EngineRuntime
+  alias Forge.Ast.Analysis
+  alias Forge.Diagnostic
+  alias Forge.Document
   alias Forge.Formats
   alias Forge.Project
   alias GenLSP.Notifications.TextDocumentPublishDiagnostics
@@ -23,19 +27,35 @@ defmodule Expert.Project.Diagnostics do
     }
   end
 
-  # GenServer callbacks
+  def register(%Project{} = project) do
+    GenServer.call(name(project), :register)
+  end
+
+  def publish_parse_diagnostics(%Project{}, uri) do
+    with {:ok, %Document{language_id: language_id}, analysis} <-
+           Document.Store.fetch(uri, :analysis),
+         true <- language_id in ["elixir", "elixir-script"] do
+      publish(uri, parse_diagnostics(analysis, uri))
+    else
+      _ -> :ok
+    end
+  end
+
+  def clear_file_diagnostics(%Project{}, uri), do: publish(uri, [])
 
   @impl GenServer
   def init([%Project{} = project]) do
-    EngineApi.register_listener(project, self(), [
-      file_diagnostics(),
-      project_compile_requested(),
-      project_compiled(),
-      project_diagnostics()
-    ])
+    if EngineRuntime.available?(project), do: register_listener(project)
+    {:ok, State.new(project)}
+  end
 
-    state = State.new(project)
-    {:ok, state}
+  # GenServer callbacks
+
+  @impl GenServer
+  def handle_call(:register, _from, %State{} = state) do
+    register_listener(state.project)
+
+    {:reply, :ok, State.reset_build_numbers(state)}
   end
 
   @impl GenServer
@@ -105,7 +125,40 @@ defmodule Expert.Project.Diagnostics do
     end)
   end
 
-  defp name(%Project{} = project) do
+  defp register_listener(project) do
+    EngineApi.register_listener(project, self(), [
+      file_diagnostics(),
+      project_compile_requested(),
+      project_compiled(),
+      project_diagnostics()
+    ])
+  end
+
+  defp parse_diagnostics(%Analysis{valid?: true}, _uri), do: []
+
+  defp parse_diagnostics(
+         %Analysis{parse_error: {:error, {location, message}, _comments}},
+         uri
+       ),
+       do: [parse_diagnostic(uri, location, message)]
+
+  defp parse_diagnostics(%Analysis{parse_error: {:error, {location, message}}}, uri),
+    do: [parse_diagnostic(uri, location, message)]
+
+  defp parse_diagnostic(uri, location, message) do
+    position = {Keyword.get(location, :line, 1), Keyword.get(location, :column, 1)}
+    Diagnostic.new(uri, position, message, :error, "Elixir")
+  end
+
+  defp publish(uri, diagnostics) do
+    with {:ok, diagnostics} <- Expert.Protocol.Convert.to_lsp(diagnostics) do
+      GenLSP.notify(Expert.get_lsp(), %TextDocumentPublishDiagnostics{
+        params: %Structures.PublishDiagnosticsParams{uri: uri, diagnostics: diagnostics}
+      })
+    end
+  end
+
+  def name(%Project{} = project) do
     :"#{Project.unique_name(project)}::diagnostics"
   end
 end

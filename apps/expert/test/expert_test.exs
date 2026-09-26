@@ -188,6 +188,142 @@ defmodule Expert.ExpertTest do
     assert config.workspace_symbols.min_query_length == 2
   end
 
+  test "loads enableCompilation from initialization options" do
+    project = Fixtures.project()
+
+    {:ok, _response, _state} =
+      State.initialize(
+        State.new(),
+        initialize_request(project, initialization_options: %{"enableCompilation" => false})
+      )
+
+    refute Expert.Configuration.compilation_enabled?()
+  end
+
+  test "ignores non-map initialization options" do
+    project = Fixtures.project()
+
+    assert {:ok, _response, _state} =
+             State.initialize(
+               State.new(),
+               initialize_request(project, initialization_options: [])
+             )
+
+    assert Expert.Configuration.compilation_enabled?()
+  end
+
+  test "stops project Engines when enableCompilation is disabled" do
+    project = Fixtures.project()
+    test_pid = self()
+
+    {:ok, _response, state} = State.initialize(State.new(), initialize_request(project, []))
+    Expert.Project.Store.add_projects([project])
+
+    uri = project |> Fixtures.file_path("lib/open.ex") |> Document.Path.to_uri()
+    assert :ok = Document.Store.open(uri, "defmodule Open do", 1)
+
+    patch(Expert.Project.Supervisor, :stop_engine, fn stopped_project ->
+      send(test_pid, {:stopping_engine, stopped_project.root_uri, self()})
+
+      receive do
+        :stopped -> :ok
+      end
+    end)
+
+    notification = %WorkspaceDidChangeConfiguration{
+      params: %DidChangeConfigurationParams{settings: %{"enableCompilation" => false}}
+    }
+
+    request = Task.async(fn -> State.apply(state, notification) end)
+    assert_receive {:stopping_engine, root_uri, engine_task}
+    refute Task.yield(request, 50)
+
+    send(engine_task, :stopped)
+    assert {:ok, ^state} = Task.await(request)
+    refute Expert.Configuration.compilation_enabled?()
+    assert root_uri == project.root_uri
+
+    assert_receive {:transport,
+                    %GenLSP.Notifications.TextDocumentPublishDiagnostics{
+                      params: %GenLSP.Structures.PublishDiagnosticsParams{
+                        uri: ^uri,
+                        diagnostics: [_diagnostic]
+                      }
+                    }}
+  end
+
+  test "a failed dependency fetch does not keep disabled compilation blocked" do
+    project = Fixtures.project()
+    lsp = initialize_lsp(project)
+    test_pid = self()
+
+    Expert.Project.Store.add_projects([project])
+    Expert.Project.Store.transition(project, :blocked)
+    {:ok, _config} = Expert.Configuration.on_change(%{"enableCompilation" => false})
+
+    assert {:noreply, ^lsp} =
+             Expert.handle_info({:deps_fetch_failed, project, "fetch failed"}, lsp)
+
+    refute Expert.Project.Store.blocked?(project)
+
+    patch(Expert.Project.Supervisor, :start_engine, fn ^project ->
+      send(test_pid, :engine_enabled)
+      :ok
+    end)
+
+    {:ok, _config} = Expert.Configuration.on_change(%{"enableCompilation" => true})
+    assert :ok = Expert.Project.Supervisor.start_engine(project)
+    assert_receive :engine_enabled
+  end
+
+  test "routes watched index file changes to the local indexer while compilation is disabled" do
+    project = Fixtures.project()
+    other_project = Fixtures.project(:umbrella)
+    test_pid = self()
+
+    {:ok, _response, state} = State.initialize(State.new(), initialize_request(project, []))
+    Expert.Project.Store.add_projects([project, other_project])
+    {:ok, _config} = Expert.Configuration.on_change(%{"enableCompilation" => false})
+
+    patch(Expert.Project.Indexer, :refresh, fn refreshed_project ->
+      send(test_pid, {:index_refreshed, refreshed_project.root_uri})
+      :ok
+    end)
+
+    notification = %GenLSP.Notifications.WorkspaceDidChangeWatchedFiles{
+      params: %GenLSP.Structures.DidChangeWatchedFilesParams{
+        changes: [
+          %GenLSP.Structures.FileEvent{
+            uri:
+              project
+              |> Fixtures.file_path("_build/test/lib/app/ebin/App.beam")
+              |> Document.Path.to_uri(),
+            type: GenLSP.Enumerations.FileChangeType.changed()
+          },
+          %GenLSP.Structures.FileEvent{
+            uri:
+              project
+              |> Fixtures.file_path("lib/app.ex")
+              |> Document.Path.to_uri(),
+            type: GenLSP.Enumerations.FileChangeType.deleted()
+          },
+          %GenLSP.Structures.FileEvent{
+            uri:
+              project
+              |> Fixtures.file_path("mix.lock")
+              |> Document.Path.to_uri(),
+            type: GenLSP.Enumerations.FileChangeType.changed()
+          }
+        ]
+      }
+    }
+
+    assert {:ok, ^state} = State.apply(state, notification)
+    assert_receive {:index_refreshed, root_uri}
+    assert root_uri == project.root_uri
+    refute_receive {:index_refreshed, _root_uri}
+  end
+
   test "restarts pending projects when runtime executable configuration changes" do
     project = Fixtures.project()
     test_pid = self()
@@ -290,7 +426,7 @@ defmodule Expert.ExpertTest do
     lsp = initialize_lsp(project)
 
     Expert.Project.Store.add_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
 
     request = %GenLSP.Requests.TextDocumentHover{
       id: 1,
@@ -325,7 +461,6 @@ defmodule Expert.ExpertTest do
     lsp = initialize_lsp(project)
 
     Expert.Project.Store.add_projects([project])
-    Expert.Project.Store.transition(project, :ready)
 
     # A code action from some other provider, carrying a uri for a document that
     # is not open. It must not be treated as a document request (which would fail
@@ -358,7 +493,7 @@ defmodule Expert.ExpertTest do
     test_pid = self()
 
     Expert.Project.Store.add_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
 
     uri = Document.Path.to_uri(Path.join(Forge.Project.root_path(project), "lib/context.ex"))
 
@@ -456,6 +591,7 @@ defmodule Expert.ExpertTest do
         process_id: "",
         root_uri: root_uri,
         root_path: root_path,
+        initialization_options: opts[:initialization_options],
         workspace_folders: [
           %GenLSP.Structures.WorkspaceFolder{
             name: root_path,

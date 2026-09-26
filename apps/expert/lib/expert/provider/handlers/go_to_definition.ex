@@ -4,7 +4,7 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
   alias Expert.CodeIntelligence.Definition
   alias Expert.Document.Context
   alias Expert.EngineApi
-  alias Expert.Project.Store
+  alias Expert.Project.EngineRuntime
   alias GenLSP.Requests
   alias GenLSP.Structures
 
@@ -37,7 +37,7 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
   end
 
   defp fallback_to_engine(project, document, position) do
-    if Store.ready?(project) do
+    if EngineRuntime.available?(project) do
       EngineApi.definition(project, document, position)
     else
       {:ok, nil}

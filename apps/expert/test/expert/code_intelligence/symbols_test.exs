@@ -73,7 +73,7 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
       project = Forge.Test.Fixtures.project()
       start_supervised!({Expert.Project.Store, []})
       Expert.Project.Store.set_projects([project])
-      Expert.Project.Store.transition(project, :ready)
+      patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
       start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
 
       document =

@@ -25,8 +25,10 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbolTest do
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!(Expert.Application.document_store_child_spec())
     start_supervised!({Expert.Project.Store, []})
+    Configuration.new() |> Configuration.set()
+    Expert.Project.Store.add_projects([project])
     start_supervised!({DynamicSupervisor, Expert.Project.DynamicSupervisor.options()})
-    start_supervised!({Expert.Project.Supervisor, project})
+    assert {:ok, _pid} = Expert.Project.Supervisor.ensure_node_started(project)
 
     :ok =
       EngineApi.register_listener(project, self(), [
@@ -36,8 +38,6 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbolTest do
 
     assert_receive Messages.project_compiled(), @project_compile_timeout
     assert_receive Messages.project_index_ready(project: ^project), @project_index_timeout
-
-    Expert.Project.Store.add_projects([project])
 
     {:ok, project: project}
   end

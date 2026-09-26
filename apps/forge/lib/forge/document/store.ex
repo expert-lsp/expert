@@ -118,6 +118,13 @@ defmodule Forge.Document.Store do
       Map.has_key?(store.open, uri)
     end
 
+    @spec open_documents(t) :: [Document.t()]
+    def open_documents(%__MODULE__{} = store) do
+      for {uri, open_doc(document: document)} <- store.open,
+          not Map.has_key?(store.temporary_open_refs, uri),
+          do: document
+    end
+
     @spec close(t, Forge.uri()) :: {:ok, t} | {:error, :not_open}
     def close(%__MODULE__{} = store, uri) do
       case pop_open_doc(store, uri) do
@@ -255,6 +262,11 @@ defmodule Forge.Document.Store do
     GenServer.call(name(), {:open?, uri})
   end
 
+  @spec open_documents() :: [Document.t()]
+  def open_documents do
+    GenServer.call(name(), :open_documents)
+  end
+
   @spec open(Forge.uri(), String.t(), String.t(), pos_integer() | nil) ::
           :ok | {:error, :already_open}
   def open(uri, text, version, language_id \\ nil) do
@@ -321,6 +333,10 @@ defmodule Forge.Document.Store do
   def handle_call({:open?, uri}, _from, %State{} = state) do
     reply = State.open?(state, uri)
     {:reply, reply, state}
+  end
+
+  def handle_call(:open_documents, _from, %State{} = state) do
+    {:reply, State.open_documents(state), state}
   end
 
   def handle_call({:open_temporarily, uri, timeout_ms}, _, %State{} = state) do

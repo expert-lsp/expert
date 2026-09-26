@@ -8,6 +8,7 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
   import Forge.Test.RangeSupport
 
   alias Expert.EngineApi
+  alias Expert.Project.EngineRuntime
   alias Expert.Search.Indexer.Source
   alias Expert.Search.Store
   alias Forge.Document
@@ -16,6 +17,11 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
   setup do
     project = project()
     test_pid = self()
+
+    start_supervised!({Expert.Project.Store, []})
+    Expert.Project.Store.add_projects([project])
+    Expert.Project.Store.transition(project, :ready)
+    patch(EngineRuntime, :available?, fn ^project -> true end)
 
     Engine.set_project(project)
 
@@ -48,6 +54,10 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
 
     patch(Expert.Search.Store, :prefix, fn ^project, subject, constraints ->
       {:ok, query_entries(store, subject, constraints, :prefix)}
+    end)
+
+    patch(Expert.Search.Store, :entries_for_document, fn ^project, _analysis, _subtype ->
+      {:ok, []}
     end)
 
     {:ok, project: project}
