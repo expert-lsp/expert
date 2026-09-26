@@ -490,6 +490,34 @@ defmodule Expert.ConfigurationTest do
     end
   end
 
+  describe "on_change/1 with enableCompilation" do
+    test "defaults to enabled" do
+      assert Configuration.compilation_enabled?()
+    end
+
+    test "parses and preserves boolean values" do
+      {:ok, updated} = Configuration.on_change(build_change(%{"enableCompilation" => false}))
+
+      refute updated.enable_compilation
+      refute Configuration.compilation_enabled?()
+
+      {:ok, updated} = Configuration.on_change(build_change(%{}))
+      refute updated.enable_compilation
+
+      {:ok, updated} = Configuration.on_change(build_change(%{"enableCompilation" => true}))
+      assert updated.enable_compilation
+    end
+
+    test "defaults to enabled for invalid values and explicit null" do
+      for value <- [nil, "true", 1] do
+        {:ok, updated} =
+          Configuration.on_change(build_change(%{"enableCompilation" => value}))
+
+        assert updated.enable_compilation
+      end
+    end
+  end
+
   describe "race condition prevention" do
     defmodule DummyServer do
       use GenServer

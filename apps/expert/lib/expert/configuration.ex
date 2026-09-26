@@ -63,6 +63,11 @@ defmodule Expert.Configuration do
       parser: {:boolean, true},
       missing: :preserve
     },
+    enable_compilation: %{
+      key: "enableCompilation",
+      parser: {:boolean, true},
+      missing: :preserve
+    },
     workspace_symbols: %{
       key: "workspaceSymbols",
       parser: :workspace_symbols,
@@ -83,7 +88,8 @@ defmodule Expert.Configuration do
             elixir_executable_path: nil,
             erlang_executable_path: nil,
             auto_fetch_dependencies: true,
-            compile_on_type: true
+            compile_on_type: true,
+            enable_compilation: true
 
   @type t :: %__MODULE__{
           support: support | nil,
@@ -96,7 +102,8 @@ defmodule Expert.Configuration do
           elixir_executable_path: String.t() | nil,
           erlang_executable_path: String.t() | nil,
           auto_fetch_dependencies: boolean(),
-          compile_on_type: boolean()
+          compile_on_type: boolean(),
+          enable_compilation: boolean()
         }
 
   @opaque support :: Support.t()
@@ -163,6 +170,11 @@ defmodule Expert.Configuration do
     get().compile_on_type
   end
 
+  @spec compilation_enabled?() :: boolean()
+  def compilation_enabled? do
+    get().enable_compilation
+  end
+
   @vscode_family_patterns [
     "visual studio code",
     "cursor",
@@ -212,7 +224,7 @@ defmodule Expert.Configuration do
     apply_config_change(get(), %{})
   end
 
-  @spec on_change(WorkspaceDidChangeConfiguration.t() | :defaults) ::
+  @spec on_change(WorkspaceDidChangeConfiguration.t() | map() | nil | :defaults) ::
           {:ok, t}
           | {:ok, t, Requests.ClientRegisterCapability.t()}
   def on_change(:defaults) do
@@ -222,6 +234,12 @@ defmodule Expert.Configuration do
   def on_change(%WorkspaceDidChangeConfiguration{} = change) do
     apply_config_change(get(), change.params.settings)
   end
+
+  def on_change(settings) when is_map(settings) or is_nil(settings) do
+    apply_config_change(get(), settings)
+  end
+
+  def on_change(_settings), do: {:ok, get()}
 
   defp apply_config_change(%__MODULE__{} = old_config, %{} = settings) do
     new_config =
