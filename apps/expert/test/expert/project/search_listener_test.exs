@@ -8,6 +8,8 @@ defmodule Expert.Project.SearchListenerTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
+  alias Expert.Project.Indexer
+  alias Expert.Project.SearchListener
   alias Expert.Test.DispatchFake
   alias Forge.Project
   alias GenLSP.Notifications.WindowShowMessage
@@ -15,10 +17,14 @@ defmodule Expert.Project.SearchListenerTest do
 
   setup do
     project = project()
+    test_pid = self()
     DispatchFake.start()
 
-    start_supervised!({Expert.Project.SearchListener, project})
+    patch(Expert.Project.Node, :trigger_build, fn ^project, force? ->
+      send(test_pid, {:compile, force?})
+    end)
 
+    start_supervised!({SearchListener, project})
     {:ok, project: project}
   end
 
@@ -39,5 +45,20 @@ defmodule Expert.Project.SearchListenerTest do
                         }
                       }}
     end
+  end
+
+  test "compilation success and failure request index refreshes", %{project: project} do
+    test_pid = self()
+    patch(Indexer, :refresh, fn ^project -> send(test_pid, :refresh) end)
+    listener = SearchListener.name(project)
+
+    send(listener, project_compiled(status: :success))
+    assert_receive :refresh
+    send(listener, project_compiled(status: :error))
+    assert_receive :refresh
+  end
+
+  test "requests an incremental initial compile" do
+    assert_receive {:compile, false}
   end
 end

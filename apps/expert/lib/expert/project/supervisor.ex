@@ -22,16 +22,16 @@ defmodule Expert.Project.Supervisor do
   def init(%Project{} = project) do
     children = [
       {EngineSupervisor, project},
-      {Node, project},
       {Search.Store.backend(), project},
       {Search.Store, [project]},
       {ModuleRegistry, project},
+      {Task.Supervisor, name: Indexer.task_supervisor_name(project)},
+      {Indexer, project},
+      {Node, project},
       {Diagnostics, project},
       {Intelligence, project},
-      {SearchListener, project},
       {Reindex, project},
-      {Task.Supervisor, name: Indexer.task_supervisor_name(project)},
-      {Indexer, [project, initial_compile?: true]}
+      {SearchListener, project}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

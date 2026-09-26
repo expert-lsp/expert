@@ -4,10 +4,14 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
   alias Expert.CodeIntelligence.Definition
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Project.Store
   alias GenLSP.Requests
   alias GenLSP.Structures
 
   require Logger
+
+  @impl Expert.Provider.Handler
+  def requires_engine?, do: false
 
   @impl Expert.Provider.Handler
   def handle(
@@ -18,7 +22,7 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
 
     result =
       case Definition.definition(project, document, params.position) do
-        {:ok, nil} -> EngineApi.definition(project, document, params.position)
+        {:ok, nil} -> fallback_to_engine(project, document, params.position)
         {:ok, _native_location} = result -> result
       end
 
@@ -29,6 +33,14 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
       {:error, reason} ->
         Logger.error("GoToDefinition failed: #{inspect(reason)}")
         {:ok, nil}
+    end
+  end
+
+  defp fallback_to_engine(project, document, position) do
+    if Store.ready?(project) do
+      EngineApi.definition(project, document, position)
+    else
+      {:ok, nil}
     end
   end
 end

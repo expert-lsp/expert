@@ -94,6 +94,7 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
       EngineApi.call(project, Application, :put_env, [:language_server, :elixir_src, elixir_src])
 
     assert_receive project_compiled(), @project_compile_timeout
+    Indexer.refresh(project)
     assert_receive project_index_ready(project: ^project), @project_index_timeout
 
     %{project: project}

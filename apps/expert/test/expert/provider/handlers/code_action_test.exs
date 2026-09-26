@@ -45,6 +45,7 @@ defmodule Expert.Provider.Handlers.CodeActionTest do
     EngineApi.schedule_compile(project, true)
 
     assert_receive project_compiled(), @project_ready_timeout
+    Indexer.refresh(project)
     assert_receive project_index_ready(project: ^project), @project_ready_timeout
 
     {:ok, project: project}

@@ -1,143 +1,58 @@
 defmodule Expert.Project.IndexerTest do
   use ExUnit.Case, async: false
   use Patch
-  use Expert.Test.DispatchFake
 
   import Forge.EngineApi.Messages
+  import Forge.Test.EventualAssertions
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
   alias Expert.Project.Indexer
-  alias Expert.Project.Node, as: ProjectNode
+  alias Expert.Search
   alias Expert.Search.Store
   alias Expert.Search.Store.Backends.Sqlite
-  alias Expert.Test.DispatchFake
-  alias Forge.Project
-
-  # The first assertion after a broadcast waits on `Search.Store.enable/1`, which the store
-  # allows 30 seconds for. Setup destroys the database first, so a cold rebuild can outlast the
-  # global `assert_receive_timeout` of one second.
-  @enable_timeout :timer.seconds(5)
 
   setup do
     project = project()
-    DispatchFake.start()
     Sqlite.destroy_all(project)
 
-    start_supervised!({Sqlite, [project, runtime_versions: runtime_versions()]})
+    start_supervised!(
+      {Sqlite, [project, runtime_versions: %{erlang: "engine-erlang", elixir: "engine-elixir"}]}
+    )
+
     start_supervised!({Store, [project, Sqlite]})
-
-    task_supervisor = :"#{Project.unique_name(project)}::indexer_test_task_supervisor"
-    start_supervised!({Task.Supervisor, name: task_supervisor})
-
-    EngineApi.register_listener(project, self(), [project_index_ready()])
-
+    start_supervised!({Search.Indexer.ModuleRegistry, project})
+    start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
+    patch(EngineApi, :call, fn _, _, _, _ -> flunk("Index tasks must not control the Engine") end)
+    test_pid = self()
+    patch(EngineApi, :broadcast, fn ^project, message -> send(test_pid, message) end)
+    patch(Search.Indexer, :warmup, fn _ -> :ok end)
     on_exit(fn -> Sqlite.destroy_all(project) end)
-
-    {:ok, project: project, task_supervisor: task_supervisor}
+    {:ok, project: project}
   end
 
-  describe "initial project compile" do
-    test "forces compilation when the persisted index is empty", %{
-      project: project,
-      task_supervisor: task_supervisor
-    } do
-      test_pid = self()
-
-      patch(Store, :load_status, fn ^project -> :empty end)
-
-      patch(ProjectNode, :trigger_build, fn ^project, force? ->
-        send(test_pid, {:trigger_build, force?})
-      end)
-
-      start_supervised!(
-        {Indexer, [project, task_supervisor: task_supervisor, initial_compile?: true]}
-      )
-
-      assert_receive {:trigger_build, true}
-    end
-
-    test "uses a normal compilation when a persisted index exists", %{
-      project: project,
-      task_supervisor: task_supervisor
-    } do
-      test_pid = self()
-
-      patch(Store, :load_status, fn ^project -> :stale end)
-
-      patch(ProjectNode, :trigger_build, fn ^project, force? ->
-        send(test_pid, {:trigger_build, force?})
-      end)
-
-      start_supervised!(
-        {Indexer, [project, task_supervisor: task_supervisor, initial_compile?: true]}
-      )
-
-      assert_receive {:trigger_build, false}
-    end
-  end
-
-  test "creates the initial index after a successful project compile", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
+  test "creates an empty index on request", %{project: project} do
     test_pid = self()
 
     start_supervised!(
       {Indexer,
        [
          project,
-         task_supervisor: task_supervisor,
          create_index: fn ^project ->
            send(test_pid, :create_index)
            :ok
          end,
-         update_index: fn ^project ->
-           send(test_pid, :update_index)
-           :ok
-         end
+         update_index: fn _ -> flunk("An empty index needs a full index") end
        ]}
     )
 
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
+    Indexer.refresh(project)
 
-    assert_receive :create_index, @enable_timeout
-    refute_receive :update_index
+    assert_receive :create_index, 5_000
     assert_receive project_index_ready(project: ^project)
   end
 
-  test "creates the initial index even when the project compile reports an error", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
-    test_pid = self()
-
-    start_supervised!(
-      {Indexer,
-       [
-         project,
-         task_supervisor: task_supervisor,
-         create_index: fn ^project ->
-           send(test_pid, :create_index)
-           :ok
-         end,
-         update_index: fn ^project ->
-           send(test_pid, :update_index)
-           :ok
-         end
-       ]}
-    )
-
-    EngineApi.broadcast(project, project_compiled(project: project, status: :error))
-
-    assert_receive :create_index, @enable_timeout
-    assert_receive project_index_ready(project: ^project)
-  end
-
-  test "updates an existing index after later successful project compiles", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
+  test "updates an existing index on request", %{project: project} do
     test_pid = self()
     patch(Store, :load_status, fn ^project -> :ready end)
 
@@ -145,11 +60,7 @@ defmodule Expert.Project.IndexerTest do
       {Indexer,
        [
          project,
-         task_supervisor: task_supervisor,
-         create_index: fn ^project ->
-           send(test_pid, :create_index)
-           :ok
-         end,
+         create_index: fn _ -> flunk("An existing index needs an update") end,
          update_index: fn ^project ->
            send(test_pid, :update_index)
            :ok
@@ -157,17 +68,13 @@ defmodule Expert.Project.IndexerTest do
        ]}
     )
 
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
+    Indexer.refresh(project)
 
-    assert_receive :update_index, @enable_timeout
-    refute_receive :create_index
+    assert_receive :update_index, 5_000
     assert_receive project_index_ready(project: ^project)
   end
 
-  test "rebuilds after an incremental Store write fails", %{
-    project: project,
-    task_supervisor: task_supervisor
-  } do
+  test "rebuilds after an incremental Store write fails", %{project: project} do
     test_pid = self()
     patch(Store, :load_status, fn ^project -> :ready end)
 
@@ -175,7 +82,6 @@ defmodule Expert.Project.IndexerTest do
       {Indexer,
        [
          project,
-         task_supervisor: task_supervisor,
          create_index: fn ^project ->
            send(test_pid, :create_index)
            :ok
@@ -187,12 +93,130 @@ defmodule Expert.Project.IndexerTest do
        ]}
     )
 
-    EngineApi.broadcast(project, project_compiled(project: project, status: :success))
+    Indexer.refresh(project)
 
-    assert_receive :update_index, @enable_timeout
+    assert_receive :update_index, 5_000
     assert_receive :create_index
     assert_receive project_index_ready(project: ^project)
   end
 
-  defp runtime_versions, do: %{erlang: "engine-erlang", elixir: "engine-elixir"}
+  test "a refresh cancels unfinished warmup and keeps the project registry", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :warmup, fn ^project ->
+      registry = Search.Indexer.ModuleRegistry.name(project)
+      send(test_pid, {:warmup, self(), registry})
+      Process.sleep(:infinity)
+    end)
+
+    start_supervised!(
+      {Indexer,
+       [
+         project,
+         create_index: fn ^project ->
+           send(test_pid, :create_index)
+           :ok
+         end
+       ]}
+    )
+
+    assert_receive {:warmup, pid, registry}, 5_000
+    ref = Process.monitor(pid)
+    Indexer.refresh(project)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    assert_receive :create_index
+    assert :ets.info(registry, :owner) == Process.whereis(registry)
+    assert_receive project_index_ready(project: ^project)
+  end
+
+  test "completed warmup permits a later refresh", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :warmup, fn ^project ->
+      send(test_pid, {:warmup, self()})
+      :ok
+    end)
+
+    start_supervised!({Indexer, [project, create_index: fn _ -> :ok end]})
+    assert_receive {:warmup, pid}, 5_000
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}
+    refute_receive project_index_ready()
+
+    Indexer.refresh(project)
+    assert_receive project_index_ready(project: ^project)
+  end
+
+  test "failed warmup permits a later refresh", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :warmup, fn _ ->
+      send(test_pid, {:warmup, self()})
+      exit(:warmup_failed)
+    end)
+
+    start_supervised!({Indexer, [project, create_index: fn _ -> :ok end]})
+    assert_receive {:warmup, pid}, 5_000
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, _}
+
+    Indexer.refresh(project)
+    assert_receive project_index_ready(project: ^project)
+  end
+
+  test "skips warmup when the store has a persisted index", %{project: project} do
+    patch(Store, :load_status, :stale)
+    patch(Search.Indexer, :warmup, fn _ -> flunk("A persisted index does not need warmup") end)
+    start_supervised!({Indexer, project})
+    assert_eventually(is_nil(:sys.get_state(Indexer.name(project)).task))
+  end
+
+  test "warmup stops when its owner is killed", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :warmup, fn _ ->
+      send(test_pid, {:warmup, self()})
+      Process.sleep(:infinity)
+    end)
+
+    owner = start_supervised!({Indexer, project})
+    assert_receive {:warmup, worker}
+    ref = Process.monitor(worker)
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+  end
+
+  test "coalesces refresh requests and reports readiness after the final refresh", %{
+    project: project
+  } do
+    test_pid = self()
+
+    start_supervised!(
+      {Indexer,
+       [
+         project,
+         create_index: fn _ ->
+           send(test_pid, {:refresh, self()})
+
+           receive do
+             :finish -> :ok
+           end
+         end
+       ]}
+    )
+
+    Indexer.refresh(project)
+    assert_receive {:refresh, first}, 5_000
+    Indexer.refresh(project)
+    Indexer.refresh(project)
+    :sys.get_state(Indexer.name(project))
+    send(first, :finish)
+
+    assert_receive {:refresh, second}
+    refute_receive project_index_ready()
+    send(second, :finish)
+    assert_receive project_index_ready(project: ^project)
+    refute_receive {:refresh, _}
+  end
 end
