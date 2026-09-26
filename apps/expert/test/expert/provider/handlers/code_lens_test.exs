@@ -26,11 +26,11 @@ defmodule Expert.Provider.Handlers.CodeLensTest do
     start_supervised(Document.Store)
     project = project(:umbrella)
 
-    start_supervised!({Expert.Project.Store, []})
-    start_supervised!({DynamicSupervisor, Expert.Project.DynamicSupervisor.options()})
-    start_supervised!({Expert.Project.Supervisor, project})
-
     Expert.Configuration.new() |> Expert.Configuration.set()
+    start_supervised!({Expert.Project.Store, []})
+    Expert.Project.Store.add_projects([project])
+    start_supervised!({DynamicSupervisor, Expert.Project.DynamicSupervisor.options()})
+    assert {:ok, _pid} = Expert.Project.Supervisor.ensure_node_started(project)
 
     EngineApi.register_listener(project, self(), [project_compiled()])
     EngineApi.schedule_compile(project, true)
@@ -92,6 +92,27 @@ defmodule Expert.Provider.Handlers.CodeLensTest do
 
       assert extract(mix_exs, code_lens.range) =~ "def project"
       assert code_lens.command == Handlers.Commands.reindex_command(project)
+    end
+
+    test "offers reindex while the Engine is unavailable", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      patch(Expert.Project.EngineRuntime, :available?, fn ^project -> false end)
+      assert Handlers.CodeLens.requires_engine?() == false
+
+      {:ok, request} = referenced_uri |> Document.Path.ensure_path() |> build_request()
+      assert {:ok, [%Structures.CodeLens{}]} = handle(request, project)
+    end
+
+    test "does not offer reindex while reindexing", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      patch(Reindex, :running?, true)
+
+      {:ok, request} = referenced_uri |> Document.Path.ensure_path() |> build_request()
+      assert {:ok, []} = handle(request, project)
     end
 
     test "does not emit a code lens for a project file", %{project: project} do

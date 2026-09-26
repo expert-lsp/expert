@@ -112,6 +112,19 @@ defmodule Forge.Project.Diagnostics.StateTest do
     assert [%Diagnostic{}] = State.get(state, diagnostic.uri)
   end
 
+  test "accepts new Engine build numbers after registration", %{state: state} do
+    old = diagnostic(message: "old Engine")
+    new = diagnostic(message: "new Engine")
+
+    state =
+      state
+      |> State.add_file(10, old)
+      |> State.reset_build_numbers()
+      |> State.add_file(1, new)
+
+    assert [^new] = State.get(state, new.uri)
+  end
+
   describe "clear_all_flushed/1" do
     test "it should not clear a dirty open file", %{state: state} do
       document =

@@ -89,13 +89,16 @@ defmodule Expert.CodeIntelligence.References do
       %Entry{subtype: entry_subtype} when subtype != :_ and entry_subtype != subtype ->
         false
 
-      %Entry{type: {kind, _}, subject: subject, range: range}
+      %Entry{type: {kind, _}, subject: subject, range: %Range{} = range}
       when kind in [:function, :macro] ->
         Range.contains?(range, position) and
           match?({_module, ^function, _arity}, Forge.Code.parse_mfa(subject))
 
-      %Entry{range: range} ->
+      %Entry{range: %Range{} = range} ->
         Range.contains?(range, position)
+
+      _ ->
+        false
     end)
     |> Enum.min_by(&{entry_rank(&1), range_size(&1)}, fn -> nil end)
   end

@@ -36,8 +36,9 @@ defmodule Expert.CodeIntelligence.Definition do
            Store.exact(project, reference.subject,
              type: definition_type(reference),
              subtype: :definition
-           ),
-         false <- Enum.any?(definitions, &match?(%Entry{metadata: %{original_mfa: _}}, &1)) do
+           ) do
+      definitions = expand_definitions(project, definitions)
+
       definitions
       |> Enum.map(&Location.new(&1.range, Document.Path.ensure_uri(&1.path)))
       |> case do
@@ -46,6 +47,31 @@ defmodule Expert.CodeIntelligence.Definition do
       end
     else
       _ -> {:ok, nil}
+    end
+  end
+
+  defp expand_definitions(project, definitions) do
+    definitions
+    |> Enum.flat_map(fn
+      %Entry{metadata: %{via: :use, original_mfa: original_mfa}} = entry ->
+        case exact_definitions(project, original_mfa) do
+          [] -> [entry]
+          definitions -> definitions
+        end
+
+      %Entry{type: {:function, :delegate}, metadata: %{original_mfa: original_mfa}} = entry ->
+        exact_definitions(project, original_mfa) ++ [entry]
+
+      entry ->
+        [entry]
+    end)
+    |> Enum.uniq_by(& &1.subject)
+  end
+
+  defp exact_definitions(project, subject) do
+    case Store.exact(project, subject, subtype: :definition) do
+      {:ok, definitions} -> definitions
+      _ -> []
     end
   end
 

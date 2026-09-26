@@ -8,6 +8,7 @@ defmodule Expert.Project.DiagnosticsTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
+  alias Expert.Project.Diagnostics
   alias Expert.Test.DispatchFake
   alias Forge.Diagnostic
   alias Forge.Document
@@ -19,8 +20,10 @@ defmodule Expert.Project.DiagnosticsTest do
     project = project()
     DispatchFake.start()
 
-    start_supervised!(Forge.Document.Store)
-    start_supervised!({Expert.Project.Diagnostics, project})
+    start_supervised!(Expert.Application.document_store_child_spec())
+    start_supervised!({Expert.Project.Store, []})
+    start_supervised!({Diagnostics, project})
+    Diagnostics.register(project)
 
     {:ok, project: project}
   end

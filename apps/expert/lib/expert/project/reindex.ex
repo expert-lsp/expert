@@ -8,6 +8,7 @@ defmodule Expert.Project.Reindex do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
+  alias Expert.Project.EngineRuntime
   alias Expert.Search
   alias Forge.Document
   alias Forge.Project
@@ -114,12 +115,11 @@ defmodule Expert.Project.Reindex do
   def name(%Project{} = project), do: :"#{Project.unique_name(project)}::reindex"
 
   def perform(%Project{} = project), do: GenServer.call(name(project), :perform)
+
   def running?(%Project{} = project), do: GenServer.call(name(project), :running?)
 
   @impl GenServer
   def init([%Project{} = project, opts]) do
-    EngineApi.register_listener(project, self(), [file_compiled(), filesystem_event()])
-
     Process.flag(:fullsweep_after, 5)
     schedule_gc()
 
@@ -165,7 +165,11 @@ defmodule Expert.Project.Reindex do
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, :process, pid, _reason}, %State{index_task: {pid, ref}} = state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, %State{index_task: {pid, ref}} = state) do
+    if reason != :normal do
+      Logger.error("Reindex failed: #{Exception.format_exit(reason)}")
+    end
+
     new_state =
       state
       |> State.flush_pending_updates()
@@ -189,26 +193,32 @@ defmodule Expert.Project.Reindex do
   end
 
   defp do_reindex(%Project{} = project) do
-    EngineApi.broadcast(project, project_reindex_requested(project: project))
+    if EngineRuntime.available?(project) do
+      EngineApi.broadcast(project, project_reindex_requested(project: project))
 
-    {elapsed_us, result} =
-      :timer.tc(fn ->
-        case Search.Indexer.create_index(project) do
-          :ok -> record_integrations(project)
-          result -> result
-        end
-      end)
+      {elapsed_us, result} =
+        :timer.tc(fn ->
+          case Search.Indexer.create_index(project) do
+            :ok -> record_integrations(project)
+            result -> result
+          end
+        end)
 
-    EngineApi.broadcast(
-      project,
-      project_reindexed(
-        project: project,
-        elapsed_ms: round(elapsed_us / 1000),
-        status: reindex_status(result)
+      EngineApi.broadcast(
+        project,
+        project_reindexed(
+          project: project,
+          elapsed_ms: round(elapsed_us / 1000),
+          status: reindex_status(result)
+        )
       )
-    )
 
-    result
+      result
+    else
+      with :ok <- Search.Indexer.warmup(project) do
+        Search.Indexer.record_integrations(project, false)
+      end
+    end
   end
 
   defp record_integrations(project) do

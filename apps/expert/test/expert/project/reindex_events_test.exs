@@ -7,7 +7,6 @@ defmodule Expert.Project.ReindexEventsTest do
   import Forge.Test.EventualAssertions
   import Forge.Test.Fixtures
 
-  alias Expert.EngineApi
   alias Expert.Project.Reindex
   alias Expert.Search
   alias Forge.Document
@@ -15,8 +14,6 @@ defmodule Expert.Project.ReindexEventsTest do
   setup do
     project = project()
     {:ok, store} = Agent.start_link(fn -> %{} end)
-
-    patch(EngineApi, :register_listener, :ok)
 
     patch(Search.Store, :clear, fn ^project, path ->
       clear_store(store, path)

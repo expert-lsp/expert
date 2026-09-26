@@ -9,7 +9,8 @@ defmodule Expert.EngineSupervisor do
   def child_spec(%Project{} = project) do
     %{
       id: {__MODULE__, Project.unique_name(project)},
-      start: {__MODULE__, :start_link, [project]}
+      start: {__MODULE__, :start_link, [project]},
+      type: :supervisor
     }
   end
 
@@ -17,7 +18,7 @@ defmodule Expert.EngineSupervisor do
     DynamicSupervisor.start_link(__MODULE__, project, name: name(project), strategy: :one_for_one)
   end
 
-  defp name(%Project{} = project) do
+  def name(%Project{} = project) do
     :"#{Project.unique_name(project)}::project_node_supervisor"
   end
 
