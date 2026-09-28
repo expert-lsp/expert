@@ -374,7 +374,7 @@ defmodule Forge.Ast.Analysis do
   defp analyze_node({:alias, meta, [aliases, options]} = quoted, state) do
     with {:ok, alias_as} <- fetch_alias_as(options),
          [_ | _] = segments <- expand_alias(aliases, state) do
-      alias = Alias.explicit(state.document, quoted, segments, alias_as)
+      alias = Alias.explicit(state.document, quoted, segments, alias_as, true)
       State.push_alias(state, alias)
     else
       _ ->

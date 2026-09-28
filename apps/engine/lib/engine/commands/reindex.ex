@@ -96,14 +96,27 @@ defmodule Engine.Commands.Reindex do
     end
 
     defp entries_for_uri(uri) do
-      with {:ok, %Document{} = document, %Analysis{} = analysis} <-
-             Document.Store.fetch(uri, :analysis),
+      with {:ok, %Document{} = document, %Analysis{} = analysis} <- ensure_open(uri),
            {:ok, entries} <- Indexer.Quoted.index_with_cleanup(analysis) do
         {:ok, document.path, entries}
       else
         error ->
           Logger.error("Could not update index because #{inspect(error)}")
           error
+      end
+    end
+
+    defp ensure_open(uri) do
+      case Document.Store.fetch(uri, :analysis) do
+        {:ok, %Document{} = document, analysis} ->
+          {:ok, document, analysis}
+
+        {:error, :not_open} ->
+          # Sometimes, some operations are received long after the reindex is triggered,
+          # such as new files after a batch rename
+          with {:ok, _} <- Document.Store.open_temporary(uri) do
+            Document.Store.fetch(uri, :analysis)
+          end
       end
     end
 

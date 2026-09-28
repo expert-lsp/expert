@@ -560,6 +560,12 @@ defmodule Expert do
       %GenLSP.Requests.WorkspaceSymbol{} ->
         {:ok, Handlers.WorkspaceSymbol}
 
+      %GenLSP.Requests.TextDocumentPrepareRename{} ->
+        {:ok, Handlers.PrepareRename}
+
+      %GenLSP.Requests.TextDocumentRename{} ->
+        {:ok, Handlers.Rename}
+
       %request_module{} ->
         {:error, {:unhandled, request_module}}
     end

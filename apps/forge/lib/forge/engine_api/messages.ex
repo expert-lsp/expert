@@ -28,6 +28,8 @@ defmodule Forge.EngineApi.Messages do
 
   defrecord :file_deleted, project: nil, uri: nil
 
+  defrecord :file_saved, uri: nil
+
   defrecord :module_updated, file: nil, name: nil, functions: [], macros: [], struct: nil
 
   defrecord :project_diagnostics, project: nil, build_number: 0, diagnostics: []
@@ -93,6 +95,8 @@ defmodule Forge.EngineApi.Messages do
             status: compile_status,
             elapsed_ms: non_neg_integer
           )
+
+  @type file_saved :: record(:file_saved, uri: Forge.uri())
 
   @type module_updated ::
           record(:module_updated,

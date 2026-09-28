@@ -104,6 +104,10 @@ defmodule Forge.Document.StoreTest do
       assert Document.to_string(doc) == "hello"
     end
 
+    test "is identified as open when fetched with its origin" do
+      assert {:ok, %Document{version: 1}, :open} = Document.Store.fetch_with_origin(uri())
+    end
+
     test "can be closed" do
       assert :ok = Document.Store.close(uri())
       assert {:error, :not_open} = Document.Store.fetch(uri())
@@ -181,6 +185,13 @@ defmodule Forge.Document.StoreTest do
       assert Document.to_string(doc) == ctx.contents
     end
 
+    test "is identified as temporary when fetched with its origin", ctx do
+      assert {:ok, _doc} = Document.Store.open_temporary(ctx.uri, 100)
+
+      assert {:ok, %Document{version: 0}, :temporary} =
+               Document.Store.fetch_with_origin(ctx.uri)
+    end
+
     test "closes after a timeout", ctx do
       assert {:ok, _} = Document.Store.open_temporary(ctx.uri, 100)
       Process.sleep(101)
@@ -225,6 +236,11 @@ defmodule Forge.Document.StoreTest do
     test "can be fetched with the document by key" do
       assert {:ok, doc, 5} = Document.Store.fetch(uri(), :length)
       assert Document.to_string(doc) == "hello"
+    end
+
+    test "can be fetched with a derived value and its origin" do
+      assert {:ok, %Document{version: 1}, 5, :open} =
+               Document.Store.fetch_with_origin(uri(), :length)
     end
 
     test "update when the document changes" do

@@ -15,6 +15,7 @@ defmodule Forge.Document.Store do
   @type derivation_key :: atom()
   @type derivation_fun :: (Document.t() -> derived_value)
   @type derived_value :: any()
+  @type origin :: :open | :temporary
 
   @type start_opts :: [start_opt]
   @type start_opt :: {:derive, derivations}
@@ -117,6 +118,12 @@ defmodule Forge.Document.Store do
     def open?(%__MODULE__{} = store, uri) do
       Map.has_key?(store.open, uri)
     end
+
+    @spec origin(t, Forge.uri()) :: Store.origin()
+    def origin(%__MODULE__{temporary_open_refs: refs}, uri) when is_map_key(refs, uri),
+      do: :temporary
+
+    def origin(%__MODULE__{}, _uri), do: :open
 
     @spec close(t, Forge.uri()) :: {:ok, t} | {:error, :not_open}
     def close(%__MODULE__{} = store, uri) do
@@ -245,6 +252,18 @@ defmodule Forge.Document.Store do
     GenServer.call(name(), {:fetch, uri, key})
   end
 
+  @spec fetch_with_origin(Forge.uri()) ::
+          {:ok, Document.t(), origin()} | {:error, :not_open}
+  def fetch_with_origin(uri) do
+    GenServer.call(name(), {:fetch_with_origin, uri})
+  end
+
+  @spec fetch_with_origin(Forge.uri(), derivation_key) ::
+          {:ok, Document.t(), derived_value, origin()} | {:error, :not_open}
+  def fetch_with_origin(uri, key) do
+    GenServer.call(name(), {:fetch_with_origin, uri, key})
+  end
+
   @spec save(Forge.uri()) :: :ok | {:error, :not_open}
   def save(uri) do
     GenServer.call(name(), {:save, uri})
@@ -354,6 +373,32 @@ defmodule Forge.Document.Store do
       case State.fetch(state, uri, key) do
         {:ok, value, derived_value, new_state} -> {{:ok, value, derived_value}, new_state}
         error -> {error, state}
+      end
+
+    {:reply, reply, new_state}
+  end
+
+  def handle_call({:fetch_with_origin, uri}, _from, %State{} = state) do
+    {reply, new_state} =
+      case State.fetch(state, uri) do
+        {:ok, document, new_state} ->
+          {{:ok, document, State.origin(state, uri)}, new_state}
+
+        error ->
+          {error, state}
+      end
+
+    {:reply, reply, new_state}
+  end
+
+  def handle_call({:fetch_with_origin, uri, key}, _from, %State{} = state) do
+    {reply, new_state} =
+      case State.fetch(state, uri, key) do
+        {:ok, document, derived_value, new_state} ->
+          {{:ok, document, derived_value, State.origin(state, uri)}, new_state}
+
+        error ->
+          {error, state}
       end
 
     {:reply, reply, new_state}

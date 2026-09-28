@@ -17,6 +17,11 @@ defmodule Expert.Configuration.Support do
       :code_action,
       :resolve_support
     ],
+    document_changes: [
+      :workspace,
+      :workspace_edit,
+      :document_changes
+    ],
     hierarchical_symbols: [
       :text_document,
       :document_symbol,
@@ -51,18 +56,25 @@ defmodule Expert.Configuration.Support do
     show_message: [
       :window,
       :show_message
+    ],
+    resource_operations: [
+      :workspace,
+      :workspace_edit,
+      :resource_operations
     ]
   ]
 
   defstruct code_action_dynamic_registration: false,
             code_action_resolve: false,
+            document_changes: false,
             hierarchical_symbols: false,
             snippet: false,
             deprecated: false,
             tags: false,
             signature_help: false,
             work_done_progress: false,
-            show_message: false
+            show_message: false,
+            resource_operations: false
 
   @type t :: %__MODULE__{}
 
