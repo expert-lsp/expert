@@ -4,12 +4,18 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
 
+    beam-flakes.url = "github:elixir-tools/nix-beam-flakes";
+    beam-flakes.inputs.flake-parts.follows = "flake-parts";
+    beam-flakes.inputs.nixpkgs.follows = "nixpkgs";
+
     flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
   outputs =
     inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ inputs.beam-flakes.flakeModule ];
+
       systems = [
         "x86_64-darwin"
         "aarch64-darwin"
@@ -52,12 +58,15 @@
             expert = pkgs.callPackage ./nix/expert.nix { inherit beamPackages; };
           };
 
-          devShells.default = pkgs.mkShell {
-            packages = [
-              beamPackages.erlang
-              beamPackages.elixir
-            ]
-            ++ (with pkgs; [
+          beamWorkspace = {
+            enable = true;
+            devShell.languageServers.elixir = false;
+            devShell.languageServers.erlang = false;
+            versions = {
+              elixir = "1.17.3";
+              erlang = "27.3.4.1";
+            };
+            devShell.extraPackages = with pkgs; [
               nixfmt
               zig_0_15
               xz
@@ -65,9 +74,7 @@
               _7zz
               git
               zizmor
-            ]);
-
-            ERL_AFLAGS = "-kernel shell_history enabled";
+            ];
           };
         };
     };
