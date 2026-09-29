@@ -10,11 +10,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1783010257,
-        "narHash": "sha256-9nGuCa35Z1lIKy1TA4FGewWeeMCyOCOFwU8YJtBa7w8=",
+        "lastModified": 1790197018,
+        "narHash": "sha256-5id8lipYKZtyU8rlx80+RZkDZXMNYU2q51I9KYYUJV4=",
         "owner": "elixir-tools",
         "repo": "nix-beam-flakes",
-        "rev": "b54efec6163adf3157dbfcee28d70fd990ae4ad2",
+        "rev": "949f26e7ad5a85e29d4e0d79649c82b0f399562f",
         "type": "github"
       },
       "original": {
