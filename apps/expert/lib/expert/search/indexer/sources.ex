@@ -30,13 +30,28 @@ defmodule Expert.Search.Indexer.Sources do
 
   defp index_path(path, source_indexer) do
     with {:ok, contents} <- File.read(path),
-         {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
-         true <- has_search_entries?(entries),
+         {:ok, entries} <- source_indexer.(path, contents),
+         true <- entries != [] and has_search_entries?(entries),
          {:ok, manifest_entry} <- Manifest.Entry.source(path) do
       [{entries, manifest_entry}]
     else
-      _ -> []
+      {:ok, []} ->
+        []
+
+      false ->
+        []
+
+      error ->
+        Logger.warning("Skipping search indexing for #{path}: #{inspect(error)}")
+        []
     end
+  rescue
+    error ->
+      Logger.warning(
+        "Skipping search indexing for #{path}: #{Exception.format(:error, error, __STACKTRACE__)}"
+      )
+
+      []
   end
 
   defp has_search_entries?(entries) do
@@ -65,8 +80,10 @@ defmodule Expert.Search.Indexer.Sources do
 
   defp task_result!({:ok, result}), do: result
 
-  defp task_result!({:exit, reason}),
-    do: raise("Indexing task failed: #{Exception.format_exit(reason)}")
+  defp task_result!({:exit, reason}) do
+    Logger.warning("Skipping failed search indexing task: #{Exception.format_exit(reason)}")
+    {0, []}
+  end
 
   defp start_progress(title) do
     token =
