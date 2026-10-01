@@ -33,7 +33,7 @@ System.put_env("REBAR_CACHE_DIR", rebar_cache)
 Mix.Task.run("local.hex", ["--if-missing", "--force"])
 Mix.Task.run("local.rebar", ["--if-missing", "--force"])
 
-Mix.install([{:engine, path: engine_source_path, env: :dev}],
+Mix.install([{:engine, path: engine_source_path, env: :prod}],
   start_applications: false,
   config_path: Path.join(engine_source_path, "config/config.exs"),
   lockfile: Path.join(engine_source_path, "mix.lock"),
