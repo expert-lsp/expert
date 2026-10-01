@@ -1,7 +1,8 @@
-defmodule Engine.Integrations.Spark.Common do
-  alias Engine.Analyzer
-  alias Engine.Analyzer.Uses
-  alias Engine.ManagerApi
+defmodule Expert.Integrations.Spark.Common do
+  alias Expert.Integrations.Spark.Callbacks
+  alias Expert.Search.Indexer.Analysis.Uses
+  alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Analysis.Use
   alias Forge.Ast.Env
@@ -75,20 +76,23 @@ defmodule Engine.Integrations.Spark.Common do
     |> Enum.flat_map(fn section -> section.options ++ section.entities ++ section.sections end)
   end
 
-  def selected_type_module({:__block__, _, [value]}, aliases, env),
-    do: selected_type_module(value, aliases, env)
+  def selected_type_module({:__block__, _, [value]}, type, env),
+    do: selected_type_module(value, type, env)
 
-  def selected_type_module(value, aliases, _env) when is_atom(value),
-    do: Map.fetch(aliases, to_string(value))
+  def selected_type_module(value, type, env) when is_atom(value) do
+    env.project
+    |> Callbacks.aliases(type)
+    |> Map.fetch(to_string(value))
+  end
 
-  def selected_type_module(value, _aliases, env) do
+  def selected_type_module(value, _type, env) do
     with {:ok, module} <- expand_module(value, env), do: {:ok, module_name(module)}
   end
 
   def fetch(project, kind, owner) do
     subject = Entry.integration_subject("spark", kind, owner)
 
-    case ManagerApi.search_store_exact(project, subject,
+    case Store.exact(project, subject,
            type: :metadata,
            subtype: :integration
          ) do
@@ -201,7 +205,7 @@ defmodule Engine.Integrations.Spark.Common do
   defp expand_module(_, _env), do: :error
 
   defp fetch_extensions(project) do
-    case ManagerApi.search_store_prefix(
+    case Store.prefix(
            project,
            Entry.integration_subject_prefix("spark", :extension),
            type: :metadata,

@@ -155,14 +155,14 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
   describe "integration indexers" do
     test "reports changes before indexer names are recorded", %{tmp_dir: tmp_dir} do
       project = project(tmp_dir)
-      names = ["Engine.Integrations.Spark.Indexer"]
+      names = ["Expert.Integrations.Spark.Indexer"]
 
       assert ManifestStore.integrations_changed?(project, manifest(tmp_dir), names)
     end
 
     test "reports no changes after current indexer names are recorded", %{tmp_dir: tmp_dir} do
       project = project(tmp_dir)
-      names = ["Engine.Integrations.Spark.Indexer"]
+      names = ["Expert.Integrations.Spark.Indexer"]
 
       :ok = ManifestStore.record_integrations(project, names)
 
@@ -181,7 +181,7 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
   describe "invalidate/1" do
     test "removes the committed manifest", %{tmp_dir: tmp_dir} do
       project = project(tmp_dir)
-      names = ["Engine.Integrations.Spark.Indexer"]
+      names = ["Expert.Integrations.Spark.Indexer"]
 
       :ok = ManifestStore.commit(project, manifest(tmp_dir))
       :ok = ManifestStore.record_integrations(project, names)

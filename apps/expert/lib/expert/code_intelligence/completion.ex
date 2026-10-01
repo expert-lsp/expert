@@ -4,6 +4,7 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Expert.CodeIntelligence.Hex
   alias Expert.Configuration
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Project.Intelligence
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
@@ -82,7 +83,7 @@ defmodule Expert.CodeIntelligence.Completion do
   end
 
   defp completions(%Project{} = project, %Env{} = env, %CompletionContext{} = context) do
-    case EngineApi.contextual_completion(project, env) do
+    case Integrations.complete(env) do
       {:override, candidates, incomplete?, _transforms} ->
         {translate_contextual_candidates(candidates, env), incomplete?}
 

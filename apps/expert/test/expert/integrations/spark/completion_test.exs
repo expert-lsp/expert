@@ -1,10 +1,13 @@
-defmodule Engine.Integrations.Spark.CompletionTest do
+defmodule Expert.Integrations.Spark.CompletionTest do
   use ExUnit.Case, async: false
   use Patch
 
   import Forge.Test.CursorSupport
   import Forge.Test.Fixtures
 
+  alias Expert.Integrations
+  alias Expert.Integrations.Spark.Callbacks
+  alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
@@ -14,16 +17,21 @@ defmodule Engine.Integrations.Spark.CompletionTest do
     project = project()
     entries = spark_entries()
 
-    patch(Engine.ManagerApi, :search_store_exact, fn ^project, subject, constraints ->
+    patch(Store, :exact, fn ^project, subject, constraints ->
       {:ok, query(entries, subject, constraints, :exact)}
     end)
 
-    patch(Engine.ManagerApi, :search_store_prefix, fn ^project, subject, constraints ->
+    patch(Store, :prefix, fn ^project, subject, constraints ->
       {:ok, query(entries, subject, constraints, :prefix)}
     end)
 
-    patch(Engine.ManagerApi, :search_store_all, fn _project, _constraints ->
+    patch(Store, :all, fn _project, _constraints ->
       flunk("Spark completion must not read the full index")
+    end)
+
+    patch(Callbacks, :aliases, fn ^project,
+                                  %{alias_module: Ash.Type, alias_function: :builtins} ->
+      %{"string" => "Elixir.Ash.Type.String"}
     end)
 
     {:ok, project: project}
@@ -205,7 +213,7 @@ defmodule Engine.Integrations.Spark.CompletionTest do
     {position, document} = pop_cursor(source, as: :document)
     analysis = Ast.analyze(document)
     {:ok, env} = Env.new(project, analysis, position)
-    Engine.contextual_completion(env)
+    Integrations.complete(env)
   end
 
   defp query(entries, subject, constraints, match_type) do
@@ -276,7 +284,9 @@ defmodule Engine.Integrations.Spark.CompletionTest do
                 option("type", %{
                   kind: :spark_type,
                   behaviour: "Elixir.Ash.Type",
-                  aliases: %{"string" => "Elixir.Ash.Type.String"}
+                  aliases: %{},
+                  alias_module: Ash.Type,
+                  alias_function: :builtins
                 }),
                 option("constraints", :keyword_list),
                 option("change", behaviour_type()),

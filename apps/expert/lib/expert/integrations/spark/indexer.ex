@@ -1,10 +1,10 @@
-defmodule Engine.Integrations.Spark.Indexer do
-  @behaviour Engine.Integrations
+defmodule Expert.Integrations.Spark.Indexer do
+  @behaviour Expert.Integrations
 
-  alias Engine.Modules
+  alias Expert.Integrations.Spark.Callbacks
+  alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
-  @callback_timeout 2_000
   @spark_extension Spark.Dsl.Extension
 
   def recognizes?(metadata) do
@@ -15,18 +15,18 @@ defmodule Engine.Integrations.Spark.Indexer do
       behaviours != [] or attribute_modules(attributes, :spark_is) != []
   end
 
-  @impl Engine.Integrations
-  def index(binary, metadata, source_path) do
+  @impl Expert.Integrations
+  def index(%Project{} = project, binary, metadata, source_path) do
     function_entries = function_option_entries(binary, metadata, source_path)
 
     if recognizes?(metadata) do
-      index_module(binary, metadata, source_path) ++ function_entries
+      index_module(project, binary, metadata, source_path) ++ function_entries
     else
       function_entries
     end
   end
 
-  defp index_module(binary, metadata, source_path) do
+  defp index_module(project, binary, metadata, source_path) do
     module = Map.fetch!(metadata, :module)
     attributes = Map.get(metadata, :attributes, [])
     dsl? = true in attribute_values(attributes, :spark_dsl)
@@ -36,32 +36,61 @@ defmodule Engine.Integrations.Spark.Indexer do
     constraints_callback? = exports?(binary, :constraints, 0)
 
     {skip?, dynamic_entries} =
-      dynamic_entries(attributes, binary, module, source_path, dsl?, extension?, skip_callback?)
+      dynamic_entries(
+        project,
+        attributes,
+        binary,
+        module,
+        source_path,
+        dsl?,
+        extension?,
+        skip_callback?
+      )
 
-    constraints = constraints(binary, module, constraints_callback?)
+    constraints = constraints(project, binary, module, constraints_callback?)
 
     relation_entries(source_path, module, attributes, skip?, constraints) ++ dynamic_entries
   end
 
-  defp dynamic_entries(_attributes, _binary, _module, _source_path, false, false, false),
-    do: {false, []}
+  defp dynamic_entries(
+         _project,
+         _attributes,
+         _binary,
+         _module,
+         _source_path,
+         false,
+         false,
+         false
+       ),
+       do: {false, []}
 
-  defp dynamic_entries(attributes, binary, module, source_path, dsl?, extension?, skip_callback?) do
-    run_with_timeout(
-      fn ->
-        loaded? = loaded_module_matches?(module, binary)
-        skip? = skip_callback? and skip_in_spark_autocomplete?(module, loaded?)
+  defp dynamic_entries(
+         project,
+         attributes,
+         binary,
+         module,
+         source_path,
+         dsl?,
+         extension?,
+         skip_callback?
+       ) do
+    callback = &Callbacks.fetch(project, binary, module, &1)
 
-        {skip?, index_entries(attributes, module, source_path, dsl?, extension?, loaded?)}
-      end,
-      {skip_callback?, []}
-    )
+    skip? =
+      skip_callback? and
+        case callback.(:skip_in_spark_autocomplete) do
+          {:ok, true} -> true
+          {:ok, _value} -> false
+          :error -> true
+        end
+
+    {skip?, index_entries(attributes, module, source_path, dsl?, extension?, callback)}
   end
 
-  defp index_entries(attributes, module, source_path, dsl?, extension?, loaded?) do
+  defp index_entries(attributes, module, source_path, dsl?, extension?, callback) do
     []
-    |> maybe_add(dsl?, fn -> dsl_entry(source_path, module, attributes, loaded?) end)
-    |> maybe_add(extension?, fn -> extension_entry(source_path, module, loaded?) end)
+    |> maybe_add(dsl?, fn -> dsl_entry(source_path, module, attributes, callback) end)
+    |> maybe_add(extension?, fn -> extension_entry(source_path, module, callback) end)
     |> Enum.reject(&is_nil/1)
   end
 
@@ -84,17 +113,13 @@ defmodule Engine.Integrations.Spark.Indexer do
     behaviour_entries ++ type_entries
   end
 
-  defp constraints(_binary, _module, false), do: []
+  defp constraints(_project, _binary, _module, false), do: []
 
-  defp constraints(binary, module, true) do
-    run_with_timeout(
-      fn ->
-        if loaded_module_matches?(module, binary),
-          do: normalize_schema(module.constraints()),
-          else: []
-      end,
-      []
-    )
+  defp constraints(project, binary, module, true) do
+    case Callbacks.fetch(project, binary, module, :constraints) do
+      {:ok, constraints} -> normalize_schema(constraints)
+      :error -> []
+    end
   end
 
   defp relation_entry(path, kind, target, module, payload) do
@@ -105,19 +130,20 @@ defmodule Engine.Integrations.Spark.Indexer do
     %Entry{entry | subject: Entry.integration_subject("spark", kind, "#{target}/#{module}")}
   end
 
-  defp dsl_entry(path, module, attributes, loaded?) do
+  defp dsl_entry(path, module, attributes, callback) do
     with {:ok, default_extension_kinds} <-
-           callback_result(module, :default_extension_kinds, loaded?),
+           callback_result(callback, :default_extension_kinds),
          {:ok, single_extension_kinds} <-
-           callback_result(module, :single_extension_kinds, loaded?),
-         {:ok, options} <- callback_result(module, :opt_schema, loaded?) do
+           callback_result(callback, :single_extension_kinds),
+         {:ok, options} <- callback_result(callback, :opt_schema),
+         true <- valid_extension_kinds?(default_extension_kinds),
+         true <- valid_names?(single_extension_kinds) do
       metadata = %{
         default_extensions:
-          module
+          callback
           |> callback_or_attribute(
             :default_extensions,
-            attribute_modules(attributes, :spark_default_extensions),
-            loaded?
+            attribute_modules(attributes, :spark_default_extensions)
           )
           |> normalize_modules(),
         default_extension_kinds: normalize_extension_kinds(default_extension_kinds),
@@ -136,10 +162,10 @@ defmodule Engine.Integrations.Spark.Indexer do
     end
   end
 
-  defp extension_entry(path, module, loaded?) do
-    with {:ok, added_extensions} <- callback_result(module, :add_extensions, loaded?),
-         {:ok, sections} <- callback_result(module, :sections, loaded?),
-         {:ok, patches} <- callback_result(module, :dsl_patches, loaded?) do
+  defp extension_entry(path, module, callback) do
+    with {:ok, added_extensions} <- callback_result(callback, :add_extensions),
+         {:ok, sections} <- callback_result(callback, :sections),
+         {:ok, patches} <- callback_result(callback, :dsl_patches) do
       metadata = %{
         added_extensions: normalize_modules(added_extensions),
         sections: normalize_sections(sections),
@@ -159,7 +185,7 @@ defmodule Engine.Integrations.Spark.Indexer do
   defp function_option_entries(binary, metadata, source_path) do
     module = Map.fetch!(metadata, :module)
 
-    case Modules.fetch_docs(binary) do
+    case fetch_docs(binary) do
       {:ok, {:docs_v1, _, _, _, _, _, entries}} ->
         for {{kind, name, arity}, _, _, _, metadata} <- entries,
             kind in [:function, :macro],
@@ -176,6 +202,13 @@ defmodule Engine.Integrations.Spark.Indexer do
     end
   end
 
+  defp fetch_docs(binary) do
+    case :beam_lib.chunks(binary, [~c"Docs"]) do
+      {:ok, {_module, [{~c"Docs", docs}]}} -> {:ok, :erlang.binary_to_term(docs)}
+      _ -> :error
+    end
+  end
+
   defp attribute_values(attributes, name) do
     attributes
     |> Keyword.get_values(name)
@@ -188,49 +221,14 @@ defmodule Engine.Integrations.Spark.Indexer do
     |> Enum.filter(&is_atom/1)
   end
 
-  defp loaded_module_matches?(module, binary) do
-    with {:ok, {^module, md5}} <- :beam_lib.md5(binary),
-         {:module, ^module} <- Code.ensure_loaded(module) do
-      module.module_info(:md5) == md5 or reload_matching_module?(module, binary, md5)
-    else
-      _ -> false
-    end
-  end
-
-  defp reload_matching_module?(module, binary, md5) do
-    with path when is_list(path) <- :code.which(module),
-         {:ok, ^binary} <- File.read(List.to_string(path)),
-         true <- :code.soft_purge(module),
-         {:module, ^module} <- :code.load_binary(module, path, binary) do
-      module.module_info(:md5) == md5
-    else
-      _ -> false
-    end
-  end
-
-  defp callback_or_attribute(module, function, fallback, loaded?) do
-    case callback(module, function, loaded?) do
+  defp callback_or_attribute(callback, function, fallback) do
+    case callback.(function) do
       :error -> fallback
-      value -> value
+      {:ok, value} -> value
     end
   end
 
-  defp callback_result(module, function, loaded?) do
-    case callback(module, function, loaded?) do
-      :error -> :error
-      value -> {:ok, value}
-    end
-  end
-
-  defp callback(_module, _function, false), do: :error
-
-  defp callback(module, function, true) do
-    if function_exported?(module, function, 0) do
-      apply(module, function, [])
-    else
-      :error
-    end
-  end
+  defp callback_result(callback, function), do: callback.(function)
 
   defp exports?(binary, name, arity) do
     case :beam_lib.chunks(binary, [:exports]) do
@@ -239,36 +237,26 @@ defmodule Engine.Integrations.Spark.Indexer do
     end
   end
 
-  defp skip_in_spark_autocomplete?(_module, false), do: true
-
-  defp skip_in_spark_autocomplete?(module, true) do
-    function_exported?(module, :skip_in_spark_autocomplete, 0) and
-      module.skip_in_spark_autocomplete() == true
-  end
-
-  defp run_with_timeout(fun, fallback) do
-    task =
-      Task.async(fn ->
-        try do
-          fun.()
-        rescue
-          _exception -> fallback
-        catch
-          _kind, _reason -> fallback
-        end
-      end)
-
-    case Task.yield(task, @callback_timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      _ -> fallback
-    end
-  end
-
   defp normalize_extension_kinds(value) when is_list(value) do
     Map.new(value, fn {kind, modules} -> {to_string(kind), normalize_modules(modules)} end)
   end
 
-  defp normalize_extension_kinds(_), do: %{}
+  defp valid_extension_kinds?(value) when is_list(value) do
+    Enum.all?(value, fn
+      {kind, _modules} -> is_atom(kind)
+      _ -> false
+    end)
+  end
+
+  defp valid_extension_kinds?(_value), do: false
+
+  defp valid_names?(value) when is_list(value) do
+    value
+    |> List.flatten()
+    |> Enum.all?(&is_atom/1)
+  end
+
+  defp valid_names?(_value), do: false
 
   defp normalize_names(:error), do: []
 
@@ -421,7 +409,9 @@ defmodule Engine.Integrations.Spark.Indexer do
     %{
       kind: :spark_type,
       behaviour: module_name(module),
-      aliases: spark_type_aliases(module, function)
+      aliases: %{},
+      alias_module: module,
+      alias_function: function
     }
   end
 
@@ -481,28 +471,6 @@ defmodule Engine.Integrations.Spark.Indexer do
     case normalize_schema(keys) do
       [] -> type
       options -> Map.put(type, :options, options)
-    end
-  end
-
-  defp spark_type_aliases(module, function) do
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         callback when not is_nil(callback) <- spark_type_callback(module, function),
-         aliases when is_list(aliases) <- apply(module, callback, []) do
-      for {name, implementation} <- aliases,
-          is_atom(name) and is_atom(implementation),
-          into: %{} do
-        {to_string(name), module_name(implementation)}
-      end
-    else
-      _ -> %{}
-    end
-  end
-
-  defp spark_type_callback(module, function) do
-    cond do
-      function_exported?(module, function, 0) -> function
-      function == :builtins and function_exported?(module, :short_names, 0) -> :short_names
-      true -> nil
     end
   end
 
