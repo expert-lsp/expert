@@ -91,7 +91,7 @@ defmodule Expert.Application do
           :ok = Expert.Logging.ProjectLogFile.attach()
           :ok = mute_default_log_handler()
           Logger.info("Expert v#{Expert.vsn()} starting on stdio")
-          []
+          [communication: {Expert.Stdio.Adapter, []}]
 
         is_integer(opts[:port]) ->
           :ok = Expert.Logging.ProjectLogFile.attach()

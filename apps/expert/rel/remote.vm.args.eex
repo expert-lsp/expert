@@ -11,3 +11,6 @@
 ## (requires changing both vm.args and remote.vm.args)
 -epmd_module Elixir.XPForge.EPMD
 -start_epmd false
+
+# Alternative user_drv
+-user Elixir.XPExpert.Stdio.User
