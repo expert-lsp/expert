@@ -1,5 +1,6 @@
 defmodule Expert.EngineApi do
   alias Expert.EngineNode
+  alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
   alias Forge.CodeIntelligence
@@ -26,6 +27,10 @@ defmodule Expert.EngineApi do
 
   def compile_document(%Project{} = project, %Document{} = document) do
     call(project, Engine, :compile_document, [document])
+  end
+
+  def analyze(%Project{} = project, %Document{} = document, opts \\ []) do
+    call(project, Ast, :analyze, [document, opts])
   end
 
   def expand_alias(

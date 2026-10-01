@@ -136,6 +136,41 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
       assert decorate(code, location.range) =~ "defp func(x), do: «map(x, & &1 + 1)»"
     end
 
+    test "are found when imported through use", %{project: project} do
+      code = ~q/
+        defmodule ReferencesUseImports.B do
+          def foo, do: :ok
+        end
+
+        defmodule ReferencesUseImports.A do
+          defmacro __using__(ast) do
+            quote do
+              import ReferencesUseImports.B
+              unquote(ast)
+            end
+          end
+        end
+
+        defmodule ReferencesUseImports do
+          use ReferencesUseImports.A
+
+          def call, do: foo()
+        end
+      /
+
+      modules = for {module, _bytecode} <- Code.compile_string(code), do: module
+
+      on_exit(fn ->
+        Enum.each(modules, fn module ->
+          :code.purge(module)
+          :code.delete(module)
+        end)
+      end)
+
+      assert [%Location{} = location] = references(project, "ReferencesUseImports.B.foo|()", code)
+      assert decorate(code, location.range) =~ "def call, do: «foo()»"
+    end
+
     test "are found in local functions", %{project: project} do
       code = ~q/
         defmodule Functions do
