@@ -3,11 +3,12 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   use Patch
 
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Forge.Completion.Candidate
   alias GenLSP.Structures.CompletionList
 
   test "contextual completions override ordinary completion", %{project: project} do
-    patch(EngineApi, :contextual_completion, {
+    patch(Integrations, :complete, {
       :override,
       [{snippet("context", "contextual"), []}],
       true,
@@ -21,7 +22,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "contextual completions augment ordinary completion", %{project: project} do
-    patch(EngineApi, :contextual_completion, {
+    patch(Integrations, :complete, {
       :augment,
       [{snippet("context", "contextual"), []}],
       true,
@@ -39,7 +40,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "candidate transforms apply before an override is translated", %{project: project} do
-    patch(EngineApi, :contextual_completion, {
+    patch(Integrations, :complete, {
       :override,
       [{snippet(":read", ":read"), [:wrap_list]}],
       true,
@@ -51,7 +52,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "indexed callable placeholders survive contextual translation", %{project: project} do
-    patch(EngineApi, :contextual_completion, {
+    patch(Integrations, :complete, {
       :override,
       [
         {%Candidate.Function{
@@ -73,7 +74,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "ignored contextual completion uses ordinary completion", %{project: project} do
-    patch(EngineApi, :contextual_completion, :ignore)
+    patch(Integrations, :complete, :ignore)
 
     patch(EngineApi, :complete, [
       %Candidate.Module{name: "OrdinaryModule", full_name: "OrdinaryModule", metadata: %{}}
@@ -83,7 +84,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "contextual results remain incomplete", %{project: project} do
-    patch(EngineApi, :contextual_completion, {
+    patch(Integrations, :complete, {
       :override,
       [{snippet("context", "contextual"), []}],
       true,

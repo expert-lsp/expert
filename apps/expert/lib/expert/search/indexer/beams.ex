@@ -1,7 +1,7 @@
 defmodule Expert.Search.Indexer.Beams do
   import Forge.Document.Line
 
-  alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
@@ -279,7 +279,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp integration_entries(_beam, _metadata, _source_path, nil), do: []
 
   defp integration_entries(beam, metadata, source_path, project) do
-    EngineApi.index_beam(project, beam, metadata, source_path)
+    Integrations.index_beam(project, beam, metadata, source_path)
   end
 
   defp stat_source(source_path) when is_binary(source_path) do

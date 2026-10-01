@@ -1,7 +1,7 @@
-defmodule Engine.Integrations.Spark.Values do
+defmodule Expert.Integrations.Spark.Values do
   @moduledoc false
 
-  alias Engine.ManagerApi
+  alias Expert.Search.Store
   alias Forge.Ast.Analysis
   alias Forge.Ast.Analysis.Alias
   alias Forge.Ast.Analysis.Scope
@@ -36,7 +36,7 @@ defmodule Engine.Integrations.Spark.Values do
   defp relation_entries(%Env{} = env, kind, target) do
     prefix = Entry.integration_subject_prefix("spark", kind, target)
 
-    case ManagerApi.search_store_prefix(env.project, prefix,
+    case Store.prefix(env.project, prefix,
            type: :metadata,
            subtype: :integration
          ) do
@@ -107,7 +107,7 @@ defmodule Engine.Integrations.Spark.Values do
     if String.contains?(hint, ".") or not lowercase?(hint) do
       []
     else
-      case ManagerApi.search_store_prefix(env.project, "#{module}.#{hint}", subtype: :definition) do
+      case Store.prefix(env.project, "#{module}.#{hint}", subtype: :definition) do
         {:ok, entries} ->
           entries
           |> Enum.flat_map(&callable(&1, module))

@@ -4,7 +4,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
   import Forge.Test.RangeSupport
 
-  alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Formats
@@ -150,7 +150,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert start_pos.context_line != nil
     end
 
-    test "indexes integration entries on the project node", %{tmp_dir: tmp_dir} do
+    test "indexes integration entries locally", %{tmp_dir: tmp_dir} do
       module = unique_module("Integration")
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
 
@@ -162,7 +162,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       integration_entry = Entry.integration(source_path, "test", :metadata, module, %{})
 
-      patch(EngineApi, :index_beam, fn ^project, binary, %{module: ^module}, ^source_path ->
+      patch(Integrations, :index_beam, fn ^project, binary, %{module: ^module}, ^source_path ->
         assert is_binary(binary)
         [integration_entry]
       end)

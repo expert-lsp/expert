@@ -4,6 +4,7 @@ defmodule Expert.Provider.Handlers.Hover do
   alias Expert.CodeIntelligence.Hex
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Provider.Markdown
   alias Expert.Search.Store
   alias Forge.Ast
@@ -44,7 +45,7 @@ defmodule Expert.Provider.Handlers.Hover do
 
   defp integration_hovers(project, analysis, position) do
     case Env.new(project, analysis, position) do
-      {:ok, env} -> EngineApi.contextual_hover(project, env)
+      {:ok, env} -> Integrations.hover(env)
       _ -> []
     end
   end

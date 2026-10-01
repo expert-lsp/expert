@@ -1,13 +1,13 @@
-defmodule Engine.Integrations.Spark.Completion do
-  @behaviour Engine.Integrations
+defmodule Expert.Integrations.Spark.Completion do
+  @behaviour Expert.Integrations
 
-  alias Engine.Integrations.Spark.Common
-  alias Engine.Integrations.Spark.Values
+  alias Expert.Integrations.Spark.Common
+  alias Expert.Integrations.Spark.Values
   alias Forge.Ast
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
 
-  @impl Engine.Integrations
+  @impl Expert.Integrations
   def complete(%Env{} = env) do
     if Env.in_context?(env, :comment) or Env.in_context?(env, :string) do
       :ignore
@@ -265,11 +265,11 @@ defmodule Engine.Integrations.Spark.Completion do
          value_ast,
          env
        ) do
-    with %{type: %{kind: :spark_type, behaviour: behaviour, aliases: aliases}} <-
+    with %{type: %{kind: :spark_type, behaviour: behaviour} = type} <-
            Enum.find(node.options, &(&1.name == "type")),
          index when is_integer(index) <- Enum.find_index(node.arguments, &(&1.name == "type")),
          type_ast when not is_nil(type_ast) <- Enum.at(arguments, index),
-         {:ok, module} <- Common.selected_type_module(type_ast, aliases, env),
+         {:ok, module} <- Common.selected_type_module(type_ast, type, env),
          {:ok, %{constraints: options}} <-
            Common.fetch(env.project, :behaviour, "#{behaviour}/#{module}") do
       schema_value_items(options, value_ast, env)

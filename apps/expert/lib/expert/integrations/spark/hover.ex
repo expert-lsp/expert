@@ -1,13 +1,13 @@
-defmodule Engine.Integrations.Spark.Hover do
-  @behaviour Engine.Integrations
+defmodule Expert.Integrations.Spark.Hover do
+  @behaviour Expert.Integrations
 
-  alias Engine.CodeIntelligence.Entity
-  alias Engine.Integrations.Spark.Common
+  alias Expert.Integrations.Spark.Common
   alias Forge.Ast
   alias Forge.Ast.Env
   alias Forge.Document.Position
+  alias Forge.Document.Range
 
-  @impl Engine.Integrations
+  @impl Expert.Integrations
   def hover(%Env{} = env) do
     with false <- Env.in_context?(env, :comment) or Env.in_context?(env, :string),
          {:ok, %{begin: begin_pos, context: context, end: end_pos}} <-
@@ -16,10 +16,17 @@ defmodule Engine.Integrations.Spark.Hover do
          env = move_to_token_end(env, end_pos),
          cursor_path = Ast.cursor_path(env.analysis, env.position),
          {:ok, documentation} <- documentation(cursor_path, name, env) do
-      [{documentation, Entity.to_range(env.document, begin_pos, end_pos)}]
+      [{documentation, to_range(env, begin_pos, end_pos)}]
     else
       _ -> []
     end
+  end
+
+  defp to_range(env, {begin_line, begin_column}, {end_line, end_column}) do
+    Range.new(
+      Position.new(env.document, begin_line, begin_column),
+      Position.new(env.document, end_line, end_column)
+    )
   end
 
   defp documentation(cursor_path, name, env) do
@@ -86,7 +93,7 @@ defmodule Engine.Integrations.Spark.Hover do
        ) do
     case Common.find_node(sections, names) do
       {:ok, %{name: ^call_name} = node} ->
-        with %{type: %{kind: :spark_type, behaviour: behaviour, aliases: aliases}} <-
+        with %{type: %{kind: :spark_type, behaviour: behaviour} = type} <-
                Enum.find(node.options, &(&1.name == "type")),
              index when is_integer(index) <-
                Enum.find_index(node.arguments, &(&1.name == "type")),
@@ -94,7 +101,7 @@ defmodule Engine.Integrations.Spark.Hover do
              argument_ast when not is_nil(argument_ast) <-
                Enum.find(arguments, &Ast.contains_cursor?/1),
              {:ok, keyword_path} <- Ast.keyword_path_at_cursor(argument_ast),
-             {:ok, module} <- Common.selected_type_module(type_ast, aliases, env),
+             {:ok, module} <- Common.selected_type_module(type_ast, type, env),
              {:ok, %{constraints: options}} <-
                Common.fetch(env.project, :behaviour, "#{behaviour}/#{module}") do
           find_documentation(options, Enum.drop(keyword_path, 1), name)

@@ -2,6 +2,7 @@ defmodule Expert.Project.Supervisor do
   use Supervisor
 
   alias Expert.EngineSupervisor
+  alias Expert.Integrations.Cache
   alias Expert.Project.Diagnostics
   alias Expert.Project.Indexer
   alias Expert.Project.Intelligence
@@ -26,6 +27,7 @@ defmodule Expert.Project.Supervisor do
       {Search.Store.backend(), project},
       {Search.Store, [project]},
       {ModuleRegistry, project},
+      {Cache, project},
       {Diagnostics, project},
       {Intelligence, project},
       {SearchListener, project},

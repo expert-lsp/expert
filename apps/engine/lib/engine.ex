@@ -38,11 +38,6 @@ defmodule Engine do
 
   defdelegate complete(env), to: Engine.Completion, as: :elixir_sense_expand
 
-  defdelegate contextual_completion(env), to: Engine.Integrations, as: :complete
-  defdelegate index_beam(binary, metadata, source_path), to: Engine.Integrations
-
-  defdelegate contextual_hover(env), to: Engine.Integrations, as: :hover
-
   defdelegate complete_struct_fields(analysis, position),
     to: Engine.Completion,
     as: :struct_fields
