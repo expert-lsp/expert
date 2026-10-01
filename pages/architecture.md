@@ -28,6 +28,14 @@ Expert is structured as a [poncho-style project](https://embedded-elixir.com/pos
 
 By separating Expert into applications, the release and engine builder can place only the required code in each VM. The engine runtime dependency set is intentionally smaller than the manager's because engine code runs beside the project and must be namespaced and filtered out of analysis. Keeping engine dependencies to the minimum needed for project-side work is a design goal of this architecture.
 
+### Integrations
+
+We have some first-party support for libraries or other special functionality under `Expert.Integrations`.
+Integrations are designed such that Expert can define some integration point, and call any enabled integration for that feature to enhance its behavior.
+
+For example, an integration can be enabled for indexing, receive the .beam metadata that is being indexed, and produce additional index entries.
+Or enabled for completions, and Expert will combine the extra completions the integration provides with the ones produced by base expert.
+
 ## LSP Implementation
 
 Expert uses [GenLSP](https://github.com/elixir-tools/gen_lsp) for the core LSP implementation. GenLSP provides transport implementations, protocol structs, and other utilities for implementing a language server. Expert's LSP-specific behavior lives in the `expert` application, primarily in the [`Expert`](https://github.com/expert-lsp/expert/blob/main/apps/expert/lib/expert.ex) and `Expert.State` modules.

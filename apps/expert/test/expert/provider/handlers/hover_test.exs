@@ -8,6 +8,7 @@ defmodule Expert.Provider.Handlers.HoverTest do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
   alias Expert.Search
@@ -56,7 +57,7 @@ defmodule Expert.Provider.Handlers.HoverTest do
   end
 
   test "combines integration and generic hover documentation", %{project: project} do
-    patch(EngineApi, :contextual_hover, fn _project, env ->
+    patch(Integrations, :hover, fn env ->
       [{"Integration documentation", hover_range(env.document, 1, 2, 1, 6)}]
     end)
 
@@ -76,7 +77,7 @@ defmodule Expert.Provider.Handlers.HoverTest do
   end
 
   test "deduplicates identical integration and generic hover documentation", %{project: project} do
-    patch(EngineApi, :contextual_hover, fn _project, env ->
+    patch(Integrations, :hover, fn env ->
       [{"Same documentation", hover_range(env.document, 1, 1, 1, 7)}]
     end)
 

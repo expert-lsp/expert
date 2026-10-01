@@ -1,10 +1,12 @@
-defmodule Engine.Integrations.Spark.HoverTest do
+defmodule Expert.Integrations.Spark.HoverTest do
   use ExUnit.Case, async: false
   use Patch
 
   import Forge.Test.CursorSupport
   import Forge.Test.Fixtures
 
+  alias Expert.Integrations
+  alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Env
   alias Forge.Search.Indexer.Entry
@@ -13,15 +15,15 @@ defmodule Engine.Integrations.Spark.HoverTest do
     project = project()
     entries = spark_entries()
 
-    patch(Engine.ManagerApi, :search_store_exact, fn ^project, subject, constraints ->
+    patch(Store, :exact, fn ^project, subject, constraints ->
       {:ok, query(entries, subject, constraints, :exact)}
     end)
 
-    patch(Engine.ManagerApi, :search_store_prefix, fn ^project, subject, constraints ->
+    patch(Store, :prefix, fn ^project, subject, constraints ->
       {:ok, query(entries, subject, constraints, :prefix)}
     end)
 
-    patch(Engine.ManagerApi, :search_store_all, fn _project, _constraints ->
+    patch(Store, :all, fn _project, _constraints ->
       flunk("Spark hover must not read the full index")
     end)
 
@@ -55,11 +57,11 @@ defmodule Engine.Integrations.Spark.HoverTest do
   test "skips integration queries for ordinary calls inside a Spark module", %{
     project: project
   } do
-    patch(Engine.ManagerApi, :search_store_exact, fn _project, _subject, _constraints ->
+    patch(Store, :exact, fn _project, _subject, _constraints ->
       flunk("ordinary hover must not query Spark metadata")
     end)
 
-    patch(Engine.ManagerApi, :search_store_prefix, fn _project, _prefix, _constraints ->
+    patch(Store, :prefix, fn _project, _prefix, _constraints ->
       flunk("ordinary hover must not scan Spark extensions")
     end)
 
@@ -78,7 +80,7 @@ defmodule Engine.Integrations.Spark.HoverTest do
     {position, document} = pop_cursor(source, as: :document)
     analysis = Ast.analyze(document)
     {:ok, env} = Env.new(project, analysis, position)
-    Engine.contextual_hover(env)
+    Integrations.hover(env)
   end
 
   defp query(entries, subject, constraints, match_type) do

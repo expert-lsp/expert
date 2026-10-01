@@ -1,7 +1,11 @@
-defmodule Engine.Integrations.Spark.IndexerTest do
+defmodule Expert.Integrations.Spark.IndexerTest do
   use ExUnit.Case, async: false
+  use Patch
 
-  alias Engine.Integrations
+  import Forge.Test.Fixtures
+
+  alias Expert.Integrations
+  alias Expert.Integrations.Spark.Callbacks
   alias Forge.Search.Indexer.Entry
 
   setup_all do
@@ -25,8 +29,6 @@ defmodule Engine.Integrations.Spark.IndexerTest do
 
   @tag :tmp_dir
   test "indexes DSL sections, entities, options, values, and documentation", %{tmp_dir: tmp_dir} do
-    start_supervised!(Engine.ApplicationCache)
-
     compiler_options = Code.compiler_options()
     Code.compiler_options(debug_info: true)
     on_exit(fn -> Code.compiler_options(compiler_options) end)
@@ -106,7 +108,9 @@ defmodule Engine.Integrations.Spark.IndexerTest do
     assert entity.options |> Enum.find(&(&1.name == "type")) |> Map.fetch!(:type) == %{
              kind: :spark_type,
              behaviour: Atom.to_string(dsl),
-             aliases: %{"string" => Atom.to_string(extension)}
+             aliases: %{},
+             alias_module: dsl,
+             alias_function: :builtins
            }
 
     assert %{
@@ -141,87 +145,6 @@ defmodule Engine.Integrations.Spark.IndexerTest do
              dsl_metadata.options
   end
 
-  test "does not replace a module already loaded by the engine" do
-    module = Module.concat(__MODULE__, "Loaded#{System.unique_integer([:positive])}")
-    compiler_options = Code.compiler_options()
-    Code.compiler_options(ignore_module_conflict: true)
-
-    on_exit(fn ->
-      Code.compiler_options(compiler_options)
-      :code.purge(module)
-      :code.delete(module)
-    end)
-
-    [{^module, original_binary}] =
-      Code.compile_string("""
-      defmodule #{inspect(module)} do
-        Module.register_attribute(__MODULE__, :spark_dsl, persist: true)
-        @spark_dsl true
-
-        def default_extensions, do: []
-        def default_extension_kinds, do: []
-        def single_extension_kinds, do: []
-        def opt_schema, do: [source: [type: {:literal, :loaded}]]
-        def marker, do: :original
-      end
-      """)
-
-    [{^module, spark_binary}] =
-      Code.compile_string("""
-      defmodule #{inspect(module)} do
-        Module.register_attribute(__MODULE__, :spark_dsl, persist: true)
-        @spark_dsl true
-
-        def default_extensions, do: []
-        def default_extension_kinds, do: []
-        def single_extension_kinds, do: []
-        def opt_schema, do: [source: [type: {:literal, :indexed}]]
-      end
-      """)
-
-    :code.purge(module)
-    :code.delete(module)
-    assert {:module, ^module} = :code.load_binary(module, ~c"original", original_binary)
-
-    assert [] = index(spark_binary, module, "loaded.ex")
-    assert module.marker() == :original
-  end
-
-  @tag :tmp_dir
-  test "reloads updated metadata from the same dependency BEAM", %{tmp_dir: tmp_dir} do
-    module = Module.concat(__MODULE__, "Updated#{System.unique_integer([:positive])}")
-    beam_path = Path.join(tmp_dir, Atom.to_string(module) <> ".beam")
-    code_path = String.to_charlist(tmp_dir)
-    compiler_options = Code.compiler_options()
-    Code.compiler_options(ignore_module_conflict: true)
-
-    on_exit(fn ->
-      Code.compiler_options(compiler_options)
-      :code.purge(module)
-      :code.delete(module)
-      :code.del_path(code_path)
-    end)
-
-    [{^module, original_binary}] =
-      Code.compile_string(dsl_source(module, :original))
-
-    [{^module, updated_binary}] =
-      Code.compile_string(dsl_source(module, :updated))
-
-    File.write!(beam_path, original_binary)
-    true = :code.add_patha(code_path)
-    :code.purge(module)
-    :code.delete(module)
-    assert {:module, ^module} = Code.ensure_loaded(module)
-
-    File.write!(beam_path, updated_binary)
-
-    assert %{options: [%{type: %{values: [%{label: ":updated"}]}}]} =
-             updated_binary
-             |> index(module, "updated.ex")
-             |> metadata(Entry.integration_subject("spark", :dsl, module))
-  end
-
   test "rejects malformed callback metadata without crashing" do
     module = Module.concat(__MODULE__, "Malformed#{System.unique_integer([:positive])}")
 
@@ -244,6 +167,30 @@ defmodule Engine.Integrations.Spark.IndexerTest do
       """)
 
     assert [] = index(binary, module, "malformed.ex")
+  end
+
+  test "rejects malformed single extension kinds without crashing" do
+    module = Module.concat(__MODULE__, "MalformedSingle#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    [{^module, binary}] =
+      Code.compile_string("""
+      defmodule #{inspect(module)} do
+        Module.register_attribute(__MODULE__, :spark_dsl, persist: true)
+        @spark_dsl true
+
+        def default_extensions, do: []
+        def default_extension_kinds, do: []
+        def single_extension_kinds, do: %{}
+        def opt_schema, do: []
+      end
+      """)
+
+    assert [] = index(binary, module, "malformed_single.ex")
   end
 
   @tag :tmp_dir
@@ -309,67 +256,6 @@ defmodule Engine.Integrations.Spark.IndexerTest do
              binary
              |> index(module, "malformed_sections.ex")
              |> metadata(Entry.integration_subject("spark", :extension, module))
-  end
-
-  test "times out callbacks without exiting the caller" do
-    module = Module.concat(__MODULE__, "SlowCallback#{System.unique_integer([:positive])}")
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-    end)
-
-    [{^module, binary}] =
-      Code.compile_string("""
-      defmodule #{inspect(module)} do
-        Module.register_attribute(__MODULE__, :spark_dsl, persist: true)
-        @spark_dsl true
-
-        def default_extensions, do: []
-        def default_extension_kinds, do: []
-        def single_extension_kinds, do: []
-        def opt_schema, do: Process.sleep(:infinity)
-      end
-      """)
-
-    assert [] = index(binary, module, "slow_callback.ex")
-  end
-
-  test "stops callback work when the indexing caller exits" do
-    suffix = System.unique_integer([:positive])
-    module = Module.concat(__MODULE__, "OwnedCallback#{suffix}")
-    receiver = String.to_atom("spark_indexer_test_#{suffix}")
-    Process.register(self(), receiver)
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-    end)
-
-    [{^module, binary}] =
-      Code.compile_string("""
-      defmodule #{inspect(module)} do
-        Module.register_attribute(__MODULE__, :spark_dsl, persist: true)
-        @spark_dsl true
-
-        def default_extensions, do: []
-        def default_extension_kinds, do: []
-        def single_extension_kinds, do: []
-
-        def opt_schema do
-          send(Process.whereis(#{inspect(receiver)}), {:callback, self()})
-          Process.sleep(:infinity)
-        end
-      end
-      """)
-
-    caller = spawn(fn -> index(binary, module, "owned_callback.ex") end)
-    assert_receive {:callback, callback}
-    monitor = Process.monitor(callback)
-
-    Process.exit(caller, :kill)
-
-    assert_receive {:DOWN, ^monitor, :process, ^callback, _reason}
   end
 
   test "indexes behaviour and Spark type relations with the skip decision" do
@@ -475,21 +361,23 @@ defmodule Engine.Integrations.Spark.IndexerTest do
 
   defp index(binary, module, source_path) do
     {:ok, {^module, [attributes: attributes]}} = :beam_lib.chunks(binary, [:attributes])
-    Integrations.index_beam(binary, %{module: module, attributes: attributes}, source_path)
-  end
+    project = project()
 
-  defp dsl_source(module, value) do
-    """
-    defmodule #{inspect(module)} do
-      Module.register_attribute(__MODULE__, :spark_dsl, persist: true)
-      @spark_dsl true
+    patch(Callbacks, :fetch, fn _project, _beam, callback_module, function ->
+      with {:module, ^callback_module} <- Code.ensure_loaded(callback_module),
+           true <- function_exported?(callback_module, function, 0) do
+        {:ok, apply(callback_module, function, [])}
+      else
+        _ -> :error
+      end
+    end)
 
-      def default_extensions, do: []
-      def default_extension_kinds, do: []
-      def single_extension_kinds, do: []
-      def opt_schema, do: [source: [type: {:literal, #{inspect(value)}}]]
-    end
-    """
+    Integrations.index_beam(
+      project,
+      binary,
+      %{module: module, attributes: attributes},
+      source_path
+    )
   end
 
   defp metadata(entries, subject) do
