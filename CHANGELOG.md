@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.11](https://github.com/expert-lsp/expert/compare/v0.1.10...v0.1.11) (2026-10-01)
+
+
+### Bug Fixes
+
+* build engine with prod dependencies ([#911](https://github.com/expert-lsp/expert/issues/911)) ([2243216](https://github.com/expert-lsp/expert/commit/2243216c6e8c6badef276917b1d115b256d84fbd))
+* stop calls to IO and other writes to stdout from crashing Expert ([#918](https://github.com/expert-lsp/expert/issues/918)) ([464e72c](https://github.com/expert-lsp/expert/commit/464e72c21d20ba815a3397f252c58ea8772af7d7))
+
 ## [0.1.10](https://github.com/expert-lsp/expert/compare/v0.1.9...v0.1.10) (2026-09-08)
 
 
