@@ -1,6 +1,8 @@
 defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunction do
   @behaviour Engine.CodeAction.Handler
 
+  alias ElixirSense.Core.Metadata
+  alias ElixirSense.Core.Parser
   alias Engine.CodeAction
   alias Engine.Modules
   alias Forge.Ast
@@ -39,7 +41,7 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunction do
     suggestions
     |> Enum.reduce([], fn suggestion, acc ->
       case apply_transform(doc, line_number, module, function, suggestion) do
-        {:ok, edits} ->
+        {:ok, [_ | _] = edits} ->
           changes = Changes.new(doc, edits)
 
           code_action =
@@ -51,6 +53,9 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunction do
             )
 
           [code_action | acc]
+
+        {:ok, []} ->
+          acc
 
         :error ->
           acc
@@ -70,7 +75,16 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunction do
     |> Ast.traverse_line(line_number, [], fn
       %Zipper{node: {{:., _, [{:__aliases__, _, module_alias}, ^function_atom]}, _, _}} = zipper,
       patches ->
-        case Engine.Analyzer.expand_alias(module_alias, analysis, position) do
+        if Engine.Analyzer.expand_alias(module_alias, analysis, position) == {:ok, module} or
+             alias_matches?(doc, module_alias, module, line_number) do
+          patch = Sourceror.Patch.rename_call(zipper.node, suggestion)
+          {zipper, [patch | patches]}
+        else
+          {zipper, patches}
+        end
+
+      %Zipper{node: {{:., _, [{:__MODULE__, _, _}, ^function_atom]}, _, _}} = zipper, patches ->
+        case Engine.Analyzer.current_module(analysis, position) do
           {:ok, ^module} ->
             patch = Sourceror.Patch.rename_call(zipper.node, suggestion)
             {zipper, [patch | patches]}
@@ -104,7 +118,7 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunction do
     end
   end
 
-  @function_re ~r/(warning: |function )?([^\/]+)\/(.*) is undefined or private. Did you mean:.*/
+  @function_re ~r/(warning: |function )?([^\/]+)\/(\d+) is undefined or private. Did you mean:.*/
   defp extract_function(message) do
     result =
       with [[_, _, module_and_function, arity]] <- Regex.scan(@function_re, message),
@@ -135,6 +149,16 @@ defmodule Engine.CodeAction.Handlers.ReplaceRemoteFunction do
   defp alias_to_module(module_alias) do
     Module.concat(module_alias)
   end
+
+  defp alias_matches?(document, [alias] = module_alias, module, line) when is_atom(alias) do
+    position = {line, 1}
+    metadata = Parser.parse_string(Document.to_string(document), true, false, position)
+    env = Metadata.get_cursor_env(metadata, position)
+
+    {Module.concat(module_alias), module} in env.aliases
+  end
+
+  defp alias_matches?(_document, _module_alias, _module, _line), do: false
 
   @function_threshold 0.77
   @max_suggestions 5
