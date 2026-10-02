@@ -24,8 +24,8 @@ defmodule Expert.Integrations.Spark.Completion do
         :error ->
           with {:ok, module, name, arity, argument_index, argument} <-
                  Common.function_context(cursor_path, env),
-               key = "#{Forge.Formats.mfa(module, name, arity)}/#{argument_index}",
-               {:ok, options} <- Common.fetch(env.project, :function, key) do
+               {:ok, options} <-
+                 Common.fetch(env.project, :function, {module, name, arity, argument_index}) do
             completion_result(schema_items(options, argument, env), :override)
           else
             _ -> complete_dsl(env.project, env, cursor_path)
@@ -219,7 +219,7 @@ defmodule Expert.Integrations.Spark.Completion do
        label: entity.name,
        snippet: snippet,
        detail: "DSL Entity",
-       documentation: entity.documentation,
+       documentation: Map.get(entity, :documentation, ""),
        priority: :contextual,
        kind: :function
      }, []}
@@ -232,7 +232,7 @@ defmodule Expert.Integrations.Spark.Completion do
        label: section.name,
        snippet: snippet,
        detail: "DSL Section",
-       documentation: section.documentation,
+       documentation: Map.get(section, :documentation, ""),
        priority: :contextual,
        kind: :function
      }, []}
@@ -425,7 +425,7 @@ defmodule Expert.Integrations.Spark.Completion do
        label: option.name,
        snippet: option.name <> separator <> value,
        detail: "Option",
-       documentation: option.documentation,
+       documentation: Map.get(option, :documentation, ""),
        priority: :contextual,
        kind: :field
      }, []}

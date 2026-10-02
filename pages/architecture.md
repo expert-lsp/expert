@@ -57,7 +57,7 @@ Expert combines several sources of code-intelligence data:
 - Compiled BEAM metadata provides docs, specs, callbacks, and type information for loaded modules.
 - The search index provides persistent, project-wide lookup for modules, functions, structs, variables, and references.
 
-The indexer analyzes Elixir source files and stores entries in `Engine.Search.Store`. At a high level, indexing works as follows:
+The indexer analyzes Elixir source files and stores entries in `Expert.Search.Store`. At a high level, indexing works as follows:
 
 1. Each source file is wrapped in a `Forge.Document` struct.
 2. `Forge.Ast.analyze/1` derives a `Forge.Ast.Analysis` from the document.
@@ -66,11 +66,11 @@ The indexer analyzes Elixir source files and stores entries in `Engine.Search.St
 
 On the first run, the indexer scans every `.ex` and `.exs` file outside the project's build directory. After that, it refreshes changed files and removes deleted files from the index. Dependency files are indexed for definitions only.
 
-The results of the indexer can be queried through `Engine.Search.Store`.
+The results of the indexer can be queried through `Expert.Search.Store`.
 
 ### The `Entry` Struct
 
-Entries have a `type`, which describes what kind of information they represent, and a `subtype`, which is either a definition or a reference.
+Entries have a `type`, which describes their information, and a `subtype`. Subtypes identify definitions, references, integration metadata, or block structure metadata.
 
 For example, in this code:
 

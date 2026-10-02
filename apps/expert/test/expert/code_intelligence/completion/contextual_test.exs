@@ -15,7 +15,9 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
       []
     })
 
-    patch(EngineApi, :complete, fn _project, _env -> flunk("ordinary completion ran") end)
+    patch(EngineApi, :complete, [
+      %Candidate.Module{name: "OrdinaryModule", full_name: "OrdinaryModule", metadata: %{}}
+    ])
 
     assert [%{label: "context"} = item] = complete(project, "con|")
     assert apply_completion(item) == "contextual"

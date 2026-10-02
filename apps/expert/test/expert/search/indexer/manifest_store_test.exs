@@ -199,7 +199,7 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
       :ok = ManifestStore.invalidate(project)
 
       assert ManifestStore.load(project) == :missing
-      assert ManifestStore.integrations_changed?(project, manifest(tmp_dir), names)
+      assert ManifestStore.integrations_changed?(project, names)
     end
 
     test "returns an error when the manifest cannot be removed", %{tmp_dir: tmp_dir} do

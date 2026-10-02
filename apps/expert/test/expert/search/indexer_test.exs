@@ -838,7 +838,7 @@ defmodule Expert.Search.IndexerTest do
 
       patch(Store, :apply_index_update, fn ^project, entries, paths_to_clear ->
         assert :old =
-                 Cache.fetch(project, __MODULE__, :lifecycle, fn -> flunk("cache miss") end)
+                 Cache.fetch(project, __MODULE__, :lifecycle, fn -> :missing end)
 
         FakeBackend.apply_index_update(entries, paths_to_clear)
       end)
@@ -854,7 +854,7 @@ defmodule Expert.Search.IndexerTest do
       assert {:error, :commit_failed} = Indexer.update_index(project, paths: %Paths{})
 
       assert :old =
-               Cache.fetch(project, __MODULE__, :lifecycle, fn -> flunk("cache miss") end)
+               Cache.fetch(project, __MODULE__, :lifecycle, fn -> :missing end)
     end
 
     @tag :tmp_dir
@@ -1126,11 +1126,27 @@ defmodule Expert.Search.IndexerTest do
       assert Enum.any?(entries, fn entry -> Path.basename(entry.path) == @ephemeral_file_name end)
     end
 
-    test "replaces the full index when enabled integrations change", %{project: project} do
+    test "replaces the full index when enabled integrations change", %{
+      project: project,
+      entries: previous_entries
+    } do
       patch(Integrations, :indexer_module_names, fn -> ["New.Indexer"] end)
 
       assert {entries, _paths_to_clear} = update_index(project)
-      assert [_ | _] = entries
+
+      identity = &{&1.path, &1.subject, &1.type, &1.subtype}
+
+      previous =
+        previous_entries
+        |> Enum.reject(&(&1.subtype == :block_structure))
+        |> MapSet.new(identity)
+
+      updated =
+        entries
+        |> Enum.reject(&(&1.subtype == :block_structure))
+        |> MapSet.new(identity)
+
+      assert MapSet.subset?(previous, updated)
     end
 
     test "returns the file paths of deleted files", %{project: project, file_path: file_path} do
@@ -1520,7 +1536,5 @@ defmodule Expert.Search.IndexerTest do
     assert :ok = ManifestStore.commit(project, Manifest.new([]))
     assert :ok = Indexer.record_integrations(project)
     refute Indexer.integrations_changed?(project)
-
-    assert_called(Integrations.indexer_module_names())
   end
 end

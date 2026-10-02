@@ -28,7 +28,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
   end
 
   @tag :tmp_dir
-  test "indexes DSL sections, entities, options, values, and documentation", %{tmp_dir: tmp_dir} do
+  test "indexes DSL structure and values without documentation", %{tmp_dir: tmp_dir} do
     compiler_options = Code.compiler_options()
     Code.compiler_options(debug_info: true)
     on_exit(fn -> Code.compiler_options(compiler_options) end)
@@ -58,7 +58,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
                     type: [type: {:spark_type, #{inspect(dsl)}, :builtins, []}],
                     constraints: [
                       type: :keyword_list,
-                      keys: [max_length: [type: :non_neg_integer]]
+                      keys: [max_length: [type: :non_neg_integer, doc: "Maximum length"]]
                     ],
                     private?: [type: :boolean, default: false],
                     mode: [type: {:one_of, [:read, :write]}]
@@ -70,7 +70,12 @@ defmodule Expert.Integrations.Spark.IndexerTest do
         end
 
         def dsl_patches do
-          [%{section_path: [:attributes], entity: %{name: :calculation, args: [], schema: []}}]
+          [
+            %{
+              section_path: [:attributes],
+              entity: %{name: :calculation, docs: "A calculation", args: [], schema: []}
+            }
+          ]
         end
       end
       """)
@@ -98,11 +103,10 @@ defmodule Expert.Integrations.Spark.IndexerTest do
       |> index(extension, Path.join(tmp_dir, "extension.ex"))
       |> metadata(Entry.integration_subject("spark", :extension, extension))
 
-    assert [%{name: "attributes", documentation: "Attribute definitions", entities: [entity]}] =
+    assert [%{name: "attributes", entities: [entity]}] =
              extension_metadata.sections
 
     assert entity.name == "attribute"
-    assert entity.documentation == "Declares an attribute"
     assert Enum.map(entity.arguments, & &1.name) == ["name", "type"]
 
     assert entity.options |> Enum.find(&(&1.name == "type")) |> Map.fetch!(:type) == %{
@@ -141,8 +145,11 @@ defmodule Expert.Integrations.Spark.IndexerTest do
     assert dsl_metadata.default_extensions == [Atom.to_string(extension)]
     assert dsl_metadata.extension_kinds == ["extensions"]
 
-    assert [%{name: "otp_app", documentation: "OTP application", type: %{kind: :atom}}] =
+    assert [%{name: "otp_app", type: %{kind: :atom}}] =
              dsl_metadata.options
+
+    refute_documentation(extension_metadata)
+    refute_documentation(dsl_metadata)
   end
 
   test "rejects malformed callback metadata without crashing" do
@@ -194,7 +201,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
   end
 
   @tag :tmp_dir
-  test "loads matching dependency modules to index their documentation", %{tmp_dir: tmp_dir} do
+  test "loads matching dependency modules to index their schemas", %{tmp_dir: tmp_dir} do
     module = Module.concat(__MODULE__, "Unloaded#{System.unique_integer([:positive])}")
     beam_path = Path.join(tmp_dir, Atom.to_string(module) <> ".beam")
     code_path = String.to_charlist(tmp_dir)
@@ -223,12 +230,15 @@ defmodule Expert.Integrations.Spark.IndexerTest do
     :code.purge(module)
     :code.delete(module)
 
-    assert false == :code.is_loaded(module)
+    refute :code.is_loaded(module)
 
-    assert %{options: [%{name: "source", documentation: "Source documentation"}]} =
-             binary
-             |> index(module, "unloaded.ex")
-             |> metadata(Entry.integration_subject("spark", :dsl, module))
+    metadata =
+      binary
+      |> index(module, "unloaded.ex")
+      |> metadata(Entry.integration_subject("spark", :dsl, module))
+
+    assert %{options: [%{name: "source"}]} = metadata
+    refute_documentation(metadata)
 
     assert {:file, _path} = :code.is_loaded(module)
   end
@@ -285,7 +295,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
         Module.register_attribute(__MODULE__, :spark_is, persist: true)
         @spark_is #{inspect(type)}
         def run, do: :ok
-        def constraints, do: [max_length: [type: :non_neg_integer]]
+        def constraints, do: [max_length: [type: :non_neg_integer, doc: "Maximum length"]]
         def skip_in_spark_autocomplete, do: false
       end
 
@@ -322,14 +332,60 @@ defmodule Expert.Integrations.Spark.IndexerTest do
         "#{Atom.to_string(type)}/#{Atom.to_string(included)}"
       )
 
+    included_metadata = metadata(included_entries, included_relation)
+
     assert %{module: module, skip?: false, constraints: [%{name: "max_length"}]} =
-             metadata(included_entries, included_relation)
+             included_metadata
 
     assert module == Atom.to_string(included)
+    refute_documentation(included_metadata)
     assert %{module: module, skip?: true} = metadata(skipped_entries, skipped_relation)
     assert module == Atom.to_string(skipped)
     assert %{module: module} = metadata(included_entries, type_relation)
     assert module == Atom.to_string(included)
+  end
+
+  test "does not call constraints for ordinary behaviour implementations" do
+    suffix = System.unique_integer([:positive])
+    behaviour = Module.concat(__MODULE__, "OrdinaryBehaviour#{suffix}")
+    implementation = Module.concat(__MODULE__, "OrdinaryImplementation#{suffix}")
+
+    on_exit(fn ->
+      for module <- [behaviour, implementation] do
+        :code.purge(module)
+        :code.delete(module)
+      end
+    end)
+
+    binaries =
+      """
+      defmodule #{inspect(behaviour)} do
+        @callback run() :: term()
+      end
+
+      defmodule #{inspect(implementation)} do
+        @behaviour #{inspect(behaviour)}
+        def run, do: :ok
+        def constraints, do: raise("must not run")
+      end
+      """
+      |> Code.compile_string()
+      |> Map.new()
+
+    subject =
+      Entry.integration_subject(
+        "spark",
+        :behaviour,
+        "#{Atom.to_string(behaviour)}/#{Atom.to_string(implementation)}"
+      )
+
+    assert %{module: module, skip?: false} =
+             binaries
+             |> Map.fetch!(implementation)
+             |> index(implementation, "ordinary.ex")
+             |> metadata(subject)
+
+    assert module == Atom.to_string(implementation)
   end
 
   test "indexes EEP-48 function option schemas for callable arities" do
@@ -347,7 +403,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
       Code.compile_string("""
       defmodule #{inspect(module)} do
         @doc "Creates a value"
-        @doc spark_opts: [{1, [upsert?: [type: :boolean, default: false]]}]
+        @doc spark_opts: [{1, [upsert?: [type: :boolean, default: false, doc: "Upsert"]]}]
         def create(value, params \\\\ %{}, opts \\\\ []), do: {value, params, opts}
       end
       """)
@@ -355,8 +411,12 @@ defmodule Expert.Integrations.Spark.IndexerTest do
     entries = index(binary, module, "functions.ex")
     function = &Entry.integration_subject("spark", :function, &1)
 
-    assert [%{name: "upsert?", type: %{kind: :boolean}}] =
-             metadata(entries, function.("#{Forge.Formats.mfa(module, :create, 2)}/1"))
+    for arity <- [2, 3] do
+      payload = metadata(entries, function.("#{Forge.Formats.mfa(module, :create, arity)}/1"))
+
+      assert [%{name: "upsert?", type: %{kind: :boolean}}] = payload
+      refute_documentation(payload)
+    end
   end
 
   defp index(binary, module, source_path) do
@@ -384,4 +444,14 @@ defmodule Expert.Integrations.Spark.IndexerTest do
     assert %Entry{metadata: %{payload: payload}} = Enum.find(entries, &(&1.subject == subject))
     payload
   end
+
+  defp refute_documentation(value) when is_map(value) do
+    refute Map.has_key?(value, :documentation)
+    Enum.each(value, fn {_key, item} -> refute_documentation(item) end)
+  end
+
+  defp refute_documentation(value) when is_list(value),
+    do: Enum.each(value, &refute_documentation/1)
+
+  defp refute_documentation(_value), do: :ok
 end

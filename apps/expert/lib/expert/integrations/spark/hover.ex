@@ -38,9 +38,12 @@ defmodule Expert.Integrations.Spark.Hover do
       :error ->
         case Common.function_context(cursor_path, env) do
           {:ok, module, function, arity, argument_index, _argument} ->
-            key = "#{Forge.Formats.mfa(module, function, arity)}/#{argument_index}"
-
-            with {:ok, options} <- Common.fetch(env.project, :function, key),
+            with {:ok, options} <-
+                   Common.fetch(
+                     env.project,
+                     :function,
+                     {module, function, arity, argument_index}
+                   ),
                  do: find_documentation(options, name)
 
           :error ->
@@ -72,15 +75,14 @@ defmodule Expert.Integrations.Spark.Hover do
   end
 
   defp documentation_in_node(sections, names, name) do
-    with {:ok, node} <- Common.find_node(sections, names),
-         child when not is_nil(child) <- Common.child(node, name),
-         documentation when is_binary(documentation) and documentation != "" <-
-           Map.get(child, :documentation) do
-      {:ok, documentation}
-    else
-      _ ->
-        with {:ok, node} <- Common.find_node(sections, names),
-             do: find_documentation(Map.get(node, :options, []), name)
+    with {:ok, node} <- Common.find_node(sections, names) do
+      case Common.child(node, name) do
+        %{documentation: documentation} when is_binary(documentation) and documentation != "" ->
+          {:ok, documentation}
+
+        _ ->
+          find_documentation(Map.get(node, :options, []), name)
+      end
     end
   end
 
