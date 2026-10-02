@@ -16,6 +16,14 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
     %{project: project}
   end
 
+  test "fetches an exported function by the name of an option", %{project: project} do
+    module = register_callback(project)
+    patch(EngineApi, :call, fn ^project, ^module, :options, [] -> [:value] end)
+
+    assert {:ok, [:value]} = Callbacks.fetch_by_name(project, module, "options")
+    assert :error = Callbacks.fetch_by_name(project, module, "missing")
+  end
+
   test "does not cache BEAM callbacks", %{project: project} do
     test_pid = self()
     {module, beam} = callback_beam()
@@ -88,6 +96,28 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
     assert ^expected = Callbacks.aliases(project, type)
     assert_received :short_names
     refute_received :short_names
+  end
+
+  test "loads and caches function option schemas from EEP-48 metadata", %{project: project} do
+    test_pid = self()
+    schema = [upsert?: [type: :boolean, doc: "Upsert"]]
+
+    docs =
+      {:docs_v1, 0, :elixir, "text/markdown", :none, %{},
+       [
+         {{:function, :create, 3}, 0, ["create(value, params, opts)"], :none,
+          %{defaults: 1, spark_opts: [{1, schema}]}}
+       ]}
+
+    patch(EngineApi, :call, fn ^project, Code, :fetch_docs, [Example] ->
+      send(test_pid, :fetch_docs)
+      docs
+    end)
+
+    assert {:ok, ^schema} = Callbacks.function_options(project, Example, :create, 2, 1)
+    assert {:ok, ^schema} = Callbacks.function_options(project, Example, :create, 2, 1)
+    assert_received :fetch_docs
+    refute_received :fetch_docs
   end
 
   defp callback_beam do

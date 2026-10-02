@@ -344,11 +344,7 @@ defmodule Forge.Ast do
     end
   end
 
-  @doc """
-  Returns the index and value of the first argument containing a cursor node.
-  """
-  @spec cursor_argument([Macro.t()]) :: {:ok, non_neg_integer(), Macro.t()} | :error
-  def cursor_argument(arguments) when is_list(arguments) do
+  defp cursor_argument(arguments) when is_list(arguments) do
     arguments
     |> Enum.with_index()
     |> Enum.find_value(:error, fn {argument, index} ->

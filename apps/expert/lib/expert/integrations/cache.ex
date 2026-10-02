@@ -26,7 +26,11 @@ defmodule Expert.Integrations.Cache do
 
       [] ->
         value = fetch.()
-        true = :ets.insert(table, {cache_key, value})
+
+        if value != :error do
+          true = :ets.insert(table, {cache_key, value})
+        end
+
         value
     end
   end

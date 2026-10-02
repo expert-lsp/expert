@@ -38,9 +38,12 @@ defmodule Expert.Integrations.Spark.Hover do
       :error ->
         case Common.function_context(cursor_path, env) do
           {:ok, module, function, arity, argument_index, _argument} ->
-            key = "#{Forge.Formats.mfa(module, function, arity)}/#{argument_index}"
-
-            with {:ok, options} <- Common.fetch(env.project, :function, key),
+            with {:ok, options} <-
+                   Common.fetch(
+                     env.project,
+                     :function,
+                     {module, function, arity, argument_index}
+                   ),
                  do: find_documentation(options, name)
 
           :error ->
@@ -68,53 +71,40 @@ defmodule Expert.Integrations.Spark.Hover do
 
     with :error <- documentation_in_node(sections, parent_names, name),
          :error <- documentation_in_node(sections, names, name),
-         do: constraint_documentation(sections, names, call_context, name, env)
+         do: type_option_documentation(sections, names, call_context, name, env)
   end
 
   defp documentation_in_node(sections, names, name) do
-    with {:ok, node} <- Common.find_node(sections, names),
-         child when not is_nil(child) <- Common.child(node, name),
-         documentation when is_binary(documentation) and documentation != "" <-
-           Map.get(child, :documentation) do
-      {:ok, documentation}
-    else
-      _ ->
-        with {:ok, node} <- Common.find_node(sections, names),
-             do: find_documentation(Map.get(node, :options, []), name)
+    with {:ok, node} <- Common.find_node(sections, names) do
+      case Common.child(node, name) do
+        %{documentation: documentation} when is_binary(documentation) and documentation != "" ->
+          {:ok, documentation}
+
+        _ ->
+          find_documentation(Map.get(node, :options, []), name)
+      end
     end
   end
 
-  defp constraint_documentation(
+  defp type_option_documentation(
          sections,
          names,
          {:ok, call_name, _index, _argument, arguments},
          name,
          env
        ) do
-    case Common.find_node(sections, names) do
-      {:ok, %{name: ^call_name} = node} ->
-        with %{type: %{kind: :spark_type, behaviour: behaviour} = type} <-
-               Enum.find(node.options, &(&1.name == "type")),
-             index when is_integer(index) <-
-               Enum.find_index(node.arguments, &(&1.name == "type")),
-             type_ast when not is_nil(type_ast) <- Enum.at(arguments, index),
-             argument_ast when not is_nil(argument_ast) <-
-               Enum.find(arguments, &Ast.contains_cursor?/1),
-             {:ok, keyword_path} <- Ast.keyword_path_at_cursor(argument_ast),
-             {:ok, module} <- Common.selected_type_module(type_ast, type, env),
-             {:ok, %{constraints: options}} <-
-               Common.fetch(env.project, :behaviour, "#{behaviour}/#{module}") do
-          find_documentation(options, Enum.drop(keyword_path, 1), name)
-        else
-          _ -> :error
-        end
-
-      _ ->
-        :error
+    with {:ok, %{name: ^call_name} = node} <- Common.find_node(sections, names),
+         argument_ast when not is_nil(argument_ast) <-
+           Enum.find(arguments, &Ast.contains_cursor?/1),
+         {:ok, [option | keyword_path]} <- Ast.keyword_path_at_cursor(argument_ast),
+         {:ok, options} <- Common.type_option_schema(node, arguments, option, env) do
+      find_documentation(options, keyword_path, name)
+    else
+      _ -> :error
     end
   end
 
-  defp constraint_documentation(_sections, _names, _call_context, _name, _env), do: :error
+  defp type_option_documentation(_sections, _names, _call_context, _name, _env), do: :error
 
   defp find_documentation(options, name) do
     find_documentation(options, [], name)

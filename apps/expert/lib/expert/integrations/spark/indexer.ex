@@ -7,7 +7,7 @@ defmodule Expert.Integrations.Spark.Indexer do
 
   @spark_extension Spark.Dsl.Extension
 
-  def recognizes?(metadata) do
+  defp recognizes?(metadata) do
     attributes = Map.get(metadata, :attributes, [])
     behaviours = attribute_modules(attributes, :behaviour)
 
@@ -33,7 +33,6 @@ defmodule Expert.Integrations.Spark.Indexer do
     behaviours = attribute_modules(attributes, :behaviour)
     extension? = @spark_extension in behaviours
     skip_callback? = exports?(binary, :skip_in_spark_autocomplete, 0)
-    constraints_callback? = exports?(binary, :constraints, 0)
 
     {skip?, dynamic_entries} =
       dynamic_entries(
@@ -47,9 +46,7 @@ defmodule Expert.Integrations.Spark.Indexer do
         skip_callback?
       )
 
-    constraints = constraints(project, binary, module, constraints_callback?)
-
-    relation_entries(source_path, module, attributes, skip?, constraints) ++ dynamic_entries
+    relation_entries(source_path, module, attributes, skip?) ++ dynamic_entries
   end
 
   defp dynamic_entries(
@@ -94,15 +91,12 @@ defmodule Expert.Integrations.Spark.Indexer do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp relation_entries(path, module, attributes, skip?, constraints) do
-    payload =
-      if constraints == [], do: %{skip?: skip?}, else: %{skip?: skip?, constraints: constraints}
-
+  defp relation_entries(path, module, attributes, skip?) do
     behaviour_entries =
       attributes
       |> attribute_modules(:behaviour)
       |> Enum.uniq()
-      |> Enum.map(&relation_entry(path, :behaviour, &1, module, payload))
+      |> Enum.map(&relation_entry(path, :behaviour, &1, module, %{skip?: skip?}))
 
     type_entries =
       attributes
@@ -113,29 +107,18 @@ defmodule Expert.Integrations.Spark.Indexer do
     behaviour_entries ++ type_entries
   end
 
-  defp constraints(_project, _binary, _module, false), do: []
-
-  defp constraints(project, binary, module, true) do
-    case Callbacks.fetch(project, binary, module, :constraints) do
-      {:ok, constraints} -> normalize_schema(constraints)
-      :error -> []
-    end
-  end
-
   defp relation_entry(path, kind, target, module, payload) do
     target = module_name(target)
     module = module_name(module)
 
-    entry = Entry.integration(path, "spark", kind, module, Map.put(payload, :module, module))
+    entry = entry(path, kind, module, Map.put(payload, :module, module))
     %Entry{entry | subject: Entry.integration_subject("spark", kind, "#{target}/#{module}")}
   end
 
   defp dsl_entry(path, module, attributes, callback) do
-    with {:ok, default_extension_kinds} <-
-           callback_result(callback, :default_extension_kinds),
-         {:ok, single_extension_kinds} <-
-           callback_result(callback, :single_extension_kinds),
-         {:ok, options} <- callback_result(callback, :opt_schema),
+    with {:ok, default_extension_kinds} <- callback.(:default_extension_kinds),
+         {:ok, single_extension_kinds} <- callback.(:single_extension_kinds),
+         {:ok, options} <- callback.(:opt_schema),
          true <- valid_extension_kinds?(default_extension_kinds),
          true <- valid_names?(single_extension_kinds) do
       metadata = %{
@@ -163,9 +146,9 @@ defmodule Expert.Integrations.Spark.Indexer do
   end
 
   defp extension_entry(path, module, callback) do
-    with {:ok, added_extensions} <- callback_result(callback, :add_extensions),
-         {:ok, sections} <- callback_result(callback, :sections),
-         {:ok, patches} <- callback_result(callback, :dsl_patches) do
+    with {:ok, added_extensions} <- callback.(:add_extensions),
+         {:ok, sections} <- callback.(:sections),
+         {:ok, patches} <- callback.(:dsl_patches) do
       metadata = %{
         added_extensions: normalize_modules(added_extensions),
         sections: normalize_sections(sections),
@@ -179,7 +162,7 @@ defmodule Expert.Integrations.Spark.Indexer do
   end
 
   defp entry(path, kind, key, metadata) do
-    Entry.integration(path, "spark", kind, key, metadata)
+    Entry.integration(path, "spark", kind, key, remove_documentation(metadata))
   end
 
   defp function_option_entries(binary, metadata, source_path) do
@@ -228,8 +211,6 @@ defmodule Expert.Integrations.Spark.Indexer do
     end
   end
 
-  defp callback_result(callback, function), do: callback.(function)
-
   defp exports?(binary, name, arity) do
     case :beam_lib.chunks(binary, [:exports]) do
       {:ok, {_module, [exports: exports]}} -> {name, arity} in exports
@@ -274,16 +255,16 @@ defmodule Expert.Integrations.Spark.Indexer do
     |> Enum.uniq()
   end
 
-  defp normalize_sections(:error), do: []
+  def normalize_sections(:error), do: []
 
-  defp normalize_sections(sections) when is_list(sections) do
+  def normalize_sections(sections) when is_list(sections) do
     Enum.flat_map(sections, fn
       section when is_map(section) -> [normalize_section(section)]
       _ -> []
     end)
   end
 
-  defp normalize_sections(_sections), do: []
+  def normalize_sections(_sections), do: []
 
   defp normalize_section(section) when is_map(section) do
     %{
@@ -343,7 +324,7 @@ defmodule Expert.Integrations.Spark.Indexer do
 
   defp normalize_argument(name), do: %{name: to_string(name), optional?: false}
 
-  defp normalize_patches(patches) do
+  def normalize_patches(patches) do
     Enum.flat_map(List.wrap(patches), fn
       %{section_path: path, entity: entity} ->
         [
@@ -358,9 +339,9 @@ defmodule Expert.Integrations.Spark.Indexer do
     end)
   end
 
-  defp normalize_schema(:error), do: []
+  def normalize_schema(:error), do: []
 
-  defp normalize_schema(schema) when is_list(schema) do
+  def normalize_schema(schema) when is_list(schema) do
     Enum.flat_map(schema, fn
       {name, config} when is_atom(name) and is_list(config) ->
         [
@@ -382,7 +363,7 @@ defmodule Expert.Integrations.Spark.Indexer do
     end)
   end
 
-  defp normalize_schema(_), do: []
+  def normalize_schema(_), do: []
 
   defp normalize_type(:boolean), do: %{kind: :boolean}
   defp normalize_type(:string), do: %{kind: :string}
@@ -504,6 +485,17 @@ defmodule Expert.Integrations.Spark.Indexer do
 
   defp present_or(value, fallback) when value in [nil, ""], do: fallback
   defp present_or(value, _fallback), do: value
+
+  defp remove_documentation(value) when is_map(value) do
+    value
+    |> Map.delete(:documentation)
+    |> Map.new(fn {key, item} -> {key, remove_documentation(item)} end)
+  end
+
+  defp remove_documentation(value) when is_list(value),
+    do: Enum.map(value, &remove_documentation/1)
+
+  defp remove_documentation(value), do: value
 
   defp maybe_add(entries, true, fun), do: [fun.() | entries]
   defp maybe_add(entries, false, _fun), do: entries

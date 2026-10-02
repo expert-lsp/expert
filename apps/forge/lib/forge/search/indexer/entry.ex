@@ -20,7 +20,7 @@ defmodule Forge.Search.Indexer.Entry do
 
   @type subject :: String.t()
   @type caller :: String.t()
-  @type entry_subtype :: :reference | :definition | :integration
+  @type entry_subtype :: :reference | :definition | :integration | :block_structure
   @type version :: String.t()
   @type entry_id :: pos_integer() | nil
   @type block_id :: pos_integer() | :root

@@ -24,8 +24,8 @@ defmodule Expert.Integrations.Spark.Completion do
         :error ->
           with {:ok, module, name, arity, argument_index, argument} <-
                  Common.function_context(cursor_path, env),
-               key = "#{Forge.Formats.mfa(module, name, arity)}/#{argument_index}",
-               {:ok, options} <- Common.fetch(env.project, :function, key) do
+               {:ok, options} <-
+                 Common.fetch(env.project, :function, {module, name, arity, argument_index}) do
             completion_result(schema_items(options, argument, env), :override)
           else
             _ -> complete_dsl(env.project, env, cursor_path)
@@ -219,7 +219,7 @@ defmodule Expert.Integrations.Spark.Completion do
        label: entity.name,
        snippet: snippet,
        detail: "DSL Entity",
-       documentation: entity.documentation,
+       documentation: Map.get(entity, :documentation, ""),
        priority: :contextual,
        kind: :function
      }, []}
@@ -232,7 +232,7 @@ defmodule Expert.Integrations.Spark.Completion do
        label: section.name,
        snippet: snippet,
        detail: "DSL Section",
-       documentation: section.documentation,
+       documentation: Map.get(section, :documentation, ""),
        priority: :contextual,
        kind: :function
      }, []}
@@ -259,21 +259,15 @@ defmodule Expert.Integrations.Spark.Completion do
   end
 
   defp option_value_items(
-         %{name: "constraints", type: fallback},
+         %{name: name, type: %{kind: :keyword_list} = fallback},
          node,
          arguments,
          value_ast,
          env
-       ) do
-    with %{type: %{kind: :spark_type, behaviour: behaviour} = type} <-
-           Enum.find(node.options, &(&1.name == "type")),
-         index when is_integer(index) <- Enum.find_index(node.arguments, &(&1.name == "type")),
-         type_ast when not is_nil(type_ast) <- Enum.at(arguments, index),
-         {:ok, module} <- Common.selected_type_module(type_ast, type, env),
-         {:ok, %{constraints: options}} <-
-           Common.fetch(env.project, :behaviour, "#{behaviour}/#{module}") do
-      schema_value_items(options, value_ast, env)
-    else
+       )
+       when not is_map_key(fallback, :options) do
+    case Common.type_option_schema(node, arguments, name, env) do
+      {:ok, [_ | _] = options} -> schema_value_items(options, value_ast, env)
       _ -> value_items_for_ast(fallback, value_ast, env)
     end
   end
@@ -425,7 +419,7 @@ defmodule Expert.Integrations.Spark.Completion do
        label: option.name,
        snippet: option.name <> separator <> value,
        detail: "Option",
-       documentation: option.documentation,
+       documentation: Map.get(option, :documentation, ""),
        priority: :contextual,
        kind: :field
      }, []}

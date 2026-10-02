@@ -13,6 +13,27 @@ defmodule Expert.Integrations.Spark.Callbacks do
     end
   end
 
+  def fetch_by_name(%Project{} = project, module, name) when is_binary(name) do
+    with {:ok, %{functions: functions}} <- ModuleRegistry.module_exports(project, module),
+         {function, 0} <- Enum.find(functions, &exported_as?(&1, name)) do
+      call(project, nil, module, function)
+    else
+      _ -> :error
+    end
+  end
+
+  def function_options(%Project{} = project, module, name, arity, argument_index) do
+    docs =
+      Cache.fetch(project, __MODULE__, {:docs, module}, fn ->
+        case EngineApi.call(project, Code, :fetch_docs, [module]) do
+          {:docs_v1, _, _, _, _, _, _} = docs -> docs
+          _ -> :error
+        end
+      end)
+
+    find_function_options(docs, name, arity, argument_index)
+  end
+
   def aliases(_project, %{aliases: aliases}) when map_size(aliases) > 0, do: aliases
 
   def aliases(%Project{} = project, %{alias_module: module, alias_function: function}) do
@@ -55,6 +76,9 @@ defmodule Expert.Integrations.Spark.Callbacks do
     {:ok, EngineApi.call(project, module, function, [])}
   end
 
+  defp exported_as?({function, 0}, name), do: Atom.to_string(function) == name
+  defp exported_as?(_export, _name), do: false
+
   defp exported?(_project, beam, module, function) when is_binary(beam) do
     case :beam_lib.chunks(beam, [:exports]) do
       {:ok, {^module, [exports: exports]}} -> {function, 0} in exports
@@ -68,4 +92,23 @@ defmodule Expert.Integrations.Spark.Callbacks do
       :error -> false
     end
   end
+
+  defp find_function_options({:docs_v1, _, _, _, _, _, entries}, name, arity, argument_index) do
+    Enum.find_value(entries, :error, fn
+      {{kind, ^name, declared_arity}, _, _, _, metadata} when kind in [:function, :macro] ->
+        defaults = Map.get(metadata, :defaults, 0)
+
+        if arity >= declared_arity - defaults and arity <= declared_arity do
+          Enum.find_value(Map.get(metadata, :spark_opts, []), fn
+            {^argument_index, schema} -> {:ok, schema}
+            _ -> nil
+          end)
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp find_function_options(_docs, _name, _arity, _argument_index), do: :error
 end
