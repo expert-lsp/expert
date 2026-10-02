@@ -7,6 +7,7 @@ defmodule Expert.State do
   alias Expert.Document.Lookup
   alias Expert.EngineApi
   alias Expert.Project
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Store
   alias Expert.Provider.Handlers
   alias Forge.Document
@@ -64,6 +65,8 @@ defmodule Expert.State do
     event.capabilities
     |> Configuration.new(client_name)
     |> Configuration.set()
+
+    _ = Configuration.on_change(event.initialization_options)
 
     new_state = %__MODULE__{state | initialized?: true}
 
@@ -178,7 +181,7 @@ defmodule Expert.State do
            &Document.apply_content_changes(&1, version, params.content_changes)
          ) do
       {:ok, updated_source} ->
-        if Store.ready?(context.project) do
+        if EngineRuntime.available?(context.project) do
           updated_message =
             file_changed(
               uri: updated_source.uri,
@@ -192,6 +195,8 @@ defmodule Expert.State do
           if Configuration.compile_on_type?() do
             EngineApi.compile_document(context.project, updated_source)
           end
+        else
+          Expert.Project.Diagnostics.publish_parse_diagnostics(context.project, uri)
         end
 
         {:ok, state}
@@ -209,11 +214,15 @@ defmodule Expert.State do
       language_id: language_id
     } = did_open.params.text_document
 
-    start_project_for_uri(uri)
+    project = start_project_for_uri(uri)
 
     case Document.Store.open(uri, text, version, language_id) do
       :ok ->
         Logger.info("Opened #{uri}")
+
+        if !EngineRuntime.available?(project) do
+          Expert.Project.Diagnostics.publish_parse_diagnostics(project, uri)
+        end
 
         {:ok, state}
 
@@ -226,9 +235,14 @@ defmodule Expert.State do
 
   def apply(%__MODULE__{} = state, %GenLSP.Notifications.TextDocumentDidClose{params: params}) do
     uri = params.text_document.uri
+    context = Lookup.resolve(uri, Store.projects())
 
     case Document.Store.close(uri) do
       :ok ->
+        if !EngineRuntime.available?(context.project) do
+          Expert.Project.Diagnostics.clear_file_diagnostics(context.project, uri)
+        end
+
         {:ok, state}
 
       error ->
@@ -248,8 +262,10 @@ defmodule Expert.State do
       :ok ->
         case context do
           %Context{project: %Project{kind: :mix} = project} ->
-            if Store.ready?(project) do
+            if EngineRuntime.available?(project) do
               EngineApi.schedule_compile(project, false)
+            else
+              Expert.Project.Indexer.refresh(project)
             end
 
           %Context{project: %Project{kind: :bare}} ->
@@ -271,14 +287,15 @@ defmodule Expert.State do
   end
 
   def apply(%__MODULE__{} = state, %Notifications.WorkspaceDidChangeWatchedFiles{params: params}) do
-    for project <- Store.projects(),
-        change <- params.changes do
-      params = filesystem_event(project: project, uri: change.uri, event_type: change.type)
-
-      if Store.ready?(project) do
-        EngineApi.broadcast(project, params)
+    Enum.each(Store.projects(), fn project ->
+      if EngineRuntime.available?(project) do
+        Enum.each(params.changes, &broadcast_watched_file_change(project, &1))
+      else
+        if Enum.any?(params.changes, &local_index_change?(project, &1)) do
+          Expert.Project.Indexer.refresh(project)
+        end
       end
-    end
+    end)
 
     {:ok, state}
   end
@@ -286,6 +303,28 @@ defmodule Expert.State do
   def apply(%__MODULE__{} = state, msg) do
     Logger.error("Ignoring unhandled message: #{inspect(msg)}")
     {:ok, state}
+  end
+
+  defp broadcast_watched_file_change(project, %{uri: uri, type: type}) do
+    if Path.extname(Document.Path.ensure_path(uri)) != ".beam" do
+      EngineApi.broadcast(project, filesystem_event(project: project, uri: uri, event_type: type))
+    end
+  end
+
+  defp local_index_change?(project, %{uri: uri}) do
+    path = Document.Path.ensure_path(uri)
+
+    if local_index_file?(project, path) do
+      Logger.info("External index file change detected: #{uri}", project: project)
+      true
+    else
+      false
+    end
+  end
+
+  defp local_index_file?(project, path) do
+    Forge.Path.contains?(path, Project.root_path(project)) and
+      (Path.extname(path) in [".beam", ".ex", ".exs"] or Path.basename(path) == "mix.lock")
   end
 
   def deps_declined?(%__MODULE__{deps_declined_projects: declined}, %Project{} = project) do
@@ -304,7 +343,7 @@ defmodule Expert.State do
   become ready.
   """
   def propagate_elixir_source_path_for(%Project{} = project) do
-    if Store.ready?(project) do
+    if EngineRuntime.available?(project) do
       apply_elixir_source_path(project, Configuration.get())
     end
 
@@ -314,9 +353,9 @@ defmodule Expert.State do
   end
 
   defp propagate_elixir_source_path(%Configuration{} = config) do
-    for project <- Store.projects(), Store.ready?(project) do
-      apply_elixir_source_path(project, config)
-    end
+    Store.projects()
+    |> Enum.filter(&EngineRuntime.available?/1)
+    |> Enum.each(&apply_elixir_source_path(&1, config))
   rescue
     _ -> :ok
   end
@@ -352,6 +391,54 @@ defmodule Expert.State do
     if runtime_executable_paths_changed?(old_config, config) do
       restart_runtime_projects()
     end
+
+    if config.enable_compilation != old_config.enable_compilation do
+      if config.enable_compilation do
+        start_project_engines()
+      else
+        stop_project_engines()
+      end
+    end
+
+    :ok
+  end
+
+  defp start_project_engines do
+    Logger.info("Project compilation enabled")
+
+    Enum.each(Store.projects(), fn project ->
+      Task.Supervisor.start_child(:expert_task_queue, fn ->
+        result = Expert.Project.Supervisor.start_engine(project)
+        report_engine_start(project, result)
+      end)
+    end)
+
+    :ok
+  end
+
+  defp stop_project_engines do
+    Logger.info("Project compilation disabled")
+    projects = Store.projects()
+    Enum.each(projects, &Expert.Project.Supervisor.stop_engine/1)
+    publish_open_document_diagnostics(projects)
+  end
+
+  defp publish_open_document_diagnostics(projects) do
+    Enum.each(Document.Store.open_documents(), fn document ->
+      case Lookup.resolve(document.uri, projects) do
+        %Context{project: %Project{} = project} ->
+          Expert.Project.Diagnostics.publish_parse_diagnostics(project, document.uri)
+      end
+    end)
+  end
+
+  defp report_engine_start(project, :ok) do
+    pid = Process.whereis(Expert.Project.Supervisor.name(project))
+    send(Expert.get_lsp().pid, {:engine_initialized, project, {:ok, pid}})
+  end
+
+  defp report_engine_start(project, error) do
+    send(Expert.get_lsp().pid, {:engine_initialized, project, error})
   end
 
   defp runtime_executable_paths_changed?(%Configuration{} = old_config, %Configuration{} = config) do
@@ -360,9 +447,9 @@ defmodule Expert.State do
   end
 
   defp restart_runtime_projects do
-    for project <- Store.projects(), not Store.blocked?(project) do
-      restart_runtime_project(project)
-    end
+    Store.projects()
+    |> Enum.reject(&Store.blocked?/1)
+    |> Enum.each(&restart_runtime_project/1)
 
     :ok
   end
@@ -452,7 +539,7 @@ defmodule Expert.State do
       end)
     end
 
-    :ok
+    project
   end
 
   defp removed_from_workspace?(%Project{} = project, removed_paths, removed_root_uris) do

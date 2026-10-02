@@ -1,7 +1,9 @@
 defmodule Expert do
   use GenLSP
 
+  alias Expert.Configuration
   alias Expert.Document.Lookup
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Store
   alias Expert.Protocol.Convert
   alias Expert.Protocol.Id
@@ -155,7 +157,7 @@ defmodule Expert do
       projects = Store.projects()
 
       with {:ok, context} <- Lookup.resolve_from_request(request, projects) do
-        if !Handler.requires_engine?(handler) or Store.ready?(context.project) do
+        if !Handler.requires_engine?(handler) or EngineRuntime.available?(context.project) do
           {:ok, context}
         else
           {:error, :engine_not_initialized, context.project}
@@ -185,7 +187,9 @@ defmodule Expert do
   defp document_request?(_), do: false
 
   def handle_notification(%GenLSP.Notifications.Initialized{}, lsp) do
-    if Expert.Configuration.client_support(:watched_files_dynamic_registration) do
+    load_workspace_configuration(lsp)
+
+    if Configuration.client_support(:watched_files_dynamic_registration) do
       Logger.info("Server initialized, registering capabilities")
 
       case GenLSP.request(lsp, registrations()) do
@@ -249,44 +253,82 @@ defmodule Expert do
     {:noreply, lsp}
   end
 
+  # Read initial client settings before starting projects that can run their code.
+  defp load_workspace_configuration(lsp) do
+    if Configuration.client_support(:workspace_configuration) do
+      request = %Requests.WorkspaceConfiguration{
+        id: Id.next(),
+        params: %Structures.ConfigurationParams{items: [%Structures.ConfigurationItem{}]}
+      }
+
+      response = GenLSP.request(lsp, request)
+
+      case response do
+        [settings] when is_map(settings) ->
+          case Configuration.on_change(settings) do
+            {:ok, _config} -> :ok
+            {:ok, _config, request} -> GenLSP.request(lsp, request)
+          end
+
+        _response ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
   def handle_info({:engine_initialized, project, {:ok, _pid}}, lsp) do
-    Store.transition(project, :ready)
+    if EngineRuntime.available?(project) and Store.find_by_root_uri(project.root_uri) do
+      State.propagate_elixir_source_path_for(project)
 
-    State.propagate_elixir_source_path_for(project)
-
-    Logger.info(
-      "Engine initialized for project #{Project.name(project)}",
-      project: project
-    )
+      Logger.info(
+        "Engine initialized for project #{Project.name(project)}",
+        project: project
+      )
+    end
 
     {:noreply, lsp}
   end
 
   def handle_info({:deps_error, project, _details}, lsp) do
-    {:noreply, maybe_prompt_deps_fetch(lsp, project)}
+    if Configuration.compilation_enabled?() do
+      {:noreply, maybe_prompt_deps_fetch(lsp, project)}
+    else
+      {:noreply, lsp}
+    end
   end
 
   def handle_info({:deps_fetch_failed, project, message}, lsp) do
-    {:noreply, prompt_deps_fetch_retry(lsp, project, message)}
+    if Configuration.compilation_enabled?() do
+      {:noreply, prompt_deps_fetch_retry(lsp, project, message)}
+    else
+      Store.transition(project, :pending)
+      {:noreply, lsp}
+    end
   end
 
   def handle_info({:engine_initialized, project, {:error, {:shutdown, :deps_error}}}, lsp) do
-    Store.transition(project, :pending)
+    if Configuration.compilation_enabled?() do
+      Store.transition(project, :pending)
 
-    log_error(
-      lsp,
-      project,
-      "Engine failed due to dependency errors. Run 'mix deps.get' to fetch dependencies."
-    )
+      log_error(
+        lsp,
+        project,
+        "Engine failed due to dependency errors. Run 'mix deps.get' to fetch dependencies."
+      )
+    end
 
     {:noreply, lsp}
   end
 
   def handle_info({:engine_initialized, project, {:error, reason}}, lsp) do
-    Store.transition(project, :pending)
+    if Configuration.compilation_enabled?() do
+      Store.transition(project, :pending)
 
-    error_message = initialization_error_message(reason)
-    log_error(lsp, project, error_message)
+      error_message = initialization_error_message(reason)
+      log_error(lsp, project, error_message)
+    end
 
     {:noreply, lsp}
   end
@@ -345,7 +387,7 @@ defmodule Expert do
          lsp,
          project
        ) do
-    Store.transition(project, :ready)
+    Store.transition(project, :pending)
 
     Logger.info("User declined to run mix deps.get for #{Project.name(project)}",
       project: project
@@ -401,11 +443,15 @@ defmodule Expert do
       :ok ->
         Logger.info("mix deps.get completed successfully", project: project)
 
-        Expert.Project.Supervisor.stop_node(project)
+        if Configuration.compilation_enabled?() do
+          Store.transition(project, :pending)
 
-        Logger.info("Restarting engine for #{Project.name(project)}", project: project)
-        start_result = Expert.Project.Supervisor.ensure_node_started(project, blocked?: false)
-        send(lsp.pid, {:engine_initialized, project, start_result})
+          Logger.info("Restarting engine for #{Project.name(project)}", project: project)
+          start_result = Expert.Project.Supervisor.restart_engine(project)
+          send(lsp.pid, {:engine_initialized, project, start_result})
+        else
+          Store.transition(project, :pending)
+        end
 
       {:error, msg} ->
         send(lsp.pid, {:deps_fetch_failed, project, "mix deps.get failed: #{inspect(msg)}"})
@@ -588,7 +634,7 @@ defmodule Expert do
   end
 
   @did_changed_watched_files_id "-42"
-  @watched_extensions ~w(ex exs)
+  @watched_extensions ~w(beam ex exs)
   defp file_watcher_registration do
     extension_glob = "{" <> Enum.join(@watched_extensions, ",") <> "}"
 

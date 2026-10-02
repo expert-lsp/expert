@@ -102,6 +102,8 @@ defmodule Forge.Document.StoreTest do
       assert {:ok, doc} = Document.Store.fetch(uri())
       assert doc.uri == uri()
       assert Document.to_string(doc) == "hello"
+      assert [%Document{uri: document_uri}] = Document.Store.open_documents()
+      assert document_uri == uri()
     end
 
     test "can be closed" do
@@ -179,6 +181,7 @@ defmodule Forge.Document.StoreTest do
     test "can be opened", ctx do
       assert {:ok, doc} = Document.Store.open_temporary(ctx.uri, 100)
       assert Document.to_string(doc) == ctx.contents
+      assert Document.Store.open_documents() == []
     end
 
     test "closes after a timeout", ctx do

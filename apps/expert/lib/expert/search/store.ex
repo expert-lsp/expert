@@ -5,8 +5,13 @@ defmodule Expert.Search.Store do
 
   use GenServer
 
+  alias Expert.Search.Indexer.Manifest
+  alias Expert.Search.Indexer.ManifestStore
+  alias Expert.Search.Indexer.Quoted
   alias Expert.Search.Store
   alias Expert.Search.Store.State
+  alias Forge.Ast.Analysis
+  alias Forge.Document
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
@@ -65,6 +70,31 @@ defmodule Expert.Search.Store do
           {:ok, [Entry.t()]} | {:error, term()} | []
   def all(%Project{} = project, constraints \\ []) do
     call_or_default(project, {:all, constraints}, [])
+  end
+
+  @doc "Returns persisted entries for current files and transient entries for changed documents."
+  def entries_for_document(%Project{} = project, %Analysis{} = analysis, subtype) do
+    document = analysis.document
+
+    if current_document?(project, document) do
+      all(project, paths: [document.path], subtype: subtype)
+    else
+      with {:ok, entries} <- Quoted.index_with_cleanup(analysis, project) do
+        {:ok, Enum.filter(entries, &(subtype == :_ or &1.subtype == subtype))}
+      end
+    end
+  end
+
+  defp current_document?(_project, %Document{dirty?: true}), do: false
+
+  defp current_document?(project, document) do
+    with {:ok, manifest} <- ManifestStore.load(project),
+         {:ok, entry} <- Manifest.fetch(manifest, document.path),
+         true <- Manifest.Entry.matches_file?(entry) do
+      File.read(document.path) == {:ok, Document.to_string(document)}
+    else
+      _ -> false
+    end
   end
 
   @spec path_to_ids(Project.t()) :: %{Path.t() => Entry.entry_id()} | {:error, term()}

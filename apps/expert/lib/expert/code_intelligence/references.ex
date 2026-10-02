@@ -4,8 +4,6 @@ defmodule Expert.CodeIntelligence.References do
   alias Expert.CodeIntelligence.Variable
   alias Expert.EngineApi
   alias Expert.Search.Indexer.Analyzer
-  alias Expert.Search.Indexer.Manifest
-  alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Analysis
@@ -45,8 +43,7 @@ defmodule Expert.CodeIntelligence.References do
   end
 
   defp indexed_references(project, analysis, position, include_definitions?) do
-    with true <- current_document?(project, analysis.document),
-         {:ok, references} <- Store.all(project, paths: [analysis.document.path], subtype: :_),
+    with {:ok, references} <- Store.entries_for_document(project, analysis, :_),
          %Entry{} = reference <- reference_at(references, analysis, position) do
       references_for_entry(reference, project, include_definitions?)
     else
@@ -65,13 +62,16 @@ defmodule Expert.CodeIntelligence.References do
 
     references
     |> Enum.filter(fn
-      %Entry{type: {kind, _}, subject: subject, range: range}
+      %Entry{type: {kind, _}, subject: subject, range: %Range{} = range}
       when kind in [:function, :macro] ->
         Range.contains?(range, position) and
           match?({_module, ^function, _arity}, Forge.Code.parse_mfa(subject))
 
-      %Entry{range: range} ->
+      %Entry{range: %Range{} = range} ->
         Range.contains?(range, position)
+
+      _ ->
+        false
     end)
     |> Enum.min_by(&range_size/1, fn -> nil end)
   end
@@ -219,18 +219,6 @@ defmodule Expert.CodeIntelligence.References do
 
       _ ->
         :error
-    end
-  end
-
-  defp current_document?(_project, %Document{dirty?: true}), do: false
-
-  defp current_document?(project, %Document{} = document) do
-    with {:ok, manifest} <- ManifestStore.load(project),
-         {:ok, entry} <- Manifest.fetch(manifest, document.path),
-         true <- Manifest.Entry.matches_file?(entry) do
-      File.read(document.path) == {:ok, Document.to_string(document)}
-    else
-      _ -> false
     end
   end
 end

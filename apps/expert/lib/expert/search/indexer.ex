@@ -28,8 +28,9 @@ defmodule Expert.Search.Indexer do
          {:ok, state} <-
            paths
            |> index_stream(project)
-           |> persist_stream(new_stream_state(), project) do
-      ManifestStore.commit(project, Manifest.new(manifest_entries(state)))
+           |> persist_stream(new_stream_state(), project),
+         :ok <- ManifestStore.commit(project, Manifest.new(manifest_entries(state))) do
+      ModuleRegistry.mark_hydrated(project)
     end
   end
 
@@ -37,6 +38,23 @@ defmodule Expert.Search.Indexer do
     with path_to_ids when is_map(path_to_ids) <- Store.path_to_ids(project),
          {:ok, manifest} <- update_index(project, path_to_ids, opts) do
       ManifestStore.commit(project, manifest)
+    end
+  end
+
+  def update_from_disk(%Project{} = project, opts \\ []) when is_list(opts) do
+    paths = Keyword.get_lazy(opts, :paths, fn -> Paths.from_disk(project) end)
+    hydrate? = not ModuleRegistry.hydrated?(project)
+
+    if hydrate? do
+      Beams.register_modules(paths.beam_paths, project, paths.applications)
+    end
+
+    with :ok <-
+           update_index(
+             project,
+             Keyword.merge(opts, paths: paths, clear_application_cache?: false)
+           ) do
+      if hydrate?, do: ModuleRegistry.mark_hydrated(project), else: :ok
     end
   end
 
@@ -49,7 +67,7 @@ defmodule Expert.Search.Indexer do
   end
 
   defp build_index(%Project{} = project, opts) do
-    :ok = EngineApi.clear_application_cache(project)
+    :ok = clear_application_cache(project, opts)
     :ok = ModuleRegistry.clear(project)
 
     try do
@@ -62,12 +80,12 @@ defmodule Expert.Search.Indexer do
         {:ok, Manifest.new(manifest_entries(state))}
       end
     after
-      EngineApi.clear_application_cache(project)
+      clear_application_cache(project, opts)
     end
   end
 
   defp update_index(%Project{} = project, path_to_ids, opts) do
-    :ok = EngineApi.clear_application_cache(project)
+    :ok = clear_application_cache(project, opts)
     paths = paths_for_project(project, opts)
     :ok = ModuleRegistry.prune(project, paths.beam_paths)
     opts = Keyword.put(opts, :paths, paths)
@@ -83,7 +101,15 @@ defmodule Expert.Search.Indexer do
           replace_index(project, path_to_ids, opts)
       end
     after
+      clear_application_cache(project, opts)
+    end
+  end
+
+  defp clear_application_cache(%Project{} = project, opts) do
+    if Keyword.get(opts, :clear_application_cache?, true) do
       EngineApi.clear_application_cache(project)
+    else
+      :ok
     end
   end
 

@@ -10,8 +10,8 @@ Expert solves several Elixir-specific code intelligence problems:
 
 Expert addresses these problems by splitting responsibilities between two nodes:
 
-- Manager node: runs the language server, owns the LSP transport, tracks editor state, and routes requests.
-- Engine node: runs ElixirSense, indexes the project, compiles project code, and executes code-intelligence work in the project's context.
+- Manager node: runs the language server, tracks editor state, and owns the project search index.
+- Engine node: compiles project code and runs code-intelligence work in the project's context when compilation is enabled.
 
 Before an engine node starts, Expert also:
 
@@ -37,7 +37,7 @@ At startup, `expert --stdio` uses stdio as the transport, while `expert --port <
 The `Expert` module handles LSP messages. Lifecycle requests and notifications are handled directly in the manager state, including document open, change, save, close, workspace folder changes, initialization, and shutdown. They are used to:
 
 - Keep open document contents and analysis in `Forge.Document.Store`. Code that needs document contents should prefer the document store over reading from disk so open editor buffers stay synchronized with the language server.
-- Start project engines, broadcast file changes to engines, and request document or project compilation.
+- Start project indexes and, when enabled, request Engine compilation.
 
 Other LSP requests are delegated to provider handlers under `Expert.Provider.Handlers`. A provider handler implements `Expert.Provider.Handler.handle/2`, receives the native request plus an `Expert.Document.Context` for document requests, and returns `{:ok, response}` or `{:error, reason}`. Notifications that do not need a response return `{:ok, nil}`.
 
@@ -49,16 +49,16 @@ Expert combines several sources of code-intelligence data:
 - Compiled BEAM metadata provides docs, specs, callbacks, and type information for loaded modules.
 - The search index provides persistent, project-wide lookup for modules, functions, structs, variables, and references.
 
-The indexer analyzes Elixir source files and stores entries in `Engine.Search.Store`. At a high level, indexing works as follows:
+The manager indexer analyzes Elixir source and existing BEAM files. It stores entries in `Expert.Search.Store`:
 
 1. Each source file is wrapped in a `Forge.Document` struct.
 2. `Forge.Ast.analyze/1` derives a `Forge.Ast.Analysis` from the document.
 3. The AST is traversed with `Macro.prewalk/3`, and a series of extractors emits `Forge.Search.Indexer.Entry` values.
-4. The search store persists those entries in the project's `.expert/indexes/ets` directory.
+4. The search store persists entries under the project's `.expert/indexes/sqlite` directory.
 
 On the first run, the indexer scans every `.ex` and `.exs` file outside the project's build directory. After that, it refreshes changed files and removes deleted files from the index. Dependency files are indexed for definitions only.
 
-The results of the indexer can be queried through `Engine.Search.Store`.
+Requests query `Expert.Search.Store`. Changed documents provide transient entries without replacing saved index data.
 
 ### The `Entry` Struct
 
@@ -93,7 +93,7 @@ Scopes are the most important part of the analysis. Each scope describes which m
 
 ## Project Compilation
 
-Expert performs two kinds of compilation:
+When `enableCompilation` is true, Expert performs two kinds of compilation:
 
 - Document compilation for eligible open documents after `textDocument/didChange` when `compileOnType` is enabled.
 - Full project compilation when an engine starts, when a project build is explicitly triggered, or when a file in a Mix project is saved.
@@ -102,7 +102,9 @@ Document compilation runs through `Engine.Build.Document` and compiles only the 
 
 Full project compilation runs in the engine node. For Mix projects, Expert runs `mix compile` in the project context with Expert's versioned `MIX_BUILD_PATH`, which stores build artifacts under `.expert/build`. After compilation, Expert runs `mix loadpaths`, refreshes loaded module data, emits compilation events, and enables the search store after the first project build. File compilation and explicit reindex events refresh search index entries after that.
 
-Compilation and indexing events are produced by the engine node. The manager node consumes those events and turns them into LSP diagnostics, logs, and progress notifications.
+The Engine produces compilation events. The manager consumes them for diagnostics and index refreshes.
+
+When compilation is disabled, the manager indexes source and existing BEAM files. It reads Mix configuration but does not run project macros. A project controller applies live compilation changes while the manager index remains available.
 
 ### The Need For Compilation
 
@@ -140,6 +142,8 @@ Some distributed Erlang setups rely on the Erlang Port Mapper Daemon (EPMD), but
 ## Project Versions
 
 Expert releases are built with the Elixir and Erlang/OTP versions configured in `.github/workflows/release.yaml`. A project using Expert may run different versions, and those differences can affect compiler internals, special forms, generated code, and loaded BEAM metadata.
+
+The manager reads those versions before it starts the search store. The store uses them to select the project's index in both compilation modes.
 
 For that reason, Expert builds and runs the engine with the project's Elixir and Erlang/OTP versions. At a high level, the process is:
 

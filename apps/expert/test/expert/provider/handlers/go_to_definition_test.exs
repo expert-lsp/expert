@@ -12,6 +12,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   alias Expert.Project.Indexer
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Store
   alias Forge.Document
   alias Forge.Document.Location
@@ -35,7 +36,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
     backend = Store.backend()
     start_supervised!({backend, project})
     start_supervised!({Store, [project, backend]})
-    start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
+    start_supervised!({ModuleRegistry, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 
@@ -119,8 +120,6 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
 
     test "uses the Engine after an index miss when it is ready", %{project: project} do
       test_pid = self()
-      assert Expert.Project.Store.transition(project, :ready)
-      on_exit(fn -> Expert.Project.Store.transition(project, :pending) end)
 
       patch(EngineApi, :definition, fn ^project, _document, _position ->
         send(test_pid, :engine_fallback)
@@ -147,6 +146,36 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
       {:ok, request} = build_request(uses_file_path, 4, 4)
 
       {:ok, %Location{} = location} = handle(request, project)
+      assert Location.uri(location) == referenced_uri
+    end
+
+    test "uses current references from a dirty document without the Engine", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      path = file_path(project, Path.join("lib", "uses.ex"))
+      uri = Document.Path.ensure_uri(path)
+
+      :ok =
+        Document.Store.open(
+          uri,
+          """
+          defmodule Navigations.Uses do
+            def call do
+              MyDefinition.greet("world")
+            end
+          end
+          """,
+          2
+        )
+
+      on_exit(fn -> Document.Store.close(uri) end)
+      patch(Expert.Project.EngineRuntime, :available?, fn ^project -> false end)
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      {:ok, request} = build_request(path, 2, 19)
+
+      assert {:ok, %Location{} = location} = handle(request, project)
       assert Location.uri(location) == referenced_uri
     end
 
