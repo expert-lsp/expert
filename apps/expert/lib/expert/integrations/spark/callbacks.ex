@@ -13,6 +13,18 @@ defmodule Expert.Integrations.Spark.Callbacks do
     end
   end
 
+  def function_options(%Project{} = project, module, name, arity, argument_index) do
+    docs =
+      Cache.fetch(project, __MODULE__, {:docs, module}, fn ->
+        case EngineApi.call(project, Code, :fetch_docs, [module]) do
+          {:docs_v1, _, _, _, _, _, _} = docs -> docs
+          _ -> :error
+        end
+      end)
+
+    find_function_options(docs, name, arity, argument_index)
+  end
+
   def aliases(_project, %{aliases: aliases}) when map_size(aliases) > 0, do: aliases
 
   def aliases(%Project{} = project, %{alias_module: module, alias_function: function}) do
@@ -68,4 +80,23 @@ defmodule Expert.Integrations.Spark.Callbacks do
       :error -> false
     end
   end
+
+  defp find_function_options({:docs_v1, _, _, _, _, _, entries}, name, arity, argument_index) do
+    Enum.find_value(entries, :error, fn
+      {{kind, ^name, declared_arity}, _, _, _, metadata} when kind in [:function, :macro] ->
+        defaults = Map.get(metadata, :defaults, 0)
+
+        if arity >= declared_arity - defaults and arity <= declared_arity do
+          Enum.find_value(Map.get(metadata, :spark_opts, []), fn
+            {^argument_index, schema} -> {:ok, schema}
+            _ -> nil
+          end)
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp find_function_options(_docs, _name, _arity, _argument_index), do: :error
 end

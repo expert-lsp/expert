@@ -171,7 +171,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       {entries, _manifest_entries} = index_beams([beam_path], project: project)
 
-      assert ^integration_entry = Enum.find(entries, &(&1 == integration_entry))
+      assert integration_entry in entries
     end
 
     test "synthesizes contextual ranges for macro-generated definitions from beam metadata", %{

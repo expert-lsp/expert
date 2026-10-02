@@ -209,7 +209,12 @@ defmodule Expert.Project.Reindex do
     EngineApi.broadcast(project, project_reindex_requested(project: project))
 
     {elapsed_us, result} =
-      :timer.tc(fn -> Search.Indexer.create_index(project) end)
+      :timer.tc(fn ->
+        case Search.Indexer.create_index(project) do
+          :ok -> record_integrations(project)
+          result -> result
+        end
+      end)
 
     EngineApi.broadcast(
       project,
@@ -221,6 +226,17 @@ defmodule Expert.Project.Reindex do
     )
 
     result
+  end
+
+  defp record_integrations(project) do
+    case Search.Indexer.record_integrations(project) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Could not record search integrations: #{inspect(reason)}")
+        :ok
+    end
   end
 
   defp reindex_status(:ok), do: :success

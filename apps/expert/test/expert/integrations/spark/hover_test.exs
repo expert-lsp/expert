@@ -5,7 +5,9 @@ defmodule Expert.Integrations.Spark.HoverTest do
   import Forge.Test.CursorSupport
   import Forge.Test.Fixtures
 
+  alias Expert.EngineApi
   alias Expert.Integrations
+  alias Expert.Integrations.Spark.Callbacks
   alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Env
@@ -23,14 +25,22 @@ defmodule Expert.Integrations.Spark.HoverTest do
       {:ok, query(entries, subject, constraints, :prefix)}
     end)
 
-    patch(Store, :all, fn _project, _constraints ->
-      flunk("Spark hover must not read the full index")
+    patch(Callbacks, :fetch, fn ^project, nil, module, function ->
+      runtime_callback(module, function)
+    end)
+
+    patch(EngineApi, :module_from_string, fn ^project, module ->
+      {:ok, String.to_existing_atom(module)}
     end)
 
     {:ok, project: project}
   end
 
-  test "returns indexed Spark documentation", %{project: project} do
+  test "returns Spark documentation from runtime metadata", %{project: project} do
+    patch(Callbacks, :function_options, fn ^project, Ash, :create, 2, 1 ->
+      {:ok, [upsert?: [doc: "Upsert"]]}
+    end)
+
     for {source, expected} <- [
           {"use Ash.Resource, otp_|app: :my_app", "OTP application"},
           {resource("act|ions do\nend"), "Actions"},
@@ -54,17 +64,7 @@ defmodule Expert.Integrations.Spark.HoverTest do
     end
   end
 
-  test "skips integration queries for ordinary calls inside a Spark module", %{
-    project: project
-  } do
-    patch(Store, :exact, fn _project, _subject, _constraints ->
-      flunk("ordinary hover must not query Spark metadata")
-    end)
-
-    patch(Store, :prefix, fn _project, _prefix, _constraints ->
-      flunk("ordinary hover must not scan Spark extensions")
-    end)
-
+  test "ignores ordinary calls inside a Spark module", %{project: project} do
     assert [] = hover(project, resource("def ordinary, do: lo|cal_call()"))
   end
 
@@ -118,7 +118,7 @@ defmodule Expert.Integrations.Spark.HoverTest do
         default_extension_kinds: %{},
         extension_kinds: ["extensions"],
         single_extension_kinds: [],
-        options: [option("otp_app", "OTP application")]
+        options: [option("otp_app")]
       }),
       Entry.integration(path, "spark", :extension, Ash.Resource.Extension, %{
         added_extensions: ["Elixir.My.AttributeExtension"],
@@ -127,9 +127,9 @@ defmodule Expert.Integrations.Spark.HoverTest do
           section(
             "actions",
             [
-              entity("read", [option("description", "Description")], "A read action")
+              entity("read", [option("description")])
             ],
-            [option("trace?", "Trace actions")]
+            [option("trace?")]
           )
         ]
       }),
@@ -161,23 +161,23 @@ defmodule Expert.Integrations.Spark.HoverTest do
         added_extensions: [],
         sections: [],
         patches: [
-          %{section_path: ["actions"], entity: entity("create", [], "A create action")}
+          %{section_path: ["actions"], entity: entity("create", [])}
         ]
       }),
       relation(path, "Elixir.Ash.Type", "Elixir.Ash.Type.String", %{
         constraints: [
-          option("max_length", "Maximum length"),
+          option("max_length"),
           %{
             option("range")
             | type: %{
                 kind: :keyword_list,
-                options: [option("max", "Maximum value")]
+                options: [option("max")]
               }
           }
         ]
       }),
       Entry.integration(path, "spark", :function, "Ash.create/2/1", [
-        option("upsert?", "Upsert")
+        option("upsert?")
       ])
     ]
   end
@@ -201,7 +201,6 @@ defmodule Expert.Integrations.Spark.HoverTest do
   defp section(name, entities, options \\ []) do
     %{
       name: name,
-      documentation: String.capitalize(name),
       snippet: nil,
       top_level?: false,
       options: options,
@@ -210,10 +209,9 @@ defmodule Expert.Integrations.Spark.HoverTest do
     }
   end
 
-  defp entity(name, options, documentation \\ "") do
+  defp entity(name, options) do
     %{
       name: name,
-      documentation: documentation,
       snippet: nil,
       arguments: [],
       options: options,
@@ -221,13 +219,56 @@ defmodule Expert.Integrations.Spark.HoverTest do
     }
   end
 
-  defp option(name, documentation \\ "") do
+  defp option(name) do
     %{
       name: name,
-      documentation: documentation,
       snippet: nil,
       default: nil,
       type: %{kind: :atom}
     }
   end
+
+  defp runtime_callback(Ash.Resource, :opt_schema) do
+    {:ok, [otp_app: [doc: "OTP application"]]}
+  end
+
+  defp runtime_callback(Ash.Resource.Extension, :sections) do
+    {:ok,
+     [
+       %{
+         name: :actions,
+         docs: "Actions",
+         schema: [trace?: [type: :boolean, doc: "Trace actions"]],
+         entities: [
+           %{
+             name: :read,
+             docs: "A read action",
+             schema: [description: [type: :string, doc: "Description"]]
+           }
+         ]
+       }
+     ]}
+  end
+
+  defp runtime_callback(My.Patch, :dsl_patches) do
+    {:ok,
+     [
+       %{
+         section_path: [:actions],
+         entity: %{name: :create, docs: "A create action"}
+       }
+     ]}
+  end
+
+  defp runtime_callback(Ash.Type.String, :constraints) do
+    {:ok,
+     [
+       max_length: [type: :non_neg_integer, doc: "Maximum length"],
+       range: [
+         type: {:keyword_list, [max: [type: :non_neg_integer, doc: "Maximum value"]]}
+       ]
+     ]}
+  end
+
+  defp runtime_callback(_module, _function), do: :error
 end

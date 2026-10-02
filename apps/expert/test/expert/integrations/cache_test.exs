@@ -13,8 +13,13 @@ defmodule Expert.Integrations.CacheTest do
 
   test "caches values by namespace", %{project: project} do
     assert :first = Cache.fetch(project, First, :key, fn -> :first end)
-    assert :first = Cache.fetch(project, First, :key, fn -> flunk("cache miss") end)
+    assert :first = Cache.fetch(project, First, :key, fn -> :missing end)
     assert :second = Cache.fetch(project, Second, :key, fn -> :second end)
+  end
+
+  test "does not cache errors", %{project: project} do
+    assert :error = Cache.fetch(project, __MODULE__, :key, fn -> :error end)
+    assert :value = Cache.fetch(project, __MODULE__, :key, fn -> :value end)
   end
 
   test "clears cached values", %{project: project} do
