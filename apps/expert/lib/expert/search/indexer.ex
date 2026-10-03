@@ -73,14 +73,14 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp replace_index(%Project{} = project, path_to_ids, opts) do
+  defp replace_index(%Project{} = project, _path_to_ids, opts) do
     paths = paths_for_project(project, opts)
-    {entries, state} = paths |> index_stream(project) |> collect_stream(new_stream_state())
 
-    indexed_paths = MapSet.new(entries, & &1.path)
-    paths_to_clear = stored_paths_to_clear(path_to_ids, indexed_paths)
-
-    with :ok <- store_result(Store.apply_index_update(project, entries, paths_to_clear)) do
+    with :ok <- store_result(Store.replace(project, [])),
+         {:ok, state} <-
+           paths
+           |> index_stream(project)
+           |> persist_stream(new_stream_state(), project) do
       {:ok, Manifest.new(manifest_entries(state))}
     end
   end
@@ -250,13 +250,6 @@ defmodule Expert.Search.Indexer do
     fn path, source ->
       Expert.Search.Indexer.Source.index(path, source, nil, project)
     end
-  end
-
-  defp stored_paths_to_clear(path_to_ids, indexed_paths) do
-    path_to_ids
-    |> stored_paths()
-    |> MapSet.difference(indexed_paths)
-    |> Enum.to_list()
   end
 
   defp stored_paths(path_to_ids) when is_map(path_to_ids) do
