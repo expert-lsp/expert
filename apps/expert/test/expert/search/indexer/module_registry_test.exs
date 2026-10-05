@@ -58,6 +58,18 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert {:public_function, 0} in exports.functions
     assert {:public_macro, 0} in exports.macros
     refute Code.loaded?(module)
+
+    assert :ok = ModuleRegistry.clear(project)
+    refute ModuleRegistry.available_module?(project, module)
+
+    assert :ok =
+             Beams.register_modules([beam_path], project, %{beam_dir => :registered_from_disk})
+
+    assert ModuleRegistry.available_module?(project, module)
+    assert ModuleRegistry.application(project, module) == :registered_from_disk
+    assert {:ok, registered_exports} = ModuleRegistry.module_exports(project, module)
+    assert {:public_function, 0} in registered_exports.functions
+    assert {:public_macro, 0} in registered_exports.macros
   end
 
   test "clears metadata without replacing the registry table" do
@@ -66,10 +78,14 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     registry = ModuleRegistry.name(project)
     table = :ets.whereis(registry)
     ModuleRegistry.put(project, Example, "/example.beam", :example, run: 0)
+    refute ModuleRegistry.hydrated?(project)
+    assert :ok = ModuleRegistry.mark_hydrated(project)
+    assert ModuleRegistry.hydrated?(project)
 
     assert :ok = ModuleRegistry.clear(project)
 
     assert :ets.whereis(registry) == table
+    refute ModuleRegistry.hydrated?(project)
     refute ModuleRegistry.available_module?(project, Example)
     refute ModuleRegistry.available_module?(project, Kernel)
   end
@@ -77,7 +93,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
   test "uses project runtime exports for implicit imports" do
     project = project()
     Expert.Project.Store.set_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
     start_supervised!({ModuleRegistry, project})
 
     exports = %{functions: [project_runtime: 0], macros: []}
@@ -100,7 +116,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert :error = ModuleRegistry.module_exports(project, Example)
     refute_received :engine_lookup
 
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
     assert {:ok, %{functions: [run: 0]}} = ModuleRegistry.module_exports(project, Example)
     assert_received :engine_lookup
 

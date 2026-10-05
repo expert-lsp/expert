@@ -155,7 +155,7 @@ defmodule Expert.Search.IndexerTest do
   defp start_registry(project) do
     start_supervised!({ModuleRegistry, project})
     Expert.Project.Store.add_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
   end
 
   defp cleared_paths(calls, previous_paths) do

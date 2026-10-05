@@ -31,10 +31,10 @@ defmodule Expert.Provider.Handlers.HoverTest do
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!(Expert.Application.document_store_child_spec())
     start_supervised!({Expert.Project.Store, []})
+    Expert.Project.Store.add_projects([project])
     start_supervised!({DynamicSupervisor, Expert.Project.DynamicSupervisor.options()})
-    start_supervised!({Expert.Project.Supervisor, project})
-
     Expert.Configuration.new() |> Expert.Configuration.set()
+    assert {:ok, _pid} = Expert.Project.Supervisor.ensure_node_started(project)
 
     :ok =
       EngineApi.register_listener(project, self(), [

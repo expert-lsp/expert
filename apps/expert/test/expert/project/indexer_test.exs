@@ -6,7 +6,9 @@ defmodule Expert.Project.IndexerTest do
   import Forge.Test.EventualAssertions
   import Forge.Test.Fixtures
 
+  alias Expert.Configuration
   alias Expert.EngineApi
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Indexer
   alias Expert.Search
   alias Expert.Search.Store
@@ -14,6 +16,7 @@ defmodule Expert.Project.IndexerTest do
 
   setup do
     project = project()
+    Configuration.new() |> Configuration.set()
     Sqlite.destroy_all(project)
 
     start_supervised!(
@@ -26,8 +29,14 @@ defmodule Expert.Project.IndexerTest do
     patch(EngineApi, :call, fn _, _, _, _ -> flunk("Index tasks must not control the Engine") end)
     test_pid = self()
     patch(EngineApi, :broadcast, fn ^project, message -> send(test_pid, message) end)
+    patch(EngineRuntime, :available?, fn _project -> true end)
     patch(Search.Indexer, :warmup, fn _ -> :ok end)
-    on_exit(fn -> Sqlite.destroy_all(project) end)
+
+    on_exit(fn ->
+      :persistent_term.erase(Configuration)
+      Sqlite.destroy_all(project)
+    end)
+
     {:ok, project: project}
   end
 
@@ -130,6 +139,46 @@ defmodule Expert.Project.IndexerTest do
     assert_receive project_index_ready(project: ^project)
   end
 
+  test "warmup stops when its owner is killed", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :warmup, fn _ ->
+      send(test_pid, {:warmup, self()})
+      Process.sleep(:infinity)
+    end)
+
+    owner = start_supervised!({Indexer, project})
+    assert_receive {:warmup, worker}
+    ref = Process.monitor(worker)
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+  end
+
+  test "a local refresh creates an empty index from source and BEAM files", %{project: project} do
+    test_pid = self()
+    calls = :atomics.new(1, [])
+
+    patch(EngineRuntime, :available?, fn _project -> false end)
+
+    patch(Search.Indexer, :warmup, fn ^project ->
+      case :atomics.add_get(calls, 1, 1) do
+        1 ->
+          send(test_pid, :warmup)
+          Process.sleep(:infinity)
+
+        2 ->
+          send(test_pid, :local_refresh)
+          :ok
+      end
+    end)
+
+    start_supervised!({Indexer, project})
+    assert_receive :warmup
+    Indexer.refresh(project)
+
+    assert_receive :local_refresh, 5_000
+  end
+
   test "completed warmup permits a later refresh", %{project: project} do
     test_pid = self()
 
@@ -166,25 +215,31 @@ defmodule Expert.Project.IndexerTest do
   end
 
   test "skips warmup when the store has a persisted index", %{project: project} do
+    patch(EngineRuntime, :available?, fn _project -> false end)
     patch(Store, :load_status, :stale)
     patch(Search.Indexer, :warmup, fn _ -> flunk("A persisted index does not need warmup") end)
     start_supervised!({Indexer, project})
     assert_eventually(is_nil(:sys.get_state(Indexer.name(project)).task))
   end
 
-  test "warmup stops when its owner is killed", %{project: project} do
+  test "updates a persisted index from disk while the Engine is unavailable", %{
+    project: project
+  } do
     test_pid = self()
 
-    patch(Search.Indexer, :warmup, fn _ ->
-      send(test_pid, {:warmup, self()})
-      Process.sleep(:infinity)
+    {:ok, _config} = Configuration.on_change(%{"enableCompilation" => false})
+    patch(EngineRuntime, :available?, fn _project -> false end)
+    patch(Store, :load_status, :stale)
+
+    patch(Search.Indexer, :update_from_disk, fn ^project ->
+      send(test_pid, :update_from_disk)
+      :ok
     end)
 
-    owner = start_supervised!({Indexer, project})
-    assert_receive {:warmup, worker}
-    ref = Process.monitor(worker)
-    Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    start_supervised!({Indexer, project})
+
+    assert_receive :update_from_disk, 5_000
+    refute_receive project_index_ready()
   end
 
   test "coalesces refresh requests and reports readiness after the final refresh", %{

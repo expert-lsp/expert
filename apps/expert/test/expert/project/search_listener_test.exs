@@ -7,8 +7,12 @@ defmodule Expert.Project.SearchListenerTest do
   import Forge.EngineApi.Messages
   import Forge.Test.Fixtures
 
+  alias Engine.Dispatch
   alias Expert.EngineApi
+  alias Expert.Project.Diagnostics
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Indexer
+  alias Expert.Project.Reindex
   alias Expert.Project.SearchListener
   alias Expert.Test.DispatchFake
   alias Forge.Project
@@ -19,11 +23,16 @@ defmodule Expert.Project.SearchListenerTest do
     project = project()
     test_pid = self()
     DispatchFake.start()
+    start_supervised!({Expert.Project.Store, []})
+    Expert.Project.Store.add_projects([project])
+    patch(EngineRuntime, :mark_ready, fn ^project -> :ok end)
 
     patch(Expert.Project.Node, :trigger_build, fn ^project, force? ->
       send(test_pid, {:compile, force?})
     end)
 
+    start_supervised!({Diagnostics, project})
+    start_supervised!({Reindex, project})
     start_supervised!({SearchListener, project})
     {:ok, project: project}
   end
@@ -60,5 +69,10 @@ defmodule Expert.Project.SearchListenerTest do
 
   test "requests an incremental initial compile" do
     assert_receive {:compile, false}
+  end
+
+  test "registers permanent project listeners", %{project: project} do
+    assert Dispatch.registered?(Process.whereis(Diagnostics.name(project)))
+    assert Dispatch.registered?(Process.whereis(SearchListener.name(project)))
   end
 end

@@ -12,7 +12,7 @@ defmodule Expert.Search.Indexer.SourceTest do
     project = project()
     start_supervised!({Expert.Project.Store, []})
     Expert.Project.Store.set_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
     start_supervised!({ModuleRegistry, project})
     {:ok, project: project}
   end

@@ -2,8 +2,6 @@ defmodule Expert.CodeIntelligence.Definition do
   @moduledoc "Resolves definitions from Manager-owned search entries."
 
   alias Expert.CodeIntelligence.Variable
-  alias Expert.Search.Indexer.Manifest
-  alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Analysis
@@ -24,7 +22,7 @@ defmodule Expert.CodeIntelligence.Definition do
             {:ok, Location.new(entry.range, document.uri)}
 
           :error ->
-            indexed_definition(project, document, analysis, position)
+            indexed_definition(project, analysis, position)
         end
 
       _ ->
@@ -32,16 +30,16 @@ defmodule Expert.CodeIntelligence.Definition do
     end
   end
 
-  defp indexed_definition(project, document, analysis, position) do
-    with true <- current_document?(project, document),
-         {:ok, references} <- Store.all(project, paths: [document.path], subtype: :reference),
+  defp indexed_definition(project, analysis, position) do
+    with {:ok, references} <- Store.entries_for_document(project, analysis, :reference),
          %Entry{} = reference <- reference_at(references, analysis, position),
          {:ok, [_ | _] = definitions} <-
            Store.exact(project, reference.subject,
              type: definition_type(reference),
              subtype: :definition
-           ),
-         false <- Enum.any?(definitions, &match?(%Entry{metadata: %{original_mfa: _}}, &1)) do
+           ) do
+      definitions = expand_definitions(project, definitions)
+
       definitions
       |> Enum.map(&Location.new(&1.range, Document.Path.ensure_uri(&1.path)))
       |> case do
@@ -50,6 +48,31 @@ defmodule Expert.CodeIntelligence.Definition do
       end
     else
       _ -> {:ok, nil}
+    end
+  end
+
+  defp expand_definitions(project, definitions) do
+    definitions
+    |> Enum.flat_map(fn
+      %Entry{metadata: %{via: :use, original_mfa: original_mfa}} = entry ->
+        case exact_definitions(project, original_mfa) do
+          [] -> [entry]
+          definitions -> definitions
+        end
+
+      %Entry{type: {:function, :delegate}, metadata: %{original_mfa: original_mfa}} = entry ->
+        exact_definitions(project, original_mfa) ++ [entry]
+
+      entry ->
+        [entry]
+    end)
+    |> Enum.uniq_by(& &1.subject)
+  end
+
+  defp exact_definitions(project, subject) do
+    case Store.exact(project, subject, subtype: :definition) do
+      {:ok, definitions} -> definitions
+      _ -> []
     end
   end
 
@@ -101,18 +124,6 @@ defmodule Expert.CodeIntelligence.Definition do
     case Variable.definition(analysis, position, function) do
       {:ok, %Entry{}} -> nil
       :error -> function
-    end
-  end
-
-  defp current_document?(_project, %Document{dirty?: true}), do: false
-
-  defp current_document?(project, %Document{} = document) do
-    with {:ok, manifest} <- ManifestStore.load(project),
-         {:ok, entry} <- Manifest.fetch(manifest, document.path),
-         true <- Manifest.Entry.matches_file?(entry) do
-      File.read(document.path) == {:ok, Document.to_string(document)}
-    else
-      _ -> false
     end
   end
 end

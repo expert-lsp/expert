@@ -6,7 +6,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   use GenServer
 
   alias Expert.EngineApi
-  alias Expert.Project.Store
+  alias Expert.Project.EngineRuntime
   alias Forge.Project
 
   @type exports :: %{functions: [{atom(), arity()}], macros: [{atom(), arity()}]}
@@ -27,6 +27,13 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def name(%Project{} = project), do: :"#{Project.unique_name(project)}::module_registry"
 
   def clear(%Project{} = project), do: GenServer.call(name(project), :clear)
+
+  def hydrated?(%Project{} = project), do: :ets.member(name(project), :hydrated)
+
+  def mark_hydrated(%Project{} = project) do
+    true = :ets.insert(name(project), {:hydrated, true})
+    :ok
+  end
 
   def prune(%Project{} = project, beam_paths) do
     GenServer.call(name(project), {:prune, MapSet.new(beam_paths, &Forge.Path.native/1)})
@@ -91,7 +98,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def application(nil, _module), do: nil
 
   def application(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
+    case lookup(project, {:module, module}) do
       [{{:module, ^module}, %{application: nil}}] ->
         engine_lookup(project, :application, module, nil)
 
@@ -107,7 +114,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def available_module?(nil, _module), do: false
 
   def available_module?(%Project{} = project, module) when is_atom(module) do
-    :ets.member(name(project), {:module, module}) or
+    lookup(project, {:module, module}) != [] or
       engine_lookup(project, :available_module?, module, false)
   end
 
@@ -115,7 +122,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def module_exports(nil, _module), do: :error
 
   def module_exports(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
+    case lookup(project, {:module, module}) do
       [{{:module, ^module}, %{exports: exports}}] -> {:ok, exports}
       [] -> engine_lookup(project, :module_exports, module, :error)
     end
@@ -125,7 +132,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def beam_path(nil, _module), do: nil
 
   def beam_path(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
+    case lookup(project, {:module, module}) do
       [{{:module, ^module}, %{beam_path: beam_path}}] -> beam_path
       [] -> nil
     end
@@ -136,12 +143,19 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def exunit_module?(%Project{} = project, module),
     do: engine_lookup(project, :exunit_module?, module, false)
 
+  defp engine_lookup(%Project{root_uri: nil}, _operation, _module, default), do: default
+
   defp engine_lookup(project, operation, module, default) do
-    if Store.ready?(project) do
+    if EngineRuntime.available?(project) do
       fetch_from_engine(project, operation, module)
     else
       default
     end
+  end
+
+  defp lookup(project, key) do
+    table = if project.root_uri, do: :ets.whereis(name(project)), else: :undefined
+    if table == :undefined, do: [], else: :ets.lookup(table, key)
   end
 
   defp fetch_from_engine(project, operation, module) do
