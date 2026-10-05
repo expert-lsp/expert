@@ -42,7 +42,7 @@ defmodule Forge.Document.Range do
 
     cond do
       position.line == start_pos.line and position.line == end_pos.line ->
-        position.character >= start_pos.character and position.character <= end_pos.character
+        position.character >= start_pos.character and position.character < end_pos.character
 
       position.line == start_pos.line ->
         position.character >= start_pos.character
@@ -53,6 +53,16 @@ defmodule Forge.Document.Range do
       true ->
         position.line > start_pos.line and position.line < end_pos.line
     end
+  end
+
+  @doc """
+  Returns whether the cursor is between the range's start and end, including
+  the end position.
+  """
+  @spec contains_cursor?(t(), Position.t()) :: boolean()
+  def contains_cursor?(%__MODULE__{} = range, %Position{} = position) do
+    Position.compare(position, range.start) != :lt and
+      Position.compare(position, range.end) != :gt
   end
 end
 
