@@ -361,9 +361,14 @@ defmodule Expert.Search.Indexer do
 
   defp consume_entry(_origin, nil, entries, state), do: {entries, state}
 
-  defp consume_entry(:source, entry, entries, state) do
+  defp consume_entry(:source, %{subtype: subtype} = entry, entries, state)
+       when subtype in [:definition, :block_structure] do
     state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
 
+    {[entry | entries], state}
+  end
+
+  defp consume_entry(:source, entry, entries, state) do
     {[entry | entries], state}
   end
 
