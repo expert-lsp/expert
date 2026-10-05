@@ -295,6 +295,48 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReferenceTest do
   end
 
   describe "imported function references" do
+    test "functions imported through use remember their module in nested scopes" do
+      code = ~q{
+        defmodule FunctionReferenceUseImports.B do
+          def foo, do: :ok
+        end
+
+        defmodule FunctionReferenceUseImports.A do
+          defmacro __using__(ast) do
+            quote do
+              import FunctionReferenceUseImports.B
+              unquote(ast)
+            end
+          end
+        end
+
+        defmodule FunctionReferenceUseImports do
+          use FunctionReferenceUseImports.A
+
+          def function, do: foo()
+
+          defmodule Nested do
+            def function, do: foo()
+          end
+        end
+      }
+
+      modules = for {module, _bytecode} <- Code.compile_string(code), do: module
+
+      on_exit(fn ->
+        Enum.each(modules, fn module ->
+          :code.purge(module)
+          :code.delete(module)
+        end)
+      end)
+
+      assert {:ok, [direct, nested], _} = index(code)
+      assert direct.subject == "FunctionReferenceUseImports.B.foo/0"
+      assert nested.subject == "FunctionReferenceUseImports.B.foo/0"
+      assert "foo()" = extract(code, direct.range)
+      assert "foo()" = extract(code, nested.range)
+    end
+
     test "imported local functions remember their module" do
       code = ~q{
       defmodule Imports do

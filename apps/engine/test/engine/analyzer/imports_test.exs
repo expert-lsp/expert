@@ -42,6 +42,34 @@ defmodule ShadowsKernel do
   def to_string(x), do: x
 end
 
+defmodule ImportsViaUse.Imported do
+  def injected_function, do: :ok
+  def other_function, do: :ok
+  defmacro injected_macro, do: :ok
+end
+
+defmodule ImportsViaUse.Using do
+  defmacro __using__(_opts) do
+    quote do
+      import ImportsViaUse.Imported
+    end
+  end
+end
+
+defmodule ImportsViaUse.Counting do
+  defmacro __using__(_opts) do
+    if pid = Process.whereis(ImportsViaUse.Observer) do
+      send(pid, :expanded_counting_use)
+    end
+
+    quote(do: :ok)
+  end
+end
+
+defmodule ImportsViaUse.Throwing do
+  defmacro __using__(_opts), do: throw(:expected_use_failure)
+end
+
 defmodule Engine.Ast.Analysis.ImportsTest do
   use ExUnit.Case
 
@@ -60,11 +88,11 @@ defmodule Engine.Ast.Analysis.ImportsTest do
     |> Analyzer.imports_at(position)
   end
 
-  def module_for_cursor(text, function, arity) do
+  def module_for_cursor(text, function, arity, opts \\ []) do
     {position, document} = pop_cursor(text, as: :document)
 
     document
-    |> Ast.analyze()
+    |> Ast.analyze(opts)
     |> Analyzer.import_module_for(position, function, arity)
   end
 
@@ -408,6 +436,116 @@ defmodule Engine.Ast.Analysis.ImportsTest do
           |
         end
       ], :does_not_exist_function, 0)
+    end
+
+    test "finds functions imported through use" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Using
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "finds macros imported through use" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Using
+          |
+        end
+      ], :injected_macro, 0, expand_uses: true)
+    end
+
+    test "does not expose use imports before the use" do
+      assert :error = module_for_cursor(~q[
+        defmodule Foo do
+          |
+          use ImportsViaUse.Using
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "inherits use imports in nested modules" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Using
+
+          defmodule Child do
+            |
+          end
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "only after use removes functions from the snapshot" do
+      assert :error = module_for_cursor(~q{
+        defmodule Foo do
+          use ImportsViaUse.Using
+          import ImportsViaUse.Imported, only: [other_function: 0]
+          |
+        end
+      }, :injected_function, 0, expand_uses: true)
+    end
+
+    test "except after use removes functions from the snapshot" do
+      assert :error = module_for_cursor(~q{
+        defmodule Foo do
+          use ImportsViaUse.Using
+          import ImportsViaUse.Imported, except: [injected_function: 0]
+          |
+        end
+      }, :injected_function, 0, expand_uses: true)
+    end
+
+    test "ignores unavailable using modules" do
+      assert :error = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.DoesNotExist
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "ignores failures from using modules" do
+      assert :error = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Throwing
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "does not expand uses in invalid documents" do
+      Process.register(self(), ImportsViaUse.Observer)
+
+      valid_document =
+        Forge.Document.new(
+          "file:///valid.ex",
+          """
+          defmodule Foo do
+            use ImportsViaUse.Counting
+          end
+          """,
+          1
+        )
+
+      assert Ast.analyze(valid_document, expand_uses: true).valid?
+      assert_received :expanded_counting_use
+
+      invalid_document =
+        Forge.Document.new(
+          "file:///invalid.ex",
+          """
+          defmodule Foo do
+            use ImportsViaUse.Counting
+            def broken(
+          end
+          """,
+          1
+        )
+
+      refute Ast.analyze(invalid_document, expand_uses: true).valid?
+      refute_received :expanded_counting_use
     end
   end
 

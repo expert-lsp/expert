@@ -7,6 +7,7 @@ defmodule Expert.Search.Indexer.SourceTest do
   alias Expert.EngineApi
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Source
+  alias Forge.Ast
 
   setup do
     project = project()
@@ -14,7 +15,20 @@ defmodule Expert.Search.Indexer.SourceTest do
     Expert.Project.Store.set_projects([project])
     Expert.Project.Store.transition(project, :ready)
     start_supervised!({ModuleRegistry, project})
+    patch(EngineApi, :analyze, fn ^project, document, opts -> Ast.analyze(document, opts) end)
     {:ok, project: project}
+  end
+
+  test "analyzes source in the Engine runtime", %{project: project} do
+    test_pid = self()
+
+    patch(EngineApi, :analyze, fn ^project, document, opts ->
+      send(test_pid, {:analyze, opts})
+      Ast.analyze(document, opts)
+    end)
+
+    assert {:ok, _entries} = Source.index("example.ex", "1", [], project)
+    assert_received {:analyze, [expand_uses: true]}
   end
 
   test "caches Engine lookups in the module registry", %{project: project} do

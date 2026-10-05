@@ -27,25 +27,81 @@ defmodule Engine.Analyzer.Imports do
   def module_for(%Analysis{} = analysis, %Position{} = position, function_name, arity) do
     case Analysis.scopes_at(analysis, position) do
       [%Scope{} = scope | _] ->
-        end_line = Scope.end_line(scope, position)
+        case latest_use_with_imports(scope, position) do
+          nil ->
+            explicit_module_for(scope, position, nil, function_name, arity)
 
-        scope.imports
-        |> Enum.sort_by(& &1.range.start.line)
-        |> Enum.take_while(&(&1.range.start.line <= end_line))
-        |> Enum.reverse(kernel_imports(scope))
-        |> Enum.find_value(:error, fn %Import{} = import ->
-          module = Aliases.resolve_at(scope, import.module, import.range.start.line)
-
-          if import_allows?(module, import.selector, function_name, arity) do
-            {:ok, module}
-          else
-            false
-          end
-        end)
+          use ->
+            module_for_after_use(scope, position, use, function_name, arity)
+        end
 
       _ ->
         :error
     end
+  end
+
+  defp latest_use_with_imports(scope, position) do
+    [scope.latest_expanded_use | scope.uses]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.filter(fn use ->
+      is_list(use.imported_mfas) and Position.compare(use.range.end, position) in [:lt, :eq]
+    end)
+    |> Enum.max_by(&{&1.range.end.line, &1.range.end.character}, fn -> nil end)
+  end
+
+  defp module_for_after_use(scope, position, use, function_name, arity) do
+    case used_module_for(imports_after_use(scope, position, use), function_name, arity) do
+      {:ok, _module} = found -> found
+      :error -> explicit_module_for(scope, position, use.range.end, function_name, arity)
+    end
+  end
+
+  defp explicit_module_for(scope, position, after_position, function_name, arity) do
+    imports =
+      scope.imports
+      |> Enum.filter(&import_in_range?(&1, after_position, position))
+      |> Enum.sort_by(&{&1.range.start.line, &1.range.start.character}, :desc)
+
+    imports = if after_position, do: imports, else: imports ++ kernel_imports(scope)
+
+    imports
+    |> Enum.find_value(:error, fn %Import{} = import ->
+      module = Aliases.resolve_at(scope, import.module, import.range.start.line)
+
+      if import_allows?(module, import.selector, function_name, arity) do
+        {:ok, module}
+      else
+        false
+      end
+    end)
+  end
+
+  defp import_in_range?(import, after_position, position) do
+    before_call? = Position.compare(import.range.start, position) in [:lt, :eq]
+
+    after_use? =
+      is_nil(after_position) or Position.compare(import.range.start, after_position) == :gt
+
+    before_call? and after_use?
+  end
+
+  defp imports_after_use(scope, position, use) do
+    imports = Enum.group_by(use.imported_mfas, &elem(&1, 0))
+
+    scope.imports
+    |> Enum.filter(&import_in_range?(&1, use.range.end, position))
+    |> Enum.sort_by(&{&1.range.start.line, &1.range.start.character})
+    |> Enum.reduce(imports, &apply_to_scope(&1, scope, &2))
+    |> Map.values()
+    |> List.flatten()
+  end
+
+  defp used_module_for(imported_mfas, function_name, arity) do
+    Enum.find_value(imported_mfas, :error, fn
+      {module, ^function_name, ^arity} -> {:ok, module}
+      _ -> false
+    end)
   end
 
   defp import_allows?(module, :all, fun, arity) do
