@@ -1,5 +1,6 @@
 defmodule Expert.Search.Indexer.Paths do
   alias Expert.EngineApi
+  alias Expert.Project.MixProject
   alias Forge.Document
   alias Forge.Project
 
@@ -16,6 +17,9 @@ defmodule Expert.Search.Indexer.Paths do
   def for_project(%Project{} = project) do
     for_project(project, &EngineApi.project_configuration(project, &1))
   end
+
+  @doc "Discovers source files and existing build output with the project's local Mix configuration."
+  def from_disk(%Project{} = project), do: for_project(project, &MixProject.configuration/1)
 
   def for_project(%Project{kind: :bare} = project, _configuration) do
     %__MODULE__{source_paths: source_files(Project.root_path(project), [])}

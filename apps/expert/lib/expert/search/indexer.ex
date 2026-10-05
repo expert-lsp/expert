@@ -19,6 +19,20 @@ defmodule Expert.Search.Indexer do
     end
   end
 
+  def warmup(%Project{} = project, opts \\ []) when is_list(opts) do
+    :ok = ModuleRegistry.clear(project)
+    paths = Keyword.get_lazy(opts, :paths, fn -> Paths.from_disk(project) end)
+
+    with :ok <- ManifestStore.invalidate(project),
+         :ok <- store_result(Store.replace(project, [])),
+         {:ok, state} <-
+           paths
+           |> index_stream(project)
+           |> persist_stream(new_stream_state(), project) do
+      ManifestStore.commit(project, Manifest.new(manifest_entries(state)))
+    end
+  end
+
   def update_index(%Project{} = project, opts \\ []) when is_list(opts) do
     with path_to_ids when is_map(path_to_ids) <- Store.path_to_ids(project),
          {:ok, manifest} <- update_index(project, path_to_ids, opts) do
