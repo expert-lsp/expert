@@ -408,6 +408,7 @@ defmodule Expert.State do
 
     server_capabilities =
       %Structures.ServerCapabilities{
+        call_hierarchy_provider: true,
         code_action_provider: code_action_options,
         code_lens_provider: code_lens_options,
         completion_provider: completion_options,

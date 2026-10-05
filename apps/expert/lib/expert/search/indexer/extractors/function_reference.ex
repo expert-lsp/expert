@@ -100,24 +100,27 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
     {:ok, nil, new_pipe}
   end
 
-  def extract({:defdelegate, _, _} = ast, %Reducer{} = reducer) do
+  def extract({:defdelegate, _, [call, _]} = ast, %Reducer{} = reducer) do
     analysis = reducer.analysis
     position = Reducer.position(reducer)
 
-    case FunctionDefinition.fetch_delegated_mfa(ast, analysis, position) do
-      {:ok, {module, function_name, arity}} ->
-        entry =
-          Entry.reference(
-            analysis.document.path,
-            Reducer.current_block(reducer),
-            Forge.Formats.mfa(module, function_name, arity),
-            {:function, :usage},
-            Ast.Range.get(ast, analysis.document),
-            Reducer.application(reducer, module)
-          )
+    with {:ok, {module, function_name, arity}} <-
+           FunctionDefinition.fetch_delegated_mfa(ast, analysis, position),
+         {:ok, caller_module} <- Analyzer.current_module(analysis, position) do
+      {caller_name, args} = Macro.decompose_call(call)
 
-        {:ok, entry, []}
+      entry =
+        Entry.reference(
+          analysis.document.path,
+          Reducer.current_block(reducer),
+          Forge.Formats.mfa(module, function_name, arity),
+          {:function, :usage},
+          Ast.Range.get(ast, analysis.document),
+          Reducer.application(reducer, module)
+        )
 
+      {:ok, %{entry | caller: Subject.mfa(caller_module, caller_name, length(args))}, []}
+    else
       _ ->
         :ignored
     end
@@ -278,7 +281,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
 
     # syntax specific functions to exclude from our matches
     excluded_operators =
-      ~w[<- -> && ** ++ -- .. "..//" ! <> =~ @ |> | || * + - / != !== < <= == === > >=]a
+      ~W[\\ <- -> && ** ++ -- .. "..//" ! <> =~ @ |> | || * + - / != !== < <= == === > >=]a
 
     excluded_keywords = ~w[and if import in not or raise require try use]a
 
