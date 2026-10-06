@@ -71,8 +71,21 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @impl Backend
-  def replace_all(%Project{} = project, entries) do
-    GenServer.call(name(project), {:replace_all, entries}, :infinity)
+  def replace_all(%Project{} = project, entries) when is_list(entries) do
+    replacement = fn write_batch ->
+      with :ok <- write_batch.(entries) do
+        {:ok, :ok}
+      end
+    end
+
+    case replace_all(project, replacement) do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def replace_all(%Project{} = project, replacement) when is_function(replacement, 1) do
+    GenServer.call(name(project), {:replace_all, replacement}, :infinity)
   end
 
   @impl Backend
@@ -223,8 +236,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   def handle_call(:definitions_for_fuzzy, _from, %State{} = state),
     do: reply(do_find_definitions_for_fuzzy(state), state)
 
-  def handle_call({:replace_all, entries}, _from, %State{} = state),
-    do: reply(do_replace_all(state, entries), state)
+  def handle_call({:replace_all, replacement}, _from, %State{} = state),
+    do: reply(do_replace_all(state, replacement), state)
 
   def handle_call(
         {:apply_index_update, updated_entries, paths_to_clear},
@@ -343,18 +356,21 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  def do_replace_all(%State{} = state, entries) when is_list(entries) do
-    with :ok <-
-           transaction(state, fn ->
-             with :ok <- drop_indexes(state),
-                  :ok <- exec(state, "DELETE FROM entry_blobs"),
-                  :ok <- exec(state, "DELETE FROM entries"),
-                  :ok <- exec(state, "DELETE FROM structures"),
-                  :ok <- insert_entries(state, entries) do
-               create_indexes(state)
-             end
-           end) do
-      exec(state, "PRAGMA optimize = 0x10002")
+  def do_replace_all(%State{} = state, replacement) when is_function(replacement, 1) do
+    with {:ok, result} <- transaction(state, fn -> replace_entries(state, replacement) end),
+         :ok <- exec(state, "PRAGMA optimize = 0x10002") do
+      {:ok, result}
+    end
+  end
+
+  defp replace_entries(%State{} = state, replacement) do
+    with :ok <- drop_indexes(state),
+         :ok <- exec(state, "DELETE FROM entry_blobs"),
+         :ok <- exec(state, "DELETE FROM entries"),
+         :ok <- exec(state, "DELETE FROM structures"),
+         {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
+         :ok <- create_indexes(state) do
+      {:ok, result}
     end
   end
 
@@ -735,6 +751,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp drop_indexes(%State{} = state) do
     with :ok <- exec(state, "DROP INDEX IF EXISTS entries_subject_idx"),
+         :ok <- exec(state, "DROP INDEX IF EXISTS entries_caller_idx"),
          :ok <- exec(state, "DROP INDEX IF EXISTS entries_block_idx"),
          :ok <- exec(state, "DROP INDEX IF EXISTS entries_id_idx"),
          :ok <- exec(state, "DROP INDEX IF EXISTS entries_path_id_idx"),

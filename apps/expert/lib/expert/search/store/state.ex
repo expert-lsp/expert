@@ -69,11 +69,11 @@ defmodule Expert.Search.Store.State do
     end
   end
 
-  def replace(%__MODULE__{} = state, entries) do
-    with :ok <- state.backend.replace_all(state.project, entries),
+  def replace(%__MODULE__{} = state, replacement) do
+    with {:ok, result} <- state.backend.replace_all(state.project, replacement),
          {:ok, fuzzy} <- Fuzzy.from_backend(state.project, state.backend),
          :ok <- maybe_sync(state) do
-      {:ok,
+      {:ok, result,
        %__MODULE__{
          state
          | loaded?: true,

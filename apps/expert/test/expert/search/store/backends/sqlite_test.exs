@@ -1,5 +1,6 @@
 defmodule Expert.Search.Store.Backends.SqliteTest do
   use ExUnit.Case, async: false
+  use Patch
 
   import Forge.Test.Fixtures
 
@@ -285,9 +286,24 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert {:ok, :empty} = Sqlite.prepare(pid)
       assert :ok = Sqlite.replace_all(project, [old_entry])
-      assert {:error, _reason} = Sqlite.replace_all(project, [invalid_entry])
+      spy(Exqlite.Basic)
+
+      replacement = fn write_batch ->
+        with :ok <- write_batch.([%Entry{old_entry | id: 3, subject: New.Module}]),
+             :ok <- write_batch.([invalid_entry]) do
+          {:ok, :replaced}
+        end
+      end
+
+      assert {:error, _reason} = Sqlite.replace_all(project, replacement)
+
+      assert_called(
+        Exqlite.Basic.exec(_, "DROP INDEX IF EXISTS entries_caller_idx", []),
+        1
+      )
 
       assert [^old_entry] = Sqlite.find_by_subject(project, Persisted.Module, :_, :_)
+      assert [] = Sqlite.find_by_subject(project, New.Module, :_, :_)
 
       database_path = Sqlite.database_path(project, runtime_versions)
       {:ok, conn} = Exqlite.Basic.open(database_path)
@@ -300,6 +316,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert MapSet.subset?(
                MapSet.new([
                  "entries_subject_idx",
+                 "entries_caller_idx",
                  "entries_block_idx",
                  "entries_id_idx",
                  "entries_path_id_idx",
@@ -326,7 +343,14 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
         })
 
       assert {:ok, :empty} = Sqlite.prepare(pid)
-      assert :ok = Sqlite.replace_all(project, entries)
+
+      replacement = fn write_batch ->
+        with :ok <- write_batch.(entries) do
+          {:ok, :replaced}
+        end
+      end
+
+      assert {:ok, :replaced} = Sqlite.replace_all(project, replacement)
     end
   end
 
