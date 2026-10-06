@@ -90,36 +90,69 @@ defmodule Expert.Search.Indexer do
       |> Manifest.plan(paths)
       |> reindex_missing_outputs(manifest, paths, path_to_ids)
 
-    initial_stream =
-      index_stream(
-        project,
-        plan.source_paths_to_index,
-        plan.beam_paths_to_index,
-        paths.applications,
-        paths.source_paths
-      )
-
-    {initial_entries, state} = collect_stream(initial_stream, new_stream_state())
-    sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries(state))
-
-    {sibling_entries, state} =
-      sibling_paths
-      |> beam_stream(project, paths.applications)
-      |> collect_stream(state)
+    {beam_items, sibling_paths} = beam_items_and_siblings(plan, manifest, paths, project)
 
     plan = %Manifest.Plan{
       plan
       | beam_paths_to_index: Enum.uniq(plan.beam_paths_to_index ++ sibling_paths)
     }
 
-    entries = initial_entries ++ sibling_entries
-    manifest_entries = manifest_entries(state)
-    paths_to_clear = Manifest.output_paths_to_clear(manifest, plan, manifest_entries)
+    beam_manifest_entries =
+      Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
 
-    with :ok <- store_result(Store.apply_index_update(project, entries, paths_to_clear)) do
-      manifest = Manifest.apply_update(manifest, plan, manifest_entries)
+    output_paths_to_clear =
+      manifest
+      |> Manifest.output_paths_for_inputs(plan.beam_paths_to_index)
+      |> Enum.to_list()
+
+    paths_to_clear =
+      plan.source_paths_to_index
+      |> Kernel.++(output_paths_to_clear)
+      |> Kernel.++(plan.output_paths_to_clear)
+      |> Kernel.++(Enum.map(beam_manifest_entries, & &1.output_path))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    source_paths =
+      include_beam_sources(
+        plan.source_paths_to_index,
+        paths.source_paths,
+        beam_manifest_entries
+      )
+
+    with :ok <- store_result(Store.apply_index_update(project, [], paths_to_clear)),
+         {:ok, state} <-
+           source_paths
+           |> Sources.stream(source_indexer(project))
+           |> tag_stream(:source)
+           |> Stream.concat(tag_stream(beam_items, :beam))
+           |> persist_stream(new_stream_state(), project) do
+      manifest = Manifest.apply_update(manifest, plan, manifest_entries(state))
 
       {:ok, manifest}
+    end
+  end
+
+  defp beam_items_and_siblings(plan, manifest, paths, project) do
+    beam_items =
+      plan.beam_paths_to_index
+      |> Beams.stream(project: project, applications: paths.applications)
+      |> Enum.to_list()
+
+    manifest_entries =
+      Enum.flat_map(beam_items, fn {_entry, entries} -> entries end)
+
+    sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries)
+
+    if sibling_paths == [] do
+      {beam_items, []}
+    else
+      sibling_items =
+        sibling_paths
+        |> Beams.stream(project: project, applications: paths.applications)
+        |> Enum.to_list()
+
+      {beam_items ++ sibling_items, sibling_paths}
     end
   end
 
@@ -297,12 +330,6 @@ defmodule Expert.Search.Indexer do
     Enum.uniq(source_paths ++ beam_source_paths)
   end
 
-  defp beam_stream(paths, project, applications) do
-    paths
-    |> Beams.stream(project: project, applications: applications)
-    |> tag_stream(:beam)
-  end
-
   defp tag_stream(stream, origin) do
     Stream.map(stream, fn {entry, manifest_entries} -> {origin, entry, manifest_entries} end)
   end
@@ -341,17 +368,24 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp collect_stream(stream, state) do
-    {entries, state} =
-      stream
-      |> Stream.chunk_every(@entry_chunk_size)
-      |> Enum.reduce({[], state}, fn chunk, {entries, state} ->
-        {chunk_entries, state} = consume_chunk(chunk, state)
-        {Enum.reverse(chunk_entries, entries), state}
-      end)
+  defp persist_stream(stream, state, project) do
+    stream
+    |> Stream.chunk_every(@entry_chunk_size)
+    |> Enum.reduce_while({:ok, state}, fn chunk, {:ok, state} ->
+      {entries, state} = consume_chunk(chunk, state)
 
-    {Enum.reverse(entries), state}
+      case insert_entries(project, entries) do
+        :ok ->
+          {:cont, {:ok, state}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
   end
+
+  defp insert_entries(_project, []), do: :ok
+  defp insert_entries(project, entries), do: store_result(Store.insert(project, entries))
 
   defp consume_chunk(chunk, state) do
     {entries, state} =

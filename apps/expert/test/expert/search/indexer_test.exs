@@ -123,6 +123,8 @@ defmodule Expert.Search.IndexerTest do
       replacement.(&FakeBackend.insert/1)
     end)
 
+    patch(Store, :insert, fn _project, entries -> FakeBackend.insert(entries) end)
+
     patch(Store, :apply_index_update, fn _project, entries, paths_to_clear ->
       FakeBackend.apply_index_update(entries, paths_to_clear)
     end)
@@ -799,7 +801,7 @@ defmodule Expert.Search.IndexerTest do
 
   describe "update_index/1 persistence" do
     @tag :tmp_dir
-    test "applies a replacement in one update", %{project: project, tmp_dir: tmp_dir} do
+    test "streams entries in bounded chunks during refresh", %{project: project, tmp_dir: tmp_dir} do
       path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
       {:ok, manifest_entry} = ManifestEntry.source(path)
       assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
@@ -827,8 +829,12 @@ defmodule Expert.Search.IndexerTest do
       assert :ok =
                Indexer.update_index(project, paths: %Paths{source_paths: [path]})
 
-      [{:apply_index_update, updated_entries, []}] = FakeBackend.calls()
-      assert length(updated_entries) == 4_001
+      [{:apply_index_update, [], [^path]}, {:insert, first_chunk}, {:insert, final_chunk}] =
+        FakeBackend.calls()
+
+      assert length(first_chunk) == 4_000
+      assert [_entry] = final_chunk
+      assert length(FakeBackend.entries()) == 4_001
     end
 
     @tag :tmp_dir
@@ -849,7 +855,7 @@ defmodule Expert.Search.IndexerTest do
 
       FakeBackend.set_entries([old_entry])
 
-      patch(Store, :apply_index_update, fn ^project, [_ | _], [] ->
+      patch(Store, :apply_index_update, fn ^project, [], [_ | _] ->
         {:error, :disk_full}
       end)
 
@@ -909,6 +915,11 @@ defmodule Expert.Search.IndexerTest do
 
       assert Enum.any?(updated_entries, &(&1.subject == parent and &1.subtype == :definition))
       assert Enum.any?(updated_entries, &(&1.subject == child and &1.subtype == :definition))
+
+      assert Enum.any?(
+               FakeBackend.entries(),
+               &(&1.subject == child and &1.subtype == :definition)
+             )
     end
   end
 

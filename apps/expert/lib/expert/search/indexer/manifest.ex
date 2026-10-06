@@ -353,7 +353,7 @@ defmodule Expert.Search.Indexer.Manifest do
     Enum.uniq(beam_paths_to_index ++ dirty_beam_paths)
   end
 
-  defp output_paths_for_inputs(%__MODULE__{} = manifest, input_paths) do
+  def output_paths_for_inputs(%__MODULE__{} = manifest, input_paths) do
     input_paths
     |> Enum.flat_map(fn input_path ->
       case fetch(manifest, input_path) do
