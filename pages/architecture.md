@@ -23,8 +23,8 @@ Before an engine node starts, Expert also:
 Expert is structured as a [poncho-style project](https://embedded-elixir.com/post/2017-05-19-poncho-projects/), with these applications under `apps`:
 
 - `forge`: Shared project, document, AST, search-entry, namespacing, and node-discovery utilities.
-- `engine`: The project-side application that provides compilation, indexing, search, and code-intelligence APIs inside the project node.
-- `expert`: The manager and language-server application that owns the LSP transport, project supervision, and request dispatch.
+- `engine`: The project-side application that provides compilation and code-intelligence APIs inside the project node.
+- `expert`: The manager and language-server application that owns the LSP transport, project supervision, request dispatch and indexing.
 
 By separating Expert into applications, the release and engine builder can place only the required code in each VM. The engine runtime dependency set is intentionally smaller than the manager's because engine code runs beside the project and must be namespaced and filtered out of analysis. Keeping engine dependencies to the minimum needed for project-side work is a design goal of this architecture.
 
@@ -54,7 +54,7 @@ The indexer analyzes Elixir source files and stores entries in `Engine.Search.St
 1. Each source file is wrapped in a `Forge.Document` struct.
 2. `Forge.Ast.analyze/1` derives a `Forge.Ast.Analysis` from the document.
 3. The AST is traversed with `Macro.prewalk/3`, and a series of extractors emits `Forge.Search.Indexer.Entry` values.
-4. The search store persists those entries in the project's `.expert/indexes/ets` directory.
+4. The search store persists those entries in the project's `.expert/indexes/` directory.
 
 On the first run, the indexer scans every `.ex` and `.exs` file outside the project's build directory. After that, it refreshes changed files and removes deleted files from the index. Dependency files are indexed for definitions only.
 
@@ -144,11 +144,11 @@ Expert releases are built with the Elixir and Erlang/OTP versions configured in 
 For that reason, Expert builds and runs the engine with the project's Elixir and Erlang/OTP versions. At a high level, the process is:
 
 1. Find the project's `elixir` and `erl` executables and spawn a build VM with them.
-2. Run `priv/build_engine.exs`, which builds the engine with `Mix.install/2`, namespaces the compiled engine into a separate build path, and returns the namespaced ebin paths plus the build `MIX_HOME`.
+2. Run `apps/expert/priv/build_engine.exs` with the project's `elixir` executable. The script compiles the packaged engine source and dependencies with `Mix.Project.in_project/4`, namespaces the compiled files into a separate build path, and returns the namespaced ebin paths plus the private tooling environment.
 3. Spawn a separate project engine VM with the project's `elixir` executable, add the namespaced engine ebin paths, and bootstrap the `Engine` application.
 
-Expert uses separate VMs for building and running the engine so code loaded by `Mix.install/2` during the build does not pollute the runtime engine node.
+Expert uses separate VMs for building and running the engine so build-time code does not pollute the runtime engine node.
 
-To avoid polluting the user's Mix, Hex, and Rebar caches, the engine build script sets private `MIX_INSTALL_DIR`, `MIX_HOME`, `HEX_HOME`, and `REBAR_CACHE_DIR` directories under Expert's user cache directory.
+To avoid polluting the user's Mix and Rebar caches, the engine build script sets private `MIX_INSTALL_DIR`, `MIX_HOME`, `MIX_ARCHIVES`, and `REBAR_CACHE_DIR` directories under Expert's user cache directory.
 
 Compiled engine applications are stored under the directory returned by `Forge.Path.expert_cache_dir/0`, which uses [`:filename.basedir(:user_cache, "expert")`](https://www.erlang.org/doc/apps/stdlib/filename.html#basedir/3).
