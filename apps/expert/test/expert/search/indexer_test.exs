@@ -126,9 +126,19 @@ defmodule Expert.Search.IndexerTest do
     patch(Store, :insert, fn _project, entries -> FakeBackend.insert(entries) end)
 
     patch(Store, :apply_index_update, fn _project, update, paths_to_clear ->
-      if is_function(update, 1) do
+      if is_function(update, 2) do
         FakeBackend.apply_index_update([], paths_to_clear)
-        update.(&FakeBackend.insert/1)
+
+        write_batch = fn entries, write_state ->
+          with :ok <- FakeBackend.insert(entries) do
+            {:ok, write_state}
+          end
+        end
+
+        case update.(write_batch, nil) do
+          {:ok, result, nil} -> {:ok, result}
+          error -> error
+        end
       else
         FakeBackend.apply_index_update(update, paths_to_clear)
       end

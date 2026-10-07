@@ -357,8 +357,8 @@ defmodule Expert.Search.Indexer do
   end
 
   defp refresh_store(stream, paths_to_clear, state, project) do
-    update = fn write_batch ->
-      stream_into_store(stream, state, write_batch)
+    update = fn write_batch, write_state ->
+      stream_into_store(stream, state, write_batch, write_state)
     end
 
     case Store.apply_index_update(project, update, paths_to_clear) do
@@ -368,21 +368,34 @@ defmodule Expert.Search.Indexer do
   end
 
   defp stream_into_store(stream, state, write_batch) do
+    write_batch_with_state = fn entries, write_state ->
+      with :ok <- write_batch.(entries) do
+        {:ok, write_state}
+      end
+    end
+
+    case stream_into_store(stream, state, write_batch_with_state, nil) do
+      {:ok, state, nil} -> {:ok, state}
+      error -> error
+    end
+  end
+
+  defp stream_into_store(stream, state, write_batch, write_state) do
     result =
       stream
       |> Stream.chunk_every(@entry_chunk_size)
-      |> Enum.reduce_while(state, fn chunk, state ->
+      |> Enum.reduce_while({state, write_state}, fn chunk, {state, write_state} ->
         {entries, state} = consume_chunk(chunk, state)
 
-        case write_batch.(entries) do
-          :ok -> {:cont, state}
+        case write_batch.(entries, write_state) do
+          {:ok, write_state} -> {:cont, {state, write_state}}
           {:error, _reason} = error -> {:halt, error}
         end
       end)
 
     case result do
       {:error, _reason} = error -> error
-      state -> {:ok, state}
+      {state, write_state} -> {:ok, state, write_state}
     end
   end
 

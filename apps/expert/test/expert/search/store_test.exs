@@ -54,6 +54,24 @@ defmodule Expert.Search.StoreTest do
     assert {:ok, [^new_entry]} = Store.fuzzy(project, "New", subtype: :definition)
   end
 
+  test "updates fuzzy search after a streamed SQLite update", %{project: project} do
+    path = "/same.ex"
+    old_entry = definition(id: 1, subject: Old.Module, path: path)
+    new_entry = definition(id: 2, subject: New.Module, path: path)
+
+    assert :ok = Store.replace(project, [old_entry])
+
+    update = fn write_batch, write_state ->
+      with {:ok, write_state} <- write_batch.([new_entry], write_state) do
+        {:ok, :updated, write_state}
+      end
+    end
+
+    assert {:ok, :updated} = Store.apply_index_update(project, update, [path])
+    assert {:ok, []} = Store.fuzzy(project, "Old", subtype: :definition)
+    assert {:ok, [^new_entry]} = Store.fuzzy(project, "New", subtype: :definition)
+  end
+
   test "exact_many uses one indexed query and skips SQL for empty input", %{project: project} do
     one = definition(id: 1, subject: Foo.Bar)
     two = definition(id: 2, subject: Other.Module)

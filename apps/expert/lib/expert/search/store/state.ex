@@ -290,37 +290,34 @@ defmodule Expert.Search.Store.State do
         update,
         paths_to_clear
       )
-      when is_function(update, 1) and is_list(paths_to_clear) do
-    Process.put(:fuzzy_acc, state.fuzzy)
-
+      when is_function(update, 2) and is_list(paths_to_clear) do
     wrapped_update = fn write_batch ->
-      write_and_update_fuzzy = fn entries ->
-        case write_batch.(entries) do
-          :ok ->
-            Process.put(:fuzzy_acc, Fuzzy.add(Process.get(:fuzzy_acc), entries))
-            :ok
-
-          error ->
-            error
+      write_and_update_fuzzy = fn entries, fuzzy ->
+        with :ok <- write_batch.(entries) do
+          {:ok, Fuzzy.add(fuzzy, entries)}
         end
       end
 
-      update.(write_and_update_fuzzy)
+      with {:ok, result, fuzzy} <- update.(write_and_update_fuzzy, state.fuzzy) do
+        {:ok, {result, fuzzy}}
+      end
     end
 
     result =
       case state.backend.apply_index_update(state.project, wrapped_update, paths_to_clear) do
-        {:ok, deleted_ids, result} -> {:ok, deleted_ids, result}
-        {:ok, deleted_ids} -> {:ok, deleted_ids, :ok}
-        error -> error
+        {:ok, deleted_ids, {callback_result, fuzzy}} ->
+          {:ok, deleted_ids, callback_result, fuzzy}
+
+        {:ok, deleted_ids} ->
+          {:ok, deleted_ids, :ok, state.fuzzy}
+
+        error ->
+          error
       end
 
-    with {:ok, deleted_ids, callback_result} <- result,
+    with {:ok, deleted_ids, callback_result, fuzzy} <- result,
          :ok <- maybe_sync(state) do
-      fuzzy =
-        :fuzzy_acc
-        |> Process.delete()
-        |> Fuzzy.drop_values(deleted_ids)
+      fuzzy = Fuzzy.drop_values(fuzzy, deleted_ids)
 
       {:ok, callback_result,
        %__MODULE__{
@@ -329,10 +326,6 @@ defmodule Expert.Search.Store.State do
            load_status: :ready,
            fuzzy: fuzzy
        }}
-    else
-      error ->
-        Process.delete(:fuzzy_acc)
-        error
     end
   end
 
