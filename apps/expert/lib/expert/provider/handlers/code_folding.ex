@@ -124,12 +124,10 @@ defmodule Expert.Provider.Handlers.CodeFolding do
     |> Enum.reject(fn {{start_line, _}, {end_line, _}} -> start_line + 1 >= end_line end)
   end
 
-  defp collect_block_range({form, meta, _args}, acc)
-       when form in [:fn, :<<>>] and is_list(meta),
-       do: collect_delimited_block(meta, acc)
-
-  defp collect_block_range({_form, meta, _args}, acc) when is_list(meta),
-    do: collect_block(meta, acc)
+  defp collect_block_range({_form, meta, _args}, acc) when is_list(meta) do
+    acc = collect_block(meta, acc)
+    collect_delimited_block(meta, acc)
+  end
 
   defp collect_block_range(_node, acc), do: acc
 
