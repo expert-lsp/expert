@@ -49,6 +49,51 @@ defmodule MockStore do
   end
 end
 
+defmodule RealSqliteStore do
+  alias Expert.Search.Store.Backends.Sqlite
+  alias Forge.Project
+
+  def start_link(name) do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "expert-bench-#{name}-#{System.unique_integer([:positive])}"
+      )
+
+    File.rm_rf!(root)
+    File.mkdir_p!(root)
+
+    project = Project.new("file://#{root}")
+    Project.ensure_workspace(project)
+    Sqlite.destroy_all(project)
+
+    {:ok, pid} =
+      Sqlite.start_link(project,
+        runtime_versions: %{erlang: System.otp_release(), elixir: System.version()}
+      )
+
+    {:ok, :empty} = Sqlite.prepare(pid)
+    {:ok, %{project: project, pid: pid, root: root}}
+  end
+
+  def stop(%{pid: pid, root: root}) do
+    GenServer.stop(pid)
+    File.rm_rf!(root)
+  end
+
+  def insert(%{project: project}, entries) do
+    Sqlite.insert(project, entries)
+  end
+
+  def apply_index_update(%{project: project}, entries, paths_to_clear) do
+    case Sqlite.apply_index_update(project, entries, paths_to_clear) do
+      {:ok, _} -> :ok
+      :ok -> :ok
+      error -> error
+    end
+  end
+end
+
 compile_indexer = fn source, module_name ->
   source
   |> String.replace("defmodule Expert.Search.Indexer do", "defmodule #{module_name} do")
@@ -66,14 +111,14 @@ compile_indexer.(current_source, OptimizedIndexer)
 defmodule Runner do
   @entry_chunk_size 4_000
 
-  def run_baseline(stream, paths_to_clear, store_pid) do
+  def run_baseline(stream, paths_to_clear, store, module \\ MockStore) do
     {entries, state} = BaselineIndexer.collect_stream(stream, BaselineIndexer.new_stream_state())
-    :ok = MockStore.apply_index_update(store_pid, entries, paths_to_clear)
+    :ok = module.apply_index_update(store, entries, paths_to_clear)
     {:ok, BaselineIndexer.manifest_entries(state)}
   end
 
-  def run_optimized(stream, paths_to_clear, store_pid) do
-    :ok = MockStore.apply_index_update(store_pid, [], paths_to_clear)
+  def run_optimized(stream, paths_to_clear, store, module \\ MockStore) do
+    :ok = module.apply_index_update(store, [], paths_to_clear)
 
     {:ok, state} =
       stream
@@ -81,7 +126,7 @@ defmodule Runner do
       |> Enum.reduce_while({:ok, OptimizedIndexer.new_stream_state()}, fn chunk, {:ok, state} ->
         {entries, state} = OptimizedIndexer.consume_chunk(chunk, state)
 
-        case MockStore.insert(store_pid, entries) do
+        case module.insert(store, entries) do
           :ok -> {:cont, {:ok, state}}
           {:error, _} = error -> {:halt, error}
         end
@@ -209,6 +254,44 @@ Enum.each(inputs, fn {label, file_count} ->
     - Baseline Peak Heap:      #{base_mb} MB
     - Optimized Peak Heap:     #{opt_mb} MB
     - Peak Heap Saved:         -#{saved_mb} MB (-#{saved_pct}%)
+  """)
+end)
+
+"=" |> String.duplicate(70) |> IO.puts()
+IO.puts("Measuring real SQLite database transactions (disk I/O & commits)...")
+"=" |> String.duplicate(70) |> IO.puts()
+
+Enum.each(inputs, fn {label, file_count} ->
+  paths_to_clear = Enum.map(1..file_count, fn i -> "lib/mock_#{i}.ex" end)
+  stream_data = build_stream.(file_count) |> Enum.to_list()
+
+  {:ok, store1} = RealSqliteStore.start_link("base")
+
+  {base_us, {:ok, _}} =
+    :timer.tc(fn ->
+      Runner.run_baseline(stream_data, paths_to_clear, store1, RealSqliteStore)
+    end)
+
+  RealSqliteStore.stop(store1)
+
+  {:ok, store2} = RealSqliteStore.start_link("opt")
+
+  {opt_us, {:ok, _}} =
+    :timer.tc(fn ->
+      Runner.run_optimized(stream_data, paths_to_clear, store2, RealSqliteStore)
+    end)
+
+  RealSqliteStore.stop(store2)
+
+  base_ms = Float.round(base_us / 1000, 2)
+  opt_ms = Float.round(opt_us / 1000, 2)
+  ratio = Float.round(opt_ms / base_ms, 2)
+  diff = Float.round(opt_ms - base_ms, 2)
+
+  IO.puts("""
+  [#{label} - Real SQLite]
+    - Baseline (Single Transaction): #{base_ms} ms
+    - Optimized (Chunked Trans 4k):  #{opt_ms} ms (diff: #{if diff >= 0, do: "+"}#{diff} ms, #{ratio}x)
   """)
 end)
 
