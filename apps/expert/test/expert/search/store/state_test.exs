@@ -15,7 +15,8 @@ defmodule Expert.Search.Store.StateTest do
     def new(_project), do: {:ok, :new}
     def prepare(_), do: {:ok, :empty}
     def insert(_project, _entries), do: :ok
-    def replace_all(_project, _entries), do: :ok
+
+    def replace_all(_project, replacement), do: replacement.(fn _entries -> :ok end)
 
     def apply_index_update(_project, _entries, _paths),
       do: {:ok, []}
@@ -69,7 +70,8 @@ defmodule Expert.Search.Store.StateTest do
     def prepare(_), do: exit(:prepare_should_not_be_called)
     def delete_by_path(_project, _path), do: {:ok, []}
     def insert(_project, _entries), do: :ok
-    def replace_all(_project, _entries), do: :ok
+
+    def replace_all(_project, replacement), do: replacement.(fn _entries -> :ok end)
 
     def apply_index_update(_project, _entries, _paths),
       do: {:ok, []}

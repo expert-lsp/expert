@@ -19,8 +19,21 @@ defmodule Expert.Search.Store do
   def loaded?(%Project{} = project), do: GenServer.call(name(project), :loaded?)
   def load_status(%Project{} = project), do: GenServer.call(name(project), :load_status)
 
-  def replace(%Project{} = project, entries),
-    do: GenServer.call(name(project), {:replace, entries}, :infinity)
+  def replace(%Project{} = project, entries) when is_list(entries) do
+    replacement = fn write_batch ->
+      with :ok <- write_batch.(entries) do
+        {:ok, :ok}
+      end
+    end
+
+    case replace(project, replacement) do
+      {:ok, :ok} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def replace(%Project{} = project, replacement) when is_function(replacement, 1),
+    do: GenServer.call(name(project), {:replace, replacement}, :infinity)
 
   def apply_index_update(%Project{} = project, updated_entries, paths_to_clear) do
     GenServer.call(
@@ -178,10 +191,10 @@ defmodule Expert.Search.Store do
 
   def handle_call(:enable, _from, state), do: {:reply, :ok, state}
 
-  def handle_call({:replace, entries}, _from, {ref, %State{} = state}) do
+  def handle_call({:replace, replacement}, _from, {ref, %State{} = state}) do
     {reply, new_state} =
-      case State.replace(state, entries) do
-        {:ok, new_state} -> {:ok, State.drop_buffered_updates(new_state)}
+      case State.replace(state, replacement) do
+        {:ok, result, new_state} -> {{:ok, result}, State.drop_buffered_updates(new_state)}
         {:error, _} = error -> {error, state}
       end
 

@@ -118,8 +118,10 @@ defmodule Expert.Search.IndexerTest do
     FakeBackend.set_entries([])
     FakeBackend.reset_calls()
 
-    patch(Store, :replace, fn _project, entries -> FakeBackend.replace(entries) end)
-    patch(Store, :insert, fn _project, entries -> FakeBackend.insert(entries) end)
+    patch(Store, :replace, fn _project, replacement ->
+      FakeBackend.replace([])
+      replacement.(&FakeBackend.insert/1)
+    end)
 
     patch(Store, :apply_index_update, fn _project, entries, paths_to_clear ->
       FakeBackend.apply_index_update(entries, paths_to_clear)
@@ -336,7 +338,7 @@ defmodule Expert.Search.IndexerTest do
     end
 
     @tag :tmp_dir
-    test "emits bounded chunks and keeps completed chunks after a write error", %{
+    test "stops indexing when a streamed batch write fails", %{
       project: project,
       tmp_dir: tmp_dir
     } do
@@ -358,13 +360,17 @@ defmodule Expert.Search.IndexerTest do
         {:ok, entries}
       end)
 
-      patch(Store, :insert, fn _project, chunk ->
-        if length(chunk) == 1 do
-          FakeBackend.record_call({:insert, chunk})
-          {:error, :disk_full}
-        else
-          FakeBackend.insert(chunk)
-        end
+      patch(Store, :replace, fn ^project, replacement ->
+        FakeBackend.replace([])
+
+        replacement.(fn chunk ->
+          if length(chunk) == 1 do
+            FakeBackend.record_call({:insert, chunk})
+            {:error, :disk_full}
+          else
+            FakeBackend.insert(chunk)
+          end
+        end)
       end)
 
       assert {:error, {:store, :disk_full}} =
@@ -373,17 +379,22 @@ defmodule Expert.Search.IndexerTest do
       registry = ModuleRegistry.name(project)
       assert :ets.info(registry, :owner) == Process.whereis(ModuleRegistry.name(project))
 
-      [{:replace, []}, {:insert, first_chunk}, {:insert, final_chunk}] = FakeBackend.calls()
+      [
+        {:replace, []},
+        {:insert, first_chunk},
+        {:insert, final_chunk}
+      ] = FakeBackend.calls()
+
       assert length(first_chunk) == 4_000
       assert [_entry] = final_chunk
       assert length(FakeBackend.entries()) == 4_000
       assert :missing = ManifestStore.load(project)
     end
 
-    test "does not commit a manifest when resetting the Store fails", %{project: project} do
+    test "does not commit a manifest when Store replacement fails", %{project: project} do
       test_pid = self()
 
-      patch(Store, :replace, fn ^project, [] -> {:error, :replace_failed} end)
+      patch(Store, :replace, fn ^project, _replacement -> {:error, :replace_failed} end)
 
       patch(ManifestStore, :commit, fn ^project, _manifest ->
         send(test_pid, :manifest_committed)

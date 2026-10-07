@@ -16,6 +16,9 @@ defmodule Expert.Search.Store.Backend do
   @type type_query :: Entry.entry_type() | wildcard()
   @type subtype_query :: Entry.entry_subtype() | wildcard()
   @type block_structure :: %{Entry.block_id() => block_structure()} | %{}
+  @type replacement(result) ::
+          (([Entry.t()] -> :ok | {:error, term()}) ->
+             {:ok, result} | {:error, term()})
   @callback new(Project.t()) :: {:ok, priv_state()} | {:error, any()}
   @callback prepare(priv_state()) :: {:ok, load_state()} | {:error, any()}
   @callback sync(Project.t()) :: :ok | {:error, any()}
@@ -24,7 +27,8 @@ defmodule Expert.Search.Store.Backend do
   @callback destroy(Project.t()) :: :ok | {:error, any()}
   @callback path_to_ids(Project.t()) :: %{Path.t() => Entry.entry_id()} | {:error, any()}
   @callback definitions_for_fuzzy(Project.t()) :: [Entry.t()] | {:error, any()}
-  @callback replace_all(Project.t(), [Entry.t()]) :: :ok | {:error, any()}
+  @callback replace_all(Project.t(), replacement(term())) ::
+              {:ok, term()} | {:error, term()}
   @callback delete_by_path(Project.t(), Path.t()) :: {:ok, [Entry.entry_id()]} | {:error, any()}
   @callback apply_index_update(Project.t(), [Entry.t()], [Path.t()]) ::
               {:ok, [Entry.entry_id()]} | {:error, any()}
