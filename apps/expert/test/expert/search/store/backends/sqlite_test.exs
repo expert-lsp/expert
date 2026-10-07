@@ -61,6 +61,28 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
              end)
     end
 
+    test "configures WAL journal mode", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      database_path = Sqlite.database_path(project, runtime_versions)
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+
+      {:ok, conn} = Exqlite.Basic.open(database_path)
+
+      assert {:ok, [["wal"]], _columns} =
+               conn |> Exqlite.Basic.exec("PRAGMA journal_mode") |> Exqlite.Basic.rows()
+
+      assert :ok = Exqlite.Basic.close(conn)
+    end
+
     test "stores only entry data that is not available in the entries table", %{
       project: project,
       runtime_versions: runtime_versions
