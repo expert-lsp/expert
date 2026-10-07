@@ -98,18 +98,19 @@ defmodule Expert.Search.Indexer do
       | beam_paths_to_index: Enum.uniq(plan.beam_paths_to_index ++ sibling_paths)
     }
 
-    output_paths_to_clear =
+    paths_to_clear =
       manifest
       |> Manifest.output_paths_for_inputs(plan.beam_paths_to_index)
-      |> Enum.to_list()
-
-    paths_to_clear =
-      plan.source_paths_to_index
-      |> Kernel.++(output_paths_to_clear)
-      |> Kernel.++(plan.output_paths_to_clear)
-      |> Kernel.++(Enum.map(beam_manifest_entries, & &1.output_path))
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq()
+      |> MapSet.union(MapSet.new(plan.source_paths_to_index))
+      |> MapSet.union(MapSet.new(plan.output_paths_to_clear))
+      |> MapSet.union(
+        MapSet.new(
+          for %Manifest.Entry{output_path: path} <- beam_manifest_entries,
+              is_binary(path),
+              do: path
+        )
+      )
+      |> MapSet.to_list()
 
     source_paths =
       include_beam_sources(
