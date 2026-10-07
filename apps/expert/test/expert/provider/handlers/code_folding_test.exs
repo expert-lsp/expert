@@ -185,6 +185,26 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
 
       assert fold(source) == []
     end
+
+    test "folds a for comprehension independent of indentation" do
+      source = """
+      for value <- values do
+      transform(value)
+      end
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
+
+    test "folds a with block independent of indentation" do
+      source = """
+      with {:ok, value} <- fetch() do
+      transform(value)
+      end
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
   end
 
   describe "anonymous functions" do
@@ -290,6 +310,71 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
       '''
 
       assert fold(source) == [range(0, 4), region_range(1, 3)]
+    end
+  end
+
+  describe "delimited containers" do
+    test "folds lists, tuples, and maps" do
+      source = """
+      values = [
+        :a,
+        :b
+      ]
+
+      pair = {
+        :a,
+        :b
+      }
+
+      options = %{
+        enabled: true,
+        retries: 3
+      }
+      """
+
+      ranges = fold(source)
+
+      assert range(0, 2) in ranges
+      assert range(5, 7) in ranges
+      assert range(10, 12) in ranges
+    end
+
+    test "folds function call parentheses" do
+      source = """
+      result = build_result(
+        first,
+        second
+      )
+      """
+
+      assert range(0, 2) in fold(source)
+    end
+
+    test "folds nested containers" do
+      source = """
+      values = [
+        %{
+          key: {
+            :a,
+            :b
+          }
+        }
+      ]
+      """
+
+      ranges = fold(source)
+
+      assert range(0, 6) in ranges
+      assert range(1, 5) in ranges
+      assert range(2, 4) in ranges
+    end
+
+    test "does not fold single-line or empty containers" do
+      assert fold("values = [:a, :b]\n") == []
+      assert fold("values = []\n") == []
+      assert fold("value = {}\n") == []
+      assert fold("value = %{}\n") == []
+      assert fold("result = call()\n") == []
     end
   end
 
