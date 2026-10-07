@@ -90,15 +90,13 @@ defmodule Expert.Search.Indexer do
       |> Manifest.plan(paths)
       |> reindex_missing_outputs(manifest, paths, path_to_ids)
 
-    {beam_items, sibling_paths} = beam_items_and_siblings(plan, manifest, paths, project)
+    {beam_items, beam_manifest_entries, sibling_paths} =
+      beam_items_and_siblings(plan, manifest, paths, project)
 
     plan = %Manifest.Plan{
       plan
       | beam_paths_to_index: Enum.uniq(plan.beam_paths_to_index ++ sibling_paths)
     }
-
-    beam_manifest_entries =
-      Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
 
     output_paths_to_clear =
       manifest
@@ -145,14 +143,17 @@ defmodule Expert.Search.Indexer do
     sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries)
 
     if sibling_paths == [] do
-      {beam_items, []}
+      {beam_items, manifest_entries, []}
     else
       sibling_items =
         sibling_paths
         |> Beams.stream(project: project, applications: paths.applications)
         |> Enum.to_list()
 
-      {beam_items ++ sibling_items, sibling_paths}
+      sibling_manifest_entries =
+        Enum.flat_map(sibling_items, fn {_entry, entries} -> entries end)
+
+      {beam_items ++ sibling_items, manifest_entries ++ sibling_manifest_entries, sibling_paths}
     end
   end
 
