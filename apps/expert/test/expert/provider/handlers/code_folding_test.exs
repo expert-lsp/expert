@@ -40,6 +40,10 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
     %FoldingRange{start_line: start_line, end_line: end_line, kind: "comment"}
   end
 
+  defp region_range(start_line, end_line) do
+    %FoldingRange{start_line: start_line, end_line: end_line, kind: "region"}
+  end
+
   test "preserves block, string, and comment ordering in mixed documents" do
     source = ~S'''
     defmodule Mixed do
@@ -69,6 +73,50 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
              range(1, 3),
              comment_range(5, 6)
            ]
+  end
+
+  describe "indentation" do
+    test "folds a multiline assignment" do
+      source = """
+      value =
+        source
+        |> transform()
+        |> finalize()
+
+      :ok
+      """
+
+      assert region_range(0, 3) in fold(source)
+    end
+
+    test "folds case clause bodies" do
+      source = """
+      case value do
+        {:ok, result} ->
+          transform(result)
+          |> finalize()
+        {:error, reason} ->
+          report(reason)
+      end
+      """
+
+      ranges = fold(source)
+
+      assert region_range(1, 3) in ranges
+      assert region_range(4, 5) in ranges
+    end
+
+    test "trims blank lines at the end of a region" do
+      source = """
+      value =
+        transform(source)
+
+
+      :ok
+      """
+
+      assert region_range(0, 1) in fold(source)
+    end
   end
 
   describe "do/end blocks" do
@@ -173,7 +221,7 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
       end
       """
 
-      assert fold(source) == [range(0, 4)]
+      assert fold(source) == [range(0, 4), region_range(1, 2), region_range(3, 4)]
     end
 
     test "does not fold a single-line anonymous function" do
@@ -241,7 +289,7 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
       """
       '''
 
-      assert fold(source) == [range(0, 4)]
+      assert fold(source) == [range(0, 4), region_range(1, 3)]
     end
   end
 
