@@ -30,8 +30,8 @@ defmodule Expert.Search.Store.Backend do
   @callback replace_all(Project.t(), replacement(term())) ::
               {:ok, term()} | {:error, term()}
   @callback delete_by_path(Project.t(), Path.t()) :: {:ok, [Entry.entry_id()]} | {:error, any()}
-  @callback apply_index_update(Project.t(), [Entry.t()], [Path.t()]) ::
-              {:ok, [Entry.entry_id()]} | {:error, any()}
+  @callback apply_index_update(Project.t(), [Entry.t()] | replacement(term()), [Path.t()]) ::
+              {:ok, [Entry.entry_id()]} | {:ok, [Entry.entry_id()], term()} | {:error, any()}
   @callback structure_for_path(Project.t(), Path.t()) ::
               {:ok, block_structure()} | :error | {:error, any()}
   @callback find_by_subject(Project.t(), subject_query(), type_query(), subtype_query()) ::

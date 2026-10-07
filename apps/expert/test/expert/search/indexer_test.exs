@@ -125,8 +125,13 @@ defmodule Expert.Search.IndexerTest do
 
     patch(Store, :insert, fn _project, entries -> FakeBackend.insert(entries) end)
 
-    patch(Store, :apply_index_update, fn _project, entries, paths_to_clear ->
-      FakeBackend.apply_index_update(entries, paths_to_clear)
+    patch(Store, :apply_index_update, fn _project, update, paths_to_clear ->
+      if is_function(update, 1) do
+        FakeBackend.apply_index_update([], paths_to_clear)
+        update.(&FakeBackend.insert/1)
+      else
+        FakeBackend.apply_index_update(update, paths_to_clear)
+      end
     end)
 
     patch(Store, :path_to_ids, fn _project -> FakeBackend.path_to_ids() end)
@@ -855,7 +860,7 @@ defmodule Expert.Search.IndexerTest do
 
       FakeBackend.set_entries([old_entry])
 
-      patch(Store, :apply_index_update, fn ^project, [], [_ | _] ->
+      patch(Store, :apply_index_update, fn ^project, _update, [_ | _] ->
         {:error, :disk_full}
       end)
 

@@ -218,6 +218,7 @@ defmodule Expert.Search.Store do
       ) do
     {reply, new_state} =
       case State.apply_index_update(state, updated_entries, paths_to_clear) do
+        {:ok, result, new_state} -> {{:ok, result}, State.drop_buffered_updates(new_state)}
         {:ok, new_state} -> {:ok, State.drop_buffered_updates(new_state)}
         {:error, _} = error -> {error, state}
       end

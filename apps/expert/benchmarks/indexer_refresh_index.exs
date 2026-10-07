@@ -44,8 +44,27 @@ defmodule MockStore do
     {:reply, :ok, %{state | entries_count: state.entries_count + length(entries)}}
   end
 
-  def handle_call({:apply_index_update, entries, paths_to_clear}, _from, state) do
-    {:reply, :ok, %{state | entries_count: length(entries), paths_to_clear: paths_to_clear}}
+  def handle_call({:apply_index_update, update, paths_to_clear}, _from, state) do
+    if is_function(update, 1) do
+      count = :counters.new(1, [:atomics])
+
+      res =
+        update.(fn chunk ->
+          :counters.add(count, 1, length(chunk))
+          :ok
+        end)
+
+      case res do
+        {:ok, final_state} ->
+          {:reply, {:ok, final_state},
+           %{state | entries_count: :counters.get(count, 1), paths_to_clear: paths_to_clear}}
+
+        {:error, _} = error ->
+          {:reply, error, state}
+      end
+    else
+      {:reply, :ok, %{state | entries_count: length(update), paths_to_clear: paths_to_clear}}
+    end
   end
 end
 
@@ -85,8 +104,9 @@ defmodule RealSqliteStore do
     Sqlite.insert(project, entries)
   end
 
-  def apply_index_update(%{project: project}, entries, paths_to_clear) do
-    case Sqlite.apply_index_update(project, entries, paths_to_clear) do
+  def apply_index_update(%{project: project}, update, paths_to_clear) do
+    case Sqlite.apply_index_update(project, update, paths_to_clear) do
+      {:ok, _, result} -> {:ok, result}
       {:ok, _} -> :ok
       :ok -> :ok
       error -> error
@@ -98,6 +118,8 @@ compile_indexer = fn source, module_name ->
   source
   |> String.replace("defmodule Expert.Search.Indexer do", "defmodule #{module_name} do")
   |> String.replace("defp collect_stream(", "def collect_stream(")
+  |> String.replace("defp stream_into_store(", "def stream_into_store(")
+  |> String.replace("defp refresh_store(", "def refresh_store(")
   |> String.replace("defp persist_stream(", "def persist_stream(")
   |> String.replace("defp consume_chunk(", "def consume_chunk(")
   |> String.replace("defp new_stream_state do", "def new_stream_state do")
@@ -118,19 +140,30 @@ defmodule Runner do
   end
 
   def run_optimized(stream, paths_to_clear, store, module \\ MockStore) do
-    :ok = module.apply_index_update(store, [], paths_to_clear)
-
-    {:ok, state} =
+    update = fn write_batch ->
       stream
       |> Stream.chunk_every(@entry_chunk_size)
-      |> Enum.reduce_while({:ok, OptimizedIndexer.new_stream_state()}, fn chunk, {:ok, state} ->
+      |> Enum.reduce_while(OptimizedIndexer.new_stream_state(), fn chunk, state ->
         {entries, state} = OptimizedIndexer.consume_chunk(chunk, state)
 
-        case module.insert(store, entries) do
-          :ok -> {:cont, {:ok, state}}
+        case write_batch.(entries) do
+          :ok -> {:cont, state}
           {:error, _} = error -> {:halt, error}
         end
       end)
+      |> case do
+        {:error, _} = error -> error
+        state -> {:ok, state}
+      end
+    end
+
+    res = module.apply_index_update(store, update, paths_to_clear)
+
+    state =
+      case res do
+        {:ok, state} -> state
+        _ -> OptimizedIndexer.new_stream_state()
+      end
 
     {:ok, OptimizedIndexer.manifest_entries(state)}
   end
@@ -291,7 +324,7 @@ Enum.each(inputs, fn {label, file_count} ->
   IO.puts("""
   [#{label} - Real SQLite]
     - Baseline (Single Transaction): #{base_ms} ms
-    - Optimized (Chunked Trans 4k):  #{opt_ms} ms (diff: #{if diff >= 0, do: "+"}#{diff} ms, #{ratio}x)
+    - Optimized (Single Trans Stream): #{opt_ms} ms (diff: #{if diff >= 0, do: "+"}#{diff} ms, #{ratio}x)
   """)
 end)
 

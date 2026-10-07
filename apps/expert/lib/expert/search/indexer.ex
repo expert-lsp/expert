@@ -119,13 +119,13 @@ defmodule Expert.Search.Indexer do
         beam_manifest_entries
       )
 
-    with :ok <- store_result(Store.apply_index_update(project, [], paths_to_clear)),
-         {:ok, state} <-
-           source_paths
-           |> Sources.stream(source_indexer(project))
-           |> tag_stream(:source)
-           |> Stream.concat(tag_stream(beam_items, :beam))
-           |> persist_stream(new_stream_state(), project) do
+    stream =
+      source_paths
+      |> Sources.stream(source_indexer(project))
+      |> tag_stream(:source)
+      |> Stream.concat(tag_stream(beam_items, :beam))
+
+    with {:ok, state} <- refresh_store(stream, paths_to_clear, new_stream_state(), project) do
       manifest = Manifest.apply_update(manifest, plan, manifest_entries(state))
 
       {:ok, manifest}
@@ -345,23 +345,9 @@ defmodule Expert.Search.Indexer do
 
   defp replace_store(%Paths{} = paths, state, project) do
     replacement = fn write_batch ->
-      result =
-        paths
-        |> index_stream(project)
-        |> Stream.chunk_every(@entry_chunk_size)
-        |> Enum.reduce_while(state, fn chunk, state ->
-          {entries, state} = consume_chunk(chunk, state)
-
-          case write_batch.(entries) do
-            :ok -> {:cont, state}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
-
-      case result do
-        {:error, _reason} = error -> error
-        state -> {:ok, state}
-      end
+      paths
+      |> index_stream(project)
+      |> stream_into_store(state, write_batch)
     end
 
     case Store.replace(project, replacement) do
@@ -370,24 +356,35 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp persist_stream(stream, state, project) do
-    stream
-    |> Stream.chunk_every(@entry_chunk_size)
-    |> Enum.reduce_while({:ok, state}, fn chunk, {:ok, state} ->
-      {entries, state} = consume_chunk(chunk, state)
+  defp refresh_store(stream, paths_to_clear, state, project) do
+    update = fn write_batch ->
+      stream_into_store(stream, state, write_batch)
+    end
 
-      case insert_entries(project, entries) do
-        :ok ->
-          {:cont, {:ok, state}}
-
-        {:error, _} = error ->
-          {:halt, error}
-      end
-    end)
+    case Store.apply_index_update(project, update, paths_to_clear) do
+      {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:error, {:store, reason}}
+    end
   end
 
-  defp insert_entries(_project, []), do: :ok
-  defp insert_entries(project, entries), do: store_result(Store.insert(project, entries))
+  defp stream_into_store(stream, state, write_batch) do
+    result =
+      stream
+      |> Stream.chunk_every(@entry_chunk_size)
+      |> Enum.reduce_while(state, fn chunk, state ->
+        {entries, state} = consume_chunk(chunk, state)
+
+        case write_batch.(entries) do
+          :ok -> {:cont, state}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+
+    case result do
+      {:error, _reason} = error -> error
+      state -> {:ok, state}
+    end
+  end
 
   defp consume_chunk(chunk, state) do
     {entries, state} =
@@ -426,9 +423,6 @@ defmodule Expert.Search.Indexer do
   defp remember_manifest_entries(state, manifest_entries) do
     %{state | manifest_entries: Enum.reverse(manifest_entries, state.manifest_entries)}
   end
-
-  defp store_result(:ok), do: :ok
-  defp store_result({:error, reason}), do: {:error, {:store, reason}}
 
   defp manifest_entries(state), do: Enum.reverse(state.manifest_entries)
 end

@@ -287,9 +287,61 @@ defmodule Expert.Search.Store.State do
 
   def apply_index_update(
         %__MODULE__{} = state,
+        update,
+        paths_to_clear
+      )
+      when is_function(update, 1) and is_list(paths_to_clear) do
+    Process.put(:fuzzy_acc, state.fuzzy)
+
+    wrapped_update = fn write_batch ->
+      write_and_update_fuzzy = fn entries ->
+        case write_batch.(entries) do
+          :ok ->
+            Process.put(:fuzzy_acc, Fuzzy.add(Process.get(:fuzzy_acc), entries))
+            :ok
+
+          error ->
+            error
+        end
+      end
+
+      update.(write_and_update_fuzzy)
+    end
+
+    result =
+      case state.backend.apply_index_update(state.project, wrapped_update, paths_to_clear) do
+        {:ok, deleted_ids, result} -> {:ok, deleted_ids, result}
+        {:ok, deleted_ids} -> {:ok, deleted_ids, :ok}
+        error -> error
+      end
+
+    with {:ok, deleted_ids, callback_result} <- result,
+         :ok <- maybe_sync(state) do
+      fuzzy =
+        :fuzzy_acc
+        |> Process.delete()
+        |> Fuzzy.drop_values(deleted_ids)
+
+      {:ok, callback_result,
+       %__MODULE__{
+         state
+         | loaded?: true,
+           load_status: :ready,
+           fuzzy: fuzzy
+       }}
+    else
+      error ->
+        Process.delete(:fuzzy_acc)
+        error
+    end
+  end
+
+  def apply_index_update(
+        %__MODULE__{} = state,
         updated_entries,
         paths_to_clear
-      ) do
+      )
+      when is_list(updated_entries) and is_list(paths_to_clear) do
     with {:ok, deleted_ids} <-
            state.backend.apply_index_update(state.project, updated_entries, paths_to_clear),
          :ok <- maybe_sync(state) do
