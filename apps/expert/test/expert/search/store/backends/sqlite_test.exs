@@ -432,6 +432,48 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Exqlite.Basic.close(conn)
     end
 
+    test "replaces entries via streamed batch update", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      old_entry = %Entry{
+        id: 1,
+        subject: Replaced.Old,
+        path: "/same.ex",
+        type: :module,
+        subtype: :definition,
+        block_id: :root
+      }
+
+      new_entry = %Entry{
+        id: 2,
+        subject: Replaced.New,
+        path: "/same.ex",
+        type: :module,
+        subtype: :definition,
+        block_id: :root
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert {:ok, []} = Sqlite.apply_index_update(project, [old_entry], [])
+
+      update = fn write_batch ->
+        with :ok <- write_batch.([new_entry]) do
+          {:ok, :updated}
+        end
+      end
+
+      assert {:ok, [1], :updated} = Sqlite.apply_index_update(project, update, ["/same.ex"])
+      assert [] = Sqlite.find_by_subject(project, Replaced.Old, :_, :_)
+      assert [^new_entry] = Sqlite.find_by_subject(project, Replaced.New, :_, :_)
+    end
+
     test "chunks blob deletes that exceed SQLite's variable limit", %{
       project: project,
       runtime_versions: runtime_versions

@@ -374,6 +374,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  def do_apply_index_update(%State{} = state, update, paths_to_clear)
+      when is_function(update, 1) and is_list(paths_to_clear) do
+    transaction(state, fn ->
+      with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths_to_clear),
+           :ok <- delete_structures_for_paths(state, paths_to_clear),
+           {:ok, result} <- update.(fn entries -> insert_entries(state, entries) end) do
+        {:ok, deleted_ids, result}
+      end
+    end)
+  end
+
   def do_apply_index_update(%State{} = state, updated_entries, paths_to_clear)
       when is_list(updated_entries) and is_list(paths_to_clear) do
     paths = affected_paths(updated_entries, paths_to_clear)
@@ -991,6 +1002,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
           commit_transaction(state, :ok)
 
         {:ok, _} = result ->
+          commit_transaction(state, result)
+
+        {:ok, _, _} = result ->
           commit_transaction(state, result)
 
         {:error, _} = error ->
