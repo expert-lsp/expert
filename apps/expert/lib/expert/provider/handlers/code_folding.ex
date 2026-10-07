@@ -170,8 +170,19 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   end
 
   defp collect_string_range({:__block__, meta, [str]}, acc)
-       when is_binary(str) and is_list(meta),
+       when (is_binary(str) or is_list(str)) and is_list(meta),
        do: collect_string(meta, str, acc)
+
+  defp collect_string_range({{:., _, [List, :to_charlist]}, meta, _args} = node, acc)
+       when is_list(meta) do
+    case Sourceror.get_range(node) do
+      %{start: start_position, end: end_position} ->
+        prepend_string_range(start_position[:line], end_position[:line], acc)
+
+      nil ->
+        acc
+    end
+  end
 
   defp collect_string_range({sigil, meta, [{:<<>>, _, [str]}, _mods]}, acc)
        when is_atom(sigil) and is_binary(str) and is_list(meta) do
@@ -187,20 +198,22 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   defp collect_string(meta, str, acc) do
     start_line = Keyword.get(meta, :line)
     delimiter = Keyword.get(meta, :delimiter)
-    newlines = count_newlines(str)
 
-    cond do
-      not is_integer(start_line) or newlines < 1 ->
-        acc
+    if is_integer(start_line) and delimiter in ["\"", "'", "\"\"\"", "'''"] do
+      newlines = count_newlines(str)
 
-      delimiter == "\"\"\"" ->
-        prepend_string_range(start_line, start_line + newlines + 1, acc)
+      cond do
+        newlines < 1 ->
+          acc
 
-      delimiter == "\"" ->
-        prepend_string_range(start_line, start_line + newlines, acc)
+        delimiter in ["\"\"\"", "'''"] ->
+          prepend_string_range(start_line, start_line + newlines + 1, acc)
 
-      true ->
-        acc
+        true ->
+          prepend_string_range(start_line, start_line + newlines, acc)
+      end
+    else
+      acc
     end
   end
 
@@ -215,8 +228,12 @@ defmodule Expert.Provider.Handlers.CodeFolding do
     end
   end
 
-  defp count_newlines(str) do
+  defp count_newlines(str) when is_binary(str) do
     str |> :binary.matches("\n") |> length()
+  end
+
+  defp count_newlines(str) when is_list(str) do
+    Enum.count(str, &(&1 == ?\n))
   end
 
   defp comment_ranges(comments) do

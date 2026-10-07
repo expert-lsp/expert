@@ -469,6 +469,50 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
     end
   end
 
+  describe "charlists" do
+    test "folds a multiline charlist" do
+      source = ~S"""
+      value = '
+      one
+      two'
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
+
+    test "folds a charlist heredoc" do
+      source = ~S"""
+      value = '''
+      one
+      two
+      '''
+      """
+
+      assert fold(source) == [range(0, 2)]
+    end
+
+    test "folds an interpolated charlist" do
+      source = ~S"""
+      value = 'one
+      #{item}
+      three'
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
+
+    test "does not fold a single-line or empty charlist" do
+      assert fold("'one line'\n") == []
+
+      source = ~S"""
+      '''
+      '''
+      """
+
+      assert fold(source) == []
+    end
+  end
+
   describe "sigils" do
     test "folds a multiline sigil" do
       source = """
