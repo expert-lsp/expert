@@ -5,6 +5,7 @@ defmodule Engine.DispatchTest do
   import Forge.EngineApi.Messages
 
   alias Engine.Dispatch
+  alias Engine.Dispatch.PubSub
 
   def with_dispatch_started(_) do
     start_supervised!(Dispatch)
@@ -74,9 +75,13 @@ defmodule Engine.DispatchTest do
       Dispatch.register_listener(self(), :all)
       {:ok, forwarder_pid} = Forwarder.start(:all)
 
-      assert Dispatch.registered?(forwarder_pid)
+      registered? = fn ->
+        :gen_event.call(Dispatch, PubSub, PubSub.registered_message(forwarder_pid))
+      end
+
+      assert registered?.()
       :ok = Forwarder.stop(forwarder_pid)
-      refute Dispatch.registered?(forwarder_pid)
+      refute registered?.()
     end
 
     test "handles multiple registrations" do

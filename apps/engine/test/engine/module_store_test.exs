@@ -6,6 +6,7 @@ defmodule Engine.ModuleStoreTest do
 
   alias ElixirSense.Providers.Plugins.ModuleStore, as: ElixirSenseModuleStore
   alias Engine.Dispatch
+  alias Engine.Dispatch.PubSub
   alias Engine.ModuleStore
 
   setup do
@@ -47,6 +48,6 @@ defmodule Engine.ModuleStoreTest do
     end
 
     assert Process.alive?(pid)
-    assert Dispatch.registered?(pid)
+    assert :gen_event.call(Dispatch, PubSub, PubSub.registered_message(pid))
   end
 end

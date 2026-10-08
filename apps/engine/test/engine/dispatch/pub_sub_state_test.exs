@@ -15,24 +15,14 @@ defmodule Engine.Dispatch.PubSubStateTest do
   describe "add/3" do
     test "works for a specific type", %{state: state} do
       state = State.add(state, :project_compiled, self())
-      assert State.registered?(state, :project_compiled, self())
-      refute State.registered?(state, :other_message, self())
+      assert self() in State.registrations(state, :project_compiled)
+      refute self() in State.registrations(state, :other_message)
     end
 
     test "works for all messages", %{state: state} do
       state = State.add(state, :all, self())
-      assert State.registered?(state, :all, self())
-      assert State.registered?(state, :whatever, self())
-    end
-  end
-
-  describe "remove/3" do
-    test "can be removed", %{state: state} do
-      state = State.add(state, :project_compiled, self())
-      assert State.registered?(state, :project_compiled, self())
-
-      state = State.remove(state, :project_compiled, self())
-      refute State.registered?(state, :project_compiled, self())
+      assert self() in State.registrations(state, :all)
+      assert self() in State.registrations(state, :whatever)
     end
   end
 
@@ -40,14 +30,32 @@ defmodule Engine.Dispatch.PubSubStateTest do
     test "all registrations can be removed", %{state: state} do
       state =
         state
+        |> State.add(:all, self())
         |> State.add(:project_compiled, self())
         |> State.add(:other_message, self())
         |> State.add(:yet_another_message, self())
         |> State.remove_all(self())
 
-      refute State.registered?(state, :project_compiled, self())
-      refute State.registered?(state, :other_message, self())
-      refute State.registered?(state, :yet_another_message, self())
+      refute State.registered?(state, self())
+      assert State.registrations(state, :project_compiled) == []
+      assert State.registrations(state, :other_message) == []
+      assert State.registrations(state, :yet_another_message) == []
+    end
+
+    test "preserves other listeners", %{state: state} do
+      other_pid = pid()
+
+      state =
+        state
+        |> State.add(:project_compiled, self())
+        |> State.add(:project_compiled, other_pid)
+        |> State.add(:all, other_pid)
+        |> State.remove_all(self())
+
+      refute State.registered?(state, self())
+      assert State.registered?(state, other_pid)
+      assert State.registrations(state, :project_compiled) == [other_pid, other_pid]
+      assert State.registrations(state, :other_message) == [other_pid]
     end
   end
 
