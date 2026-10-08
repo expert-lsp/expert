@@ -55,18 +55,6 @@ defmodule Engine.Search.Fuzzy do
     new(entries, mapper, &stringify/1, true)
   end
 
-  def from_backend(backend) do
-    mapper = default_mapper()
-
-    mapped_items =
-      backend.reduce([], fn
-        %Entry{subtype: :definition} = entry, acc -> [mapper.(entry) | acc]
-        _, acc -> acc
-      end)
-
-    new(mapped_items, mapper, &stringify/1, false)
-  end
-
   @doc """
   Creates a new fuzzy matcher.
 
