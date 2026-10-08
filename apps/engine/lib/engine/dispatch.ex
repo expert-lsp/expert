@@ -29,14 +29,6 @@ defmodule Engine.Dispatch do
     :gen_event.add_handler(__MODULE__, handler_module, init_args)
   end
 
-  def registered?(pid) when is_pid(pid) do
-    :gen_event.call(__MODULE__, PubSub, PubSub.registered_message(pid))
-  end
-
-  def registered?(name) when is_atom(name) do
-    name in :gen_event.which_handlers(__MODULE__)
-  end
-
   def broadcast(message) do
     :gen_event.notify(__MODULE__, message)
   end
