@@ -86,13 +86,8 @@ defmodule Engine.Api.Proxy do
     :gen_statem.call(__MODULE__, buffer(contents: mfa))
   end
 
-  # utility functions
-
-  def buffering? do
-    :gen_statem.call(__MODULE__, :buffering?)
-  end
-
   # :gen_statem callbacks
+
   def start_link do
     :gen_statem.start_link({:local, __MODULE__}, __MODULE__, [], [])
   end
