@@ -163,7 +163,7 @@ defmodule Expert.EngineApi do
   end
 
   def imports_at(target, %Analysis{} = analysis, %Position{} = position) do
-    runtime_call(target, Engine.Analyzer.Imports, :at, [analysis, position])
+    runtime_call(target, Engine.Analyzer, :imports_at, [analysis, position])
   end
 
   def exunit_module?(target, module),
