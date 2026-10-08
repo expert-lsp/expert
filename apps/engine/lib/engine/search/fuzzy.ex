@@ -201,17 +201,6 @@ defmodule Engine.Search.Fuzzy do
     has_subject?(fuzzy, fuzzy.subject_converter.(subject))
   end
 
-  @spec delete_grouping_key(t, grouping_key()) :: t
-  def delete_grouping_key(%__MODULE__{} = fuzzy, grouping_key) do
-    values = Map.get(fuzzy.grouping_key_to_values, grouping_key, [])
-    fuzzy = drop_values(fuzzy, values)
-
-    %__MODULE__{
-      fuzzy
-      | grouping_key_to_values: Map.delete(fuzzy.grouping_key_to_values, grouping_key)
-    }
-  end
-
   @spec drop_values(t, [value()]) :: t
   def drop_values(%__MODULE__{} = fuzzy, []) do
     # a little optimization; drop_values is pretty expensive, and it's used in

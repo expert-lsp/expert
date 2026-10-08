@@ -55,24 +55,6 @@ defmodule Engine.Search.FuzzyTest do
     test "removing a non-existent value is a no-op", %{fuzzy: fuzzy} do
       assert fuzzy == Fuzzy.drop_values(fuzzy, [:does, :not, :exist])
     end
-
-    test "deleting a non-existent key is a no-op", %{fuzzy: fuzzy} do
-      assert fuzzy == Fuzzy.delete_grouping_key(fuzzy, "does not exist")
-    end
-
-    test "all values belonging to a grouping key can be removed", %{
-      fuzzy: fuzzy,
-      entries: entries
-    } do
-      entry = List.first(entries)
-      path_to_remove = entry.path
-      assert Enum.all?(entries, &Fuzzy.has_subject?(fuzzy, &1.subject))
-
-      fuzzy = Fuzzy.delete_grouping_key(fuzzy, path_to_remove)
-
-      refute Fuzzy.has_grouping_key?(fuzzy, path_to_remove)
-      refute Enum.any?(entries, &Fuzzy.has_subject?(fuzzy, &1.subject))
-    end
   end
 
   describe "match/2" do
