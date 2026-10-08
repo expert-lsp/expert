@@ -72,8 +72,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp remove_directory_with_retry(path, retries) do
     case File.rm_rf(path) do
-      {:ok, _} ->
-        :ok
+      {:ok, paths} ->
+        paths
 
       {:error, reason, _path} when retries > 0 and reason in [:eexist, :eacces] ->
         Process.sleep(50)
