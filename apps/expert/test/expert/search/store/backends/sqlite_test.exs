@@ -81,6 +81,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                conn |> Exqlite.Basic.exec("PRAGMA journal_mode") |> Exqlite.Basic.rows()
 
       assert :ok = Exqlite.Basic.close(conn)
+      assert :ok = stop_supervised!(:sqlite)
     end
 
     test "stores only entry data that is not available in the entries table", %{
@@ -347,6 +348,8 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                ]),
                index_names
              )
+
+      assert :ok = stop_supervised!(:sqlite)
     end
   end
 
@@ -405,6 +408,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert {:ok, :stale} = Sqlite.prepare(pid)
       assert [^entry] = Sqlite.find_by_subject(project, Incremental.Module, :_, :_)
+      assert :ok = stop_supervised!(:sqlite)
     end
   end
 

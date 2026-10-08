@@ -64,7 +64,28 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  def destroy_all(%Project{} = project), do: project |> root_path() |> File.rm_rf!()
+  def destroy_all(%Project{} = project) do
+    project
+    |> root_path()
+    |> remove_directory_with_retry(5)
+  end
+
+  defp remove_directory_with_retry(path, retries) do
+    case File.rm_rf(path) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason, _path} when retries > 0 and reason in [:eexist, :eacces] ->
+        Process.sleep(50)
+        remove_directory_with_retry(path, retries - 1)
+
+      {:error, reason, path} ->
+        raise File.Error,
+          reason: reason,
+          action: "remove files and directories recursively from",
+          path: path
+    end
+  end
 
   @impl Backend
   def path_to_ids(%Project{} = project) do
