@@ -1,11 +1,9 @@
 defmodule Engine.Analyzer do
   alias Engine.Analyzer.Aliases
   alias Engine.Analyzer.Imports
-  alias Engine.Analyzer.Requires
   alias Engine.Analyzer.Uses
   alias Forge.Ast
   alias Forge.Ast.Analysis
-  alias Forge.Ast.Analysis.Require
   alias Forge.Ast.Analysis.Use
   alias Forge.Document.Position
 
@@ -14,18 +12,6 @@ defmodule Engine.Analyzer do
   defdelegate aliases_at(analysis, position), to: Aliases, as: :at
   defdelegate imports_at(analysis, position), to: Imports, as: :at
   defdelegate import_module_for(analysis, position, fun, arity), to: Imports, as: :module_for
-
-  @spec requires_at(Analysis.t(), Position.t()) :: [module()]
-  def requires_at(%Analysis{} = analysis, %Position{} = position) do
-    analysis
-    |> Requires.at(position)
-    |> Enum.reduce([], fn %Require{} = require, acc ->
-      case expand_alias(require.module, analysis, position) do
-        {:ok, expanded} -> [expanded | acc]
-        _ -> [Module.concat(require.as) | acc]
-      end
-    end)
-  end
 
   @spec uses_at(Analysis.t(), Position.t()) :: [module()]
   def uses_at(%Analysis{} = analysis, %Position{} = position) do
