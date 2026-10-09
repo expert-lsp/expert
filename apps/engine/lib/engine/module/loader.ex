@@ -59,14 +59,4 @@ defmodule Engine.Module.Loader do
   def ensure_loaded?(module_name) do
     match?({:module, ^module_name}, ensure_loaded(module_name))
   end
-
-  def loaded?(module_name) do
-    Agent.get(__MODULE__, fn
-      %{^module_name => {:module, _}} ->
-        true
-
-      _ ->
-        false
-    end)
-  end
 end

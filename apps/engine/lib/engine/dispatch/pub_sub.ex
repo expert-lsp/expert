@@ -4,11 +4,7 @@ defmodule Engine.Dispatch.PubSub do
   """
   @behaviour :gen_event
 
-  alias Forge.Project
-
   defmodule State do
-    alias Forge.Project
-
     defstruct [:registrations]
 
     def new do
@@ -35,17 +31,6 @@ defmodule Engine.Dispatch.PubSub do
       |> Map.values()
       |> List.flatten()
       |> Enum.member?(pid)
-    end
-
-    def registered?(%__MODULE__{} = state, message_type, pid) do
-      pid in registrations(state, message_type)
-    end
-
-    def remove(%__MODULE__{} = state, message_type, pid) do
-      registrations =
-        Map.update(state.registrations, message_type, [], &Enum.reject(&1, fn e -> e == pid end))
-
-      %__MODULE__{state | registrations: registrations}
     end
 
     def remove_all(%__MODULE__{} = state, pid) do
@@ -107,10 +92,6 @@ defmodule Engine.Dispatch.PubSub do
     |> Enum.each(&send(&1, message))
 
     {:ok, state}
-  end
-
-  def name(%Project{} = project) do
-    :"#{Project.name(project)}::dispatch"
   end
 
   # Private api

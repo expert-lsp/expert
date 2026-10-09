@@ -55,18 +55,6 @@ defmodule Engine.Search.Fuzzy do
     new(entries, mapper, &stringify/1, true)
   end
 
-  def from_backend(backend) do
-    mapper = default_mapper()
-
-    mapped_items =
-      backend.reduce([], fn
-        %Entry{subtype: :definition} = entry, acc -> [mapper.(entry) | acc]
-        _, acc -> acc
-      end)
-
-    new(mapped_items, mapper, &stringify/1, false)
-  end
-
   @doc """
   Creates a new fuzzy matcher.
 
@@ -199,17 +187,6 @@ defmodule Engine.Search.Fuzzy do
 
   def has_subject?(%__MODULE__{} = fuzzy, subject) do
     has_subject?(fuzzy, fuzzy.subject_converter.(subject))
-  end
-
-  @spec delete_grouping_key(t, grouping_key()) :: t
-  def delete_grouping_key(%__MODULE__{} = fuzzy, grouping_key) do
-    values = Map.get(fuzzy.grouping_key_to_values, grouping_key, [])
-    fuzzy = drop_values(fuzzy, values)
-
-    %__MODULE__{
-      fuzzy
-      | grouping_key_to_values: Map.delete(fuzzy.grouping_key_to_values, grouping_key)
-    }
   end
 
   @spec drop_values(t, [value()]) :: t
