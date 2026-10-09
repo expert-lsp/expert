@@ -28,6 +28,14 @@ Expert is structured as a [poncho-style project](https://embedded-elixir.com/pos
 
 By separating Expert into applications, the release and engine builder can place only the required code in each VM. The engine runtime dependency set is intentionally smaller than the manager's because engine code runs beside the project and must be namespaced and filtered out of analysis. Keeping engine dependencies to the minimum needed for project-side work is a design goal of this architecture.
 
+### Integrations
+
+We have some first-party support for libraries or other special functionality under `Expert.Integrations`.
+Integrations are designed such that Expert can define some integration point, and call any enabled integration for that feature to enhance its behavior.
+
+For example, an integration can be enabled for indexing, receive the .beam metadata that is being indexed, and produce additional index entries.
+Or enabled for completions, and Expert will combine the extra completions the integration provides with the ones produced by base expert.
+
 ## LSP Implementation
 
 Expert uses [GenLSP](https://github.com/elixir-tools/gen_lsp) for the core LSP implementation. GenLSP provides transport implementations, protocol structs, and other utilities for implementing a language server. Expert's LSP-specific behavior lives in the `expert` application, primarily in the [`Expert`](https://github.com/expert-lsp/expert/blob/main/apps/expert/lib/expert.ex) and `Expert.State` modules.
@@ -49,7 +57,7 @@ Expert combines several sources of code-intelligence data:
 - Compiled BEAM metadata provides docs, specs, callbacks, and type information for loaded modules.
 - The search index provides persistent, project-wide lookup for modules, functions, structs, variables, and references.
 
-The indexer analyzes Elixir source files and stores entries in `Engine.Search.Store`. At a high level, indexing works as follows:
+The indexer analyzes Elixir source files and stores entries in `Expert.Search.Store`. At a high level, indexing works as follows:
 
 1. Each source file is wrapped in a `Forge.Document` struct.
 2. `Forge.Ast.analyze/1` derives a `Forge.Ast.Analysis` from the document.
@@ -58,11 +66,11 @@ The indexer analyzes Elixir source files and stores entries in `Engine.Search.St
 
 On the first run, the indexer scans every `.ex` and `.exs` file outside the project's build directory. After that, it refreshes changed files and removes deleted files from the index. Dependency files are indexed for definitions only.
 
-The results of the indexer can be queried through `Engine.Search.Store`.
+The results of the indexer can be queried through `Expert.Search.Store`.
 
 ### The `Entry` Struct
 
-Entries have a `type`, which describes what kind of information they represent, and a `subtype`, which is either a definition or a reference.
+Entries have a `type`, which describes their information, and a `subtype`. Subtypes identify definitions, references, integration metadata, or block structure metadata.
 
 For example, in this code:
 

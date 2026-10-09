@@ -1,6 +1,7 @@
 defmodule Expert.Search.Indexer.Beams do
   import Forge.Document.Line
 
+  alias Expert.Integrations
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
@@ -146,8 +147,10 @@ defmodule Expert.Search.Indexer.Beams do
     {entries, manifest_entries}
   end
 
-  defp indexed_result?({:indexed, _source_path, _metadata, _manifest_entry}),
-    do: true
+  defp indexed_result?(
+         {:indexed, _source_path, _metadata, _integration_entries, _manifest_entry}
+       ),
+       do: true
 
   defp indexed_result?(_result), do: false
 
@@ -187,7 +190,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp manifest_entries_from_results(results) do
     Enum.map(results, fn
-      {:indexed, _source_path, _metadata, manifest_entry} -> manifest_entry
+      {:indexed, _source_path, _metadata, _integration_entries, manifest_entry} -> manifest_entry
       {:skipped, manifest_entry} -> manifest_entry
     end)
   end
@@ -199,7 +202,7 @@ defmodule Expert.Search.Indexer.Beams do
 
     results
     |> Enum.group_by(fn
-      {:indexed, source_path, _metadata, _manifest_entry} -> source_path
+      {:indexed, source_path, _metadata, _integration_entries, _manifest_entry} -> source_path
     end)
     |> Enum.flat_map(fn {source_path, results} ->
       entries_from_group(source_path, results, source_lines_by_path, opts)
@@ -209,12 +212,12 @@ defmodule Expert.Search.Indexer.Beams do
   defp entries_from_group(source_path, results, source_lines_by_path, opts) do
     entries =
       Enum.flat_map(results, fn
-        {:indexed, _source_path, metadata, manifest_entry} ->
+        {:indexed, _source_path, metadata, integration_entries, manifest_entry} ->
           entries_from_metadata(
             metadata,
             Map.get(source_lines_by_path, source_path, %{}),
             application(manifest_entry, opts)
-          )
+          ) ++ integration_entries
       end)
 
     [Entry.block_structure(source_path, %{root: %{}}) | entries]
@@ -233,7 +236,7 @@ defmodule Expert.Search.Indexer.Beams do
       results =
         case debug_metadata_result do
           {:ok, metadata} ->
-            metadata_result_from_beam(beam_path, beam_stat, metadata)
+            metadata_result_from_beam(beam_path, beam_stat, beam, metadata, opts)
 
           :error ->
             skipped_result_from_beam(beam_path, beam_stat, nil, nil)
@@ -245,7 +248,7 @@ defmodule Expert.Search.Indexer.Beams do
     end
   end
 
-  defp metadata_result_from_beam(beam_path, beam_stat, metadata) do
+  defp metadata_result_from_beam(beam_path, beam_stat, beam, metadata, opts) do
     metadata =
       case Map.get(metadata, :file) do
         path when is_binary(path) -> Map.put(metadata, :file, Forge.Path.native(path))
@@ -260,7 +263,8 @@ defmodule Expert.Search.Indexer.Beams do
         {:ok, manifest_entry} =
           Manifest.Entry.beam(beam_path, source_path, beam_stat, source_stat_result)
 
-        [{:indexed, source_path, metadata, manifest_entry}]
+        integration_entries = integration_entries(beam, metadata, source_path, opts[:project])
+        [{:indexed, source_path, metadata, integration_entries, manifest_entry}]
 
       :error ->
         skipped_result_from_beam(
@@ -270,6 +274,12 @@ defmodule Expert.Search.Indexer.Beams do
           source_stat_result
         )
     end
+  end
+
+  defp integration_entries(_beam, _metadata, _source_path, nil), do: []
+
+  defp integration_entries(beam, metadata, source_path, project) do
+    Integrations.index_beam(project, beam, metadata, source_path)
   end
 
   defp stat_source(source_path) when is_binary(source_path) do
@@ -885,8 +895,10 @@ defmodule Expert.Search.Indexer.Beams do
   defp source_lines_by_path(results) do
     results
     |> Enum.group_by(
-      fn {:indexed, source_path, _metadata, _manifest_entry} -> source_path end,
-      fn {:indexed, _source_path, metadata, _manifest_entry} ->
+      fn {:indexed, source_path, _metadata, _integration_entries, _manifest_entry} ->
+        source_path
+      end,
+      fn {:indexed, _source_path, metadata, _integration_entries, _manifest_entry} ->
         metadata |> metadata_position() |> elem(0)
       end
     )

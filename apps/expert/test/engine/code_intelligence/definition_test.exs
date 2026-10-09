@@ -81,6 +81,7 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
 
     start_supervised!({Store, [project, Sqlite]})
     start_supervised!({Search.Indexer.ModuleRegistry, project})
+    start_supervised!({Expert.Integrations.Cache, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 

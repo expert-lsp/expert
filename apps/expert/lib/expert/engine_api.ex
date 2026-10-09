@@ -128,6 +128,10 @@ defmodule Expert.EngineApi do
     call(project, Engine, :modules_with_prefix, [prefix, predicate])
   end
 
+  def module_from_string(%Project{} = project, module_name) when is_binary(module_name) do
+    call(project, Engine.Modules, :from_string, [module_name])
+  end
+
   @spec docs(Project.t(), module()) :: {:ok, CodeIntelligence.Docs.t()} | {:error, any()}
   def docs(%Project{} = project, module, opts \\ []) when is_atom(module) do
     call(project, Engine, :docs, [module, opts])

@@ -22,7 +22,8 @@ defmodule Expert.Project.Indexer do
       :create_index,
       :update_index,
       :initial_compile?,
-      pending?: false
+      pending?: false,
+      record_integrations?: false
     ]
 
     def new(%Project{} = project, opts) do
@@ -83,7 +84,10 @@ defmodule Expert.Project.Indexer do
 
   @impl GenServer
   def handle_continue(:maybe_initial_compile, %State{initial_compile?: true} = state) do
-    force? = Search.Store.load_status(state.project) not in [:stale, :ready]
+    force? =
+      Search.Store.load_status(state.project) not in [:stale, :ready] or
+        Search.Indexer.integrations_changed?(state.project)
+
     Node.trigger_build(state.project, force?)
     {:noreply, state}
   end
@@ -93,6 +97,7 @@ defmodule Expert.Project.Indexer do
   @impl GenServer
   def handle_info(project_compiled(status: status), %State{} = state)
       when status in [:success, :successful, :error] do
+    state = %State{state | record_integrations?: status != :error}
     {:noreply, start_or_queue_index(state)}
   end
 
@@ -129,18 +134,37 @@ defmodule Expert.Project.Indexer do
     do: start_or_queue_index(%State{state | task: nil, pending?: false})
 
   defp complete_index(%State{} = state, :ok) do
-    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
-    %State{state | task: nil}
+    state = %State{state | task: nil}
+
+    case maybe_record_integrations(state) do
+      :ok ->
+        broadcast_index_ready(state)
+
+      {:error, reason} ->
+        Logger.warning("Could not record search integrations: #{inspect(reason)}")
+        broadcast_index_ready(state)
+    end
   end
 
   defp complete_index(%State{} = state, _result) do
-    %State{state | task: nil}
+    %State{state | task: nil, record_integrations?: false}
   end
 
   defp run_index(%Project{} = project, create_index, update_index) do
     with :ok <- Search.Store.enable(project) do
       persist_index(project, Search.Store.load_status(project), create_index, update_index)
     end
+  end
+
+  defp maybe_record_integrations(%State{record_integrations?: true} = state) do
+    Search.Indexer.record_integrations(state.project)
+  end
+
+  defp maybe_record_integrations(%State{}), do: :ok
+
+  defp broadcast_index_ready(%State{} = state) do
+    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
+    %State{state | record_integrations?: false}
   end
 
   defp persist_index(%Project{} = project, :empty, create_index, _update_index) do
