@@ -13,7 +13,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 6
+  @schema_version 7
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -734,7 +734,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <-
            exec(
              state,
-             "CREATE INDEX IF NOT EXISTS entries_caller_idx ON entries (caller, path, type, subtype)"
+             "CREATE INDEX IF NOT EXISTS entries_caller_idx ON entries (caller, path, type, subtype) WHERE caller IS NOT NULL"
            ),
          :ok <-
            exec(state, "CREATE INDEX IF NOT EXISTS entries_block_idx ON entries (block_id, path)"),
