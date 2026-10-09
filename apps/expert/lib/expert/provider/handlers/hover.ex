@@ -29,6 +29,7 @@ defmodule Expert.Provider.Handlers.Hover do
       with {:ok, _document, %Ast.Analysis{} = analysis} <-
              Document.Store.fetch(document.uri, :analysis),
            nil <- hex_hover(document, analysis, params.position, project) do
+        analysis = EngineApi.reanalyze_to(project, analysis, params.position)
         integration_hovers = integration_hovers(project, analysis, params.position)
         generic_hover = generic_hover(project, document, analysis, params.position)
         combine_hovers(integration_hovers, generic_hover)
@@ -64,7 +65,7 @@ defmodule Expert.Provider.Handlers.Hover do
   defp combine_hovers(integration_hovers, generic_hover) do
     hovers =
       integration_hovers
-      |> prepend_hover(generic_hover)
+      |> append_hover(generic_hover)
       |> Enum.uniq_by(&elem(&1, 0))
 
     case hovers do
@@ -83,8 +84,8 @@ defmodule Expert.Provider.Handlers.Hover do
     end
   end
 
-  defp prepend_hover(hovers, {:ok, markdown, range}), do: [{markdown, range} | hovers]
-  defp prepend_hover(hovers, nil), do: hovers
+  defp append_hover(hovers, {:ok, markdown, range}), do: hovers ++ [{markdown, range}]
+  defp append_hover(hovers, nil), do: hovers
 
   defp hex_hover(%Document{} = document, analysis, %Position{} = position, project) do
     with true <- Hex.project_file?(project, document),

@@ -72,8 +72,11 @@ defmodule Expert.Provider.Handlers.HoverTest do
     assert contents.value =~ "Generic documentation"
     assert contents.value =~ "Integration documentation"
     assert contents.value =~ "---"
-    assert range.start.character == 1
-    assert range.end.character == 7
+    assert {integration_index, _} = :binary.match(contents.value, "Integration documentation")
+    assert {generic_index, _} = :binary.match(contents.value, "Generic documentation")
+    assert integration_index < generic_index
+    assert range.start.character == 2
+    assert range.end.character == 6
   end
 
   test "deduplicates identical integration and generic hover documentation", %{project: project} do

@@ -7,6 +7,8 @@ defmodule Expert.Search.Indexer.BeamsTest do
   alias Expert.Integrations
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.ModuleRegistry
+  alias Forge.Document.Position
+  alias Forge.Document.Range
   alias Forge.Formats
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
@@ -172,6 +174,52 @@ defmodule Expert.Search.Indexer.BeamsTest do
       {entries, _manifest_entries} = index_beams([beam_path], project: project)
 
       assert integration_entry in entries
+    end
+
+    test "tracks foreign integration definition paths and assigns the owner application", %{
+      tmp_dir: tmp_dir
+    } do
+      module = unique_module("ForeignIntegration")
+      project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
+      foreign_path = Path.join(tmp_dir, "foreign_definition.ex")
+      File.write!(foreign_path, "definition\n")
+
+      %{beam_paths: [beam_path], source_path: source_path} =
+        compile_source!(tmp_dir, "defmodule #{inspect(module)}, do: nil",
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      position = %Position{line: 1, character: 1, starting_index: 1, valid?: true}
+
+      definition =
+        Entry.definition(
+          foreign_path,
+          Forge.Search.Indexer.Source.Block.root(),
+          "foreign",
+          :metadata,
+          Range.new(position, %{position | character: 8}),
+          nil
+        )
+
+      patch(Integrations, :index_beam, fn ^project, _binary, %{module: ^module}, ^source_path ->
+        [definition]
+      end)
+
+      application = :foreign_integration
+      applications = %{Path.dirname(beam_path) => application}
+
+      patch(ModuleRegistry, :put, fn ^project, ^module, ^beam_path, ^application, _exports ->
+        :ok
+      end)
+
+      {entries, [manifest_entry]} =
+        index_beams([beam_path], project: project, applications: applications)
+
+      assert %Entry{application: ^application, path: ^foreign_path, subtype: :definition} =
+               Enum.find(entries, &(&1.subject == "foreign"))
+
+      assert MapSet.new(manifest_entry.output_paths) == MapSet.new([source_path, foreign_path])
     end
 
     test "synthesizes contextual ranges for macro-generated definitions from beam metadata", %{

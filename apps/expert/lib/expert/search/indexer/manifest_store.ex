@@ -106,6 +106,7 @@ defmodule Expert.Search.Indexer.ManifestStore do
     %{
       input_path: entry.input_path,
       output_path: entry.output_path,
+      output_paths: entry.output_paths,
       kind: Atom.to_string(entry.kind),
       mtime: entry.mtime,
       size: entry.size,
@@ -125,6 +126,7 @@ defmodule Expert.Search.Indexer.ManifestStore do
     %Entry{
       input_path: input_path,
       output_path: Map.get(entry, :output_path),
+      output_paths: Map.get(entry, :output_paths),
       kind: decode_kind(kind),
       mtime: mtime,
       size: size,
@@ -157,6 +159,7 @@ defmodule Expert.Search.Indexer.ManifestStore do
       :mtime,
       nil,
       :output_path,
+      :output_paths,
       :schema_version,
       :size,
       :source,

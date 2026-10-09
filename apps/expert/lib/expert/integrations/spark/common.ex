@@ -1,7 +1,4 @@
 defmodule Expert.Integrations.Spark.Common do
-  alias Expert.EngineApi
-  alias Expert.Integrations.Spark.Callbacks
-  alias Expert.Integrations.Spark.Indexer
   alias Expert.Search.Indexer.Analysis.Uses
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Store
@@ -81,9 +78,9 @@ defmodule Expert.Integrations.Spark.Common do
   def selected_type_module({:__block__, _, [value]}, type, env),
     do: selected_type_module(value, type, env)
 
-  def selected_type_module(value, type, env) when is_atom(value) do
-    env.project
-    |> Callbacks.aliases(type)
+  def selected_type_module(value, type, _env) when is_atom(value) do
+    type
+    |> Map.get(:aliases, %{})
     |> Map.fetch(to_string(value))
   end
 
@@ -93,22 +90,11 @@ defmodule Expert.Integrations.Spark.Common do
 
   def fetch(project, :function, {module, name, arity, argument_index}) do
     key = "#{Forge.Formats.mfa(module, name, arity)}/#{argument_index}"
-
-    with {:ok, payload} <- fetch_payload(project, :function, key) do
-      options =
-        case Callbacks.function_options(project, module, name, arity, argument_index) do
-          {:ok, schema} -> copy_documentation(payload, Indexer.normalize_schema(schema))
-          :error -> payload
-        end
-
-      {:ok, options}
-    end
+    fetch_payload(project, :function, key)
   end
 
   def fetch(project, kind, owner) do
-    with {:ok, payload} <- fetch_payload(project, kind, owner) do
-      {:ok, add_documentation(project, kind, owner, payload)}
-    end
+    fetch_payload(project, kind, owner)
   end
 
   defp fetch_payload(project, kind, owner) do
@@ -122,38 +108,6 @@ defmodule Expert.Integrations.Spark.Common do
       _ -> :error
     end
   end
-
-  defp add_documentation(project, :dsl, module, payload) do
-    case Callbacks.fetch(project, nil, module, :opt_schema) do
-      {:ok, schema} ->
-        %{
-          payload
-          | options: copy_documentation(payload.options, Indexer.normalize_schema(schema))
-        }
-
-      :error ->
-        payload
-    end
-  end
-
-  defp add_documentation(
-         project,
-         :behaviour,
-         _owner,
-         %{module: module, constraints: _options} = payload
-       ) do
-    with {:ok, module} <- EngineApi.module_from_string(project, module),
-         {:ok, schema} <- Callbacks.fetch(project, nil, module, :constraints) do
-      %{
-        payload
-        | constraints: copy_documentation(payload.constraints, Indexer.normalize_schema(schema))
-      }
-    else
-      _ -> payload
-    end
-  end
-
-  defp add_documentation(_project, _kind, _owner, payload), do: payload
 
   def option_key(key) when is_atom(key), do: key
   def option_key({:__block__, _, [key]}) when is_atom(key), do: key
@@ -206,8 +160,6 @@ defmodule Expert.Integrations.Spark.Common do
 
       case Map.fetch(extensions, module) do
         {:ok, extension} ->
-          extension = add_extension_documentation(project, module, extension)
-
           [
             extension
             | expand_extensions(extension.added_extensions ++ rest, project, extensions, seen)
@@ -216,37 +168,6 @@ defmodule Expert.Integrations.Spark.Common do
         :error ->
           expand_extensions(rest, project, extensions, seen)
       end
-    end
-  end
-
-  defp add_extension_documentation(project, module, extension) do
-    case EngineApi.module_from_string(project, module) do
-      {:ok, module} ->
-        extension =
-          case Callbacks.fetch(project, nil, module, :sections) do
-            {:ok, sections} ->
-              sections =
-                copy_documentation(extension.sections, Indexer.normalize_sections(sections))
-
-              %{extension | sections: sections}
-
-            :error ->
-              extension
-          end
-
-        case Callbacks.fetch(project, nil, module, :dsl_patches) do
-          {:ok, patches} ->
-            %{
-              extension
-              | patches: copy_documentation(extension.patches, Indexer.normalize_patches(patches))
-            }
-
-          :error ->
-            extension
-        end
-
-      :error ->
-        extension
     end
   end
 
@@ -310,49 +231,6 @@ defmodule Expert.Integrations.Spark.Common do
         %{}
     end
   end
-
-  defp copy_documentation(indexed, current) when is_map(indexed) and is_map(current) do
-    if same_node?(indexed, current) do
-      indexed =
-        if Map.has_key?(current, :documentation),
-          do: Map.put(indexed, :documentation, current.documentation),
-          else: indexed
-
-      Enum.reduce(indexed, indexed, fn {key, value}, result ->
-        case Map.fetch(current, key) do
-          {:ok, current_value} when is_map(value) or is_list(value) ->
-            Map.put(result, key, copy_documentation(value, current_value))
-
-          _ ->
-            result
-        end
-      end)
-    else
-      indexed
-    end
-  end
-
-  defp copy_documentation(indexed, current) when is_list(indexed) and is_list(current) do
-    current = List.to_tuple(current)
-
-    indexed
-    |> Enum.with_index()
-    |> Enum.map(fn {value, index} ->
-      if index < tuple_size(current),
-        do: copy_documentation(value, elem(current, index)),
-        else: value
-    end)
-  end
-
-  defp copy_documentation(indexed, _current), do: indexed
-
-  defp same_node?(%{name: name}, %{name: name}), do: true
-  defp same_node?(%{name: _}, %{name: _}), do: false
-  defp same_node?(%{section_path: path}, %{section_path: path}), do: true
-  defp same_node?(%{section_path: _}, %{section_path: _}), do: false
-  defp same_node?(%{kind: kind}, %{kind: kind}), do: true
-  defp same_node?(%{kind: _}, %{kind: _}), do: false
-  defp same_node?(_indexed, _current), do: true
 
   defp module_name(module) when is_atom(module), do: Atom.to_string(module)
 end

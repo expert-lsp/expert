@@ -15,6 +15,10 @@ defmodule Expert.Search.Indexer.Analyzer do
   defdelegate imports_at(analysis, position), to: Imports, as: :at
   defdelegate import_module_for(analysis, position, fun, arity), to: Imports, as: :module_for
 
+  defdelegate import_module_for(analysis, position, fun, arity, module_exports),
+    to: Imports,
+    as: :module_for
+
   def imports_at(%Analysis{} = analysis, %Position{} = position, module_exports)
       when is_function(module_exports, 1) do
     Imports.at(analysis, position, module_exports)

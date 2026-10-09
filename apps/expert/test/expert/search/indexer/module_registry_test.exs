@@ -112,6 +112,74 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert_received :engine_lookup
   end
 
+  test "finds a BEAM path after a registry restart and caches the runtime lookup" do
+    project = project()
+    Expert.Project.Store.set_projects([project])
+    Expert.Project.Store.transition(project, :ready)
+    start_supervised!({ModuleRegistry, project})
+    test_pid = self()
+
+    patch(Expert.EngineApi, :call, fn ^project, :code, :which, [Example] ->
+      send(test_pid, :beam_path_lookup)
+      ~c"/project/ebin/Elixir.Example.beam"
+    end)
+
+    assert "/project/ebin/Elixir.Example.beam" == ModuleRegistry.beam_path(project, Example)
+    assert_received :beam_path_lookup
+
+    assert "/project/ebin/Elixir.Example.beam" == ModuleRegistry.beam_path(project, Example)
+    refute_received :beam_path_lookup
+
+    ModuleRegistry.prune(project, [])
+    assert "/project/ebin/Elixir.Example.beam" == ModuleRegistry.beam_path(project, Example)
+    assert_received :beam_path_lookup
+  end
+
+  test "keeps an indexed BEAM path ahead of a runtime lookup" do
+    project = project()
+    Expert.Project.Store.set_projects([project])
+    Expert.Project.Store.transition(project, :ready)
+    start_supervised!({ModuleRegistry, project})
+    ModuleRegistry.put(project, Example, "/indexed/Elixir.Example.beam", :example, run: 0)
+
+    patch(Expert.EngineApi, :call, fn _project, _module, _function, _args ->
+      flunk("An indexed BEAM path must use the registry")
+    end)
+
+    assert "/indexed/Elixir.Example.beam" == ModuleRegistry.beam_path(project, Example)
+  end
+
+  test "waits for the project before a BEAM path lookup" do
+    project = project()
+    Expert.Project.Store.set_projects([project])
+    start_supervised!({ModuleRegistry, project})
+
+    patch(Expert.EngineApi, :call, fn _project, _module, _function, _args ->
+      flunk("A pending project must wait for its engine")
+    end)
+
+    assert nil == ModuleRegistry.beam_path(project, Example)
+  end
+
+  test "returns nil for modules without a BEAM file" do
+    project = project()
+    Expert.Project.Store.set_projects([project])
+    Expert.Project.Store.transition(project, :ready)
+    start_supervised!({ModuleRegistry, project})
+
+    patch(Expert.EngineApi, :call, fn ^project, :code, :which, [module] ->
+      case module do
+        Missing -> :non_existing
+        Preloaded -> :preloaded
+        Covered -> :cover_compiled
+      end
+    end)
+
+    assert nil == ModuleRegistry.beam_path(project, Missing)
+    assert nil == ModuleRegistry.beam_path(project, Preloaded)
+    assert nil == ModuleRegistry.beam_path(project, Covered)
+  end
+
   test "prunes deleted modules and cached Engine lookups" do
     project = project()
     start_supervised!({ModuleRegistry, project})

@@ -6,6 +6,9 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Expert.EngineApi
   alias Expert.Integrations
   alias Expert.Project.Intelligence
+  alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Indexer.ModuleRegistry
+  alias Expert.Search.Store
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
@@ -13,6 +16,8 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Forge.Document.Edit
   alias Forge.Document.Position
   alias Forge.Project
+  alias Forge.Search.Indexer.Entry
+  alias Forge.Search.Subject
   alias GenLSP.Enumerations.CompletionTriggerKind
   alias GenLSP.Structures.CompletionContext
   alias GenLSP.Structures.CompletionItem
@@ -34,6 +39,8 @@ defmodule Expert.CodeIntelligence.Completion do
         %Position{} = position,
         %CompletionContext{} = context
       ) do
+    analysis = EngineApi.reanalyze_to(project, analysis, position)
+
     case Env.new(project, analysis, position) do
       {:ok, env} ->
         hex_context =
@@ -83,28 +90,73 @@ defmodule Expert.CodeIntelligence.Completion do
   end
 
   defp completions(%Project{} = project, %Env{} = env, %CompletionContext{} = context) do
+    ordinary_candidates = ordinary_candidates(project, env)
+
     case Integrations.complete(env) do
       {:override, candidates, incomplete?, _transforms} ->
-        {translate_contextual_candidates(candidates, env), incomplete?}
+        {translate_contextual_candidates(candidates, ordinary_candidates, env), incomplete?}
 
       {:augment, candidates, incomplete?, transforms} ->
-        contextual_items = translate_contextual_candidates(candidates, env)
-        ordinary_items = project |> ordinary_completions(env, context) |> transform(transforms)
+        contextual_items = translate_contextual_candidates(candidates, ordinary_candidates, env)
+
+        ordinary_items =
+          project
+          |> ordinary_completions(env, context, ordinary_candidates)
+          |> transform(transforms)
+
         augment(contextual_items, ordinary_items, incomplete?)
 
       :ignore ->
-        {ordinary_completions(project, env, context), false}
+        {ordinary_completions(project, env, context, ordinary_candidates), false}
     end
   end
 
-  defp translate_contextual_candidates(candidates, env) do
+  defp translate_contextual_candidates(candidates, ordinary_candidates, env) do
     Enum.flat_map(candidates, fn {candidate, transforms} ->
+      candidate = matching_candidate(candidate, ordinary_candidates)
+
       case Translatable.translate(candidate, Builder, env) do
         :skip -> []
         items -> items |> List.wrap() |> transform(transforms)
       end
     end)
   end
+
+  defp matching_candidate(
+         %struct{name: name, origin: origin, arity: arity} = contextual,
+         candidates
+       )
+       when struct in [
+              Candidate.Callback,
+              Candidate.Function,
+              Candidate.Macro,
+              Candidate.Typespec
+            ] do
+    candidates
+    |> Enum.find(contextual, fn
+      %{__struct__: ^struct, name: ^name, origin: candidate_origin, arity: ^arity} ->
+        normalize_module(candidate_origin) == normalize_module(origin)
+
+      _candidate ->
+        false
+    end)
+    |> merge_contextual_documentation(contextual)
+  end
+
+  defp matching_candidate(candidate, _candidates), do: candidate
+
+  defp merge_contextual_documentation(candidate, %Candidate.Typespec{doc: ""}), do: candidate
+
+  defp merge_contextual_documentation(candidate, %Candidate.Typespec{doc: documentation}),
+    do: %{candidate | doc: documentation}
+
+  defp merge_contextual_documentation(candidate, %{summary: ""}), do: candidate
+
+  defp merge_contextual_documentation(candidate, %{summary: documentation}),
+    do: %{candidate | summary: documentation}
+
+  defp normalize_module("Elixir." <> module), do: module
+  defp normalize_module(module), do: module
 
   defp transform(items, transforms) do
     Enum.reduce(transforms, items, fn
@@ -122,10 +174,125 @@ defmodule Expert.CodeIntelligence.Completion do
 
   defp augment(items, ordinary_items, incomplete?) do
     items = Enum.map(items, &Builder.set_sort_scope(&1, "000"))
-    {Enum.uniq_by(items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
+    ordinary_labels = MapSet.new(ordinary_items, & &1.label)
+    contextual_items = Enum.reject(items, &MapSet.member?(ordinary_labels, &1.label))
+
+    {Enum.uniq_by(contextual_items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
   end
 
-  defp ordinary_completions(project, env, context) do
+  defp ordinary_candidates(project, env) do
+    prefix_tokens = Env.prefix_tokens(env, 1)
+
+    if prefix_tokens != [] and should_emit_completions?(env) and
+         not should_emit_do_end_snippet?(env) and not Env.in_context?(env, :struct_field_key) do
+      candidates = EngineApi.complete(project, env)
+      indexed = indexed_candidates(project, env, candidates)
+      candidates ++ indexed
+    else
+      []
+    end
+  end
+
+  defp indexed_candidates(project, env, candidates) do
+    case Code.Fragment.cursor_context(env.prefix) do
+      :expr ->
+        imported_candidates(project, env, "", candidates)
+
+      {context, name} when context in [:local_or_var, :local_call] ->
+        imported_candidates(project, env, to_string(name), candidates)
+
+      _context ->
+        []
+    end
+  end
+
+  defp imported_candidates(project, env, prefix, candidates) do
+    exports = &ModuleRegistry.module_exports(project, &1)
+
+    subjects =
+      env.analysis
+      |> Analyzer.imports_at(env.position, exports)
+      |> Enum.filter(fn {_module, name, _arity} ->
+        String.starts_with?(Atom.to_string(name), prefix)
+      end)
+      |> Enum.map(fn {module, name, arity} -> Subject.mfa(module, name, arity) end)
+      |> Enum.uniq()
+
+    existing =
+      candidates
+      |> Enum.flat_map(fn
+        %candidate_module{name: name, origin: origin, arity: arity}
+        when candidate_module in [Candidate.Function, Candidate.Macro] and is_binary(origin) ->
+          ["#{normalize_module(origin)}.#{name}/#{arity}"]
+
+        _candidate ->
+          []
+      end)
+      |> MapSet.new()
+
+    subjects = Enum.reject(subjects, &MapSet.member?(existing, &1))
+
+    case Store.exact_many(project, subjects, subtype: :definition) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(
+          &match?(%Entry{type: {kind, :public}} when kind in [:function, :macro], &1)
+        )
+        |> Enum.uniq_by(& &1.subject)
+        |> Enum.group_by(fn entry -> entry.subject |> Forge.Code.parse_mfa() |> elem(0) end)
+        |> Enum.flat_map(fn {module, definitions} ->
+          docs = indexed_docs(project, module)
+          Enum.map(definitions, &indexed_candidate(&1, docs))
+        end)
+
+      _error ->
+        []
+    end
+  end
+
+  defp indexed_docs(project, module) do
+    with path when is_binary(path) <- ModuleRegistry.beam_path(project, module),
+         {:docs_v1, _, _, _, _, _, entries} <- Code.fetch_docs(path) do
+      Map.new(entries, fn {{kind, name, arity}, _, signatures, documentation, metadata} ->
+        {{kind, name, arity}, {signatures, documentation, metadata}}
+      end)
+    else
+      _error -> %{}
+    end
+  end
+
+  defp indexed_candidate(%Entry{subject: subject, type: {kind, :public}, application: app}, docs) do
+    {module, name, arity} = Forge.Code.parse_mfa(subject)
+    {signatures, documentation, metadata} = Map.get(docs, {kind, name, arity}, {[], %{}, %{}})
+    summary = if is_map(documentation), do: Map.get(documentation, "en", ""), else: ""
+    candidate_module = if kind == :macro, do: Candidate.Macro, else: Candidate.Function
+
+    candidate_module.new(%{
+      args_list: indexed_arguments(signatures, arity),
+      arity: arity,
+      metadata: Map.put(metadata, :app, app),
+      name: Atom.to_string(name),
+      origin: normalize_module(Atom.to_string(module)),
+      summary: summary,
+      type: kind,
+      visibility: :public
+    })
+  end
+
+  defp indexed_arguments([signature | _], arity) do
+    case Code.string_to_quoted(signature) do
+      {:ok, {_name, _, arguments}} when is_list(arguments) ->
+        Enum.map(arguments, &Macro.to_string/1)
+
+      _error ->
+        indexed_arguments([], arity)
+    end
+  end
+
+  defp indexed_arguments([], 0), do: []
+  defp indexed_arguments([], arity), do: Enum.map(1..arity, &"arg#{&1}")
+
+  defp ordinary_completions(project, env, context, candidates) do
     prefix_tokens = Env.prefix_tokens(env, 1)
 
     cond do
@@ -149,9 +316,7 @@ defmodule Expert.CodeIntelligence.Completion do
         |> Enum.map(&Translatable.translate(&1, Builder, env))
 
       true ->
-        project
-        |> EngineApi.complete(env)
-        |> to_completion_items(project, env, context)
+        to_completion_items(candidates, project, env, context)
     end
   end
 
@@ -444,6 +609,8 @@ defmodule Expert.CodeIntelligence.Completion do
         false
     end
   end
+
+  defp typespec_or_type_candidate?(%Candidate.Generic{kind: :type_parameter}, _env), do: true
 
   defp typespec_or_type_candidate?(_, _) do
     false

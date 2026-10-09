@@ -927,17 +927,50 @@ defmodule Expert.Search.IndexerTest do
   end
 
   describe "update_index/1 with dependency beams" do
-    test "reindexes beam siblings sharing source" do
+    test "reindexes beam siblings sharing source without dropping contextual metadata" do
       tmp_dir = Path.join(System.tmp_dir!(), "indexer-#{unique_id()}")
 
       on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+      patch(Integrations, :index_beam, fn project, binary, metadata, source_path ->
+        Expert.Integrations.SemanticMetadata.Indexer.index(
+          project,
+          binary,
+          metadata,
+          source_path
+        )
+      end)
 
       parent = Module.concat(BeamDependencyIndexerTest, :SiblingParent)
       child = Module.concat(parent, :Child)
 
       dep_source = """
-      defmodule #{inspect(parent)} do
-        def parent_fun, do: :ok
+       defmodule #{inspect(parent)} do
+         Module.register_attribute(__MODULE__, :elixir_semantic_metadata,
+           accumulate: true,
+           persist: true
+         )
+
+         @elixir_semantic_metadata {
+           :elixir_semantic_metadata_v1,
+           %{
+             contexts: [
+               %{
+                 mfa: {__MODULE__, :configure, 1},
+                 block: :do,
+                 scope: :root,
+               }
+              ],
+              scopes: %{
+                root: %{
+                   entries: [%{kind: :function, mfa: {__MODULE__, :value, 0}}],
+                  data: []
+                }
+              }
+           }
+         }
+
+         def parent_fun, do: :ok
 
         defmodule Child do
           def child_fun, do: :ok
@@ -979,6 +1012,18 @@ defmodule Expert.Search.IndexerTest do
                FakeBackend.entries(),
                &(&1.subject == child and &1.subtype == :definition)
              )
+
+      assert Enum.any?(updated_entries, fn
+               %Entry{metadata: %{payload: %{kind: :dsl, contexts: [context]}}} ->
+                 context.mfa == %{
+                   module: Atom.to_string(parent),
+                   name: "configure",
+                   arity: 1
+                 }
+
+               _entry ->
+                 false
+             end)
     end
   end
 

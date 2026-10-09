@@ -5,9 +5,7 @@ defmodule Expert.Integrations.Spark.CompletionTest do
   import Forge.Test.CursorSupport
   import Forge.Test.Fixtures
 
-  alias Expert.EngineApi
   alias Expert.Integrations
-  alias Expert.Integrations.Spark.Callbacks
   alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Env
@@ -24,21 +22,6 @@ defmodule Expert.Integrations.Spark.CompletionTest do
 
     patch(Store, :prefix, fn ^project, subject, constraints ->
       {:ok, query(entries, subject, constraints, :prefix)}
-    end)
-
-    patch(Callbacks, :aliases, fn ^project,
-                                  %{alias_module: Ash.Type, alias_function: :builtins} ->
-      %{"string" => "Elixir.Ash.Type.String"}
-    end)
-
-    patch(Callbacks, :fetch, fn ^project, nil, module, function ->
-      runtime_callback(module, function)
-    end)
-
-    patch(EngineApi, :module_from_string, fn ^project, module ->
-      if module == "Elixir.MissingSparkExtension",
-        do: :error,
-        else: {:ok, String.to_existing_atom(module)}
     end)
 
     {:ok, project: project}
@@ -179,10 +162,6 @@ defmodule Expert.Integrations.Spark.CompletionTest do
   end
 
   test "completes indexed function options", %{project: project} do
-    patch(Callbacks, :function_options, fn ^project, Ash, :create, 2, 1 ->
-      {:ok, [upsert?: [doc: "Upsert"]]}
-    end)
-
     assert {:override,
             [
               %Candidate.Snippet{
@@ -316,7 +295,7 @@ defmodule Expert.Integrations.Spark.CompletionTest do
                 option("type", %{
                   kind: :spark_type,
                   behaviour: "Elixir.Ash.Type",
-                  aliases: %{},
+                  aliases: %{"string" => "Elixir.Ash.Type.String"},
                   alias_module: Ash.Type,
                   alias_function: :builtins
                 }),
@@ -401,6 +380,7 @@ defmodule Expert.Integrations.Spark.CompletionTest do
   defp section(name, entities \\ []) do
     %{
       name: name,
+      documentation: documentation(name),
       snippet: nil,
       top_level?: false,
       options: [],
@@ -412,6 +392,7 @@ defmodule Expert.Integrations.Spark.CompletionTest do
   defp entity(name, arguments, options) do
     %{
       name: name,
+      documentation: documentation(name),
       snippet: nil,
       arguments: arguments,
       options: options,
@@ -422,6 +403,7 @@ defmodule Expert.Integrations.Spark.CompletionTest do
   defp option(name, type, default \\ nil) do
     %{
       name: name,
+      documentation: documentation(name),
       snippet: nil,
       default: default,
       type: if(is_map(type), do: type, else: %{kind: type})
@@ -451,45 +433,11 @@ defmodule Expert.Integrations.Spark.CompletionTest do
     }
   end
 
-  defp runtime_callback(Ash.Resource, :opt_schema) do
-    {:ok, [otp_app: [doc: "OTP application"]]}
-  end
-
-  defp runtime_callback(Ash.Resource.Extension, :sections) do
-    {:ok,
-     [
-       %{
-         name: :actions,
-         docs: "Actions",
-         entities: [
-           %{
-             name: :read,
-             docs: "A read action"
-           }
-         ]
-       }
-     ]}
-  end
-
-  defp runtime_callback(My.Patch, :dsl_patches) do
-    {:ok,
-     [
-       %{
-         section_path: [:actions],
-         entity: %{name: :create, docs: "A create action"}
-       }
-     ]}
-  end
-
-  defp runtime_callback(Ash.Type.String, :constraints) do
-    {:ok,
-     [
-       max_length: [type: :non_neg_integer, doc: "Maximum length"],
-       range: [
-         type: {:keyword_list, [max: [type: :non_neg_integer, doc: "Maximum value"]]}
-       ]
-     ]}
-  end
-
-  defp runtime_callback(_module, _function), do: :error
+  defp documentation("otp_app"), do: "OTP application"
+  defp documentation("actions"), do: "Actions"
+  defp documentation("read"), do: "A read action"
+  defp documentation("create"), do: "A create action"
+  defp documentation("upsert?"), do: "Upsert"
+  defp documentation("max_length"), do: "Maximum length"
+  defp documentation(_name), do: ""
 end

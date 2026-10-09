@@ -121,13 +121,19 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     end
   end
 
+  @doc """
+  Returns the indexed BEAM path, or asks a ready project for its code path.
+
+  Incremental indexing can reuse persisted entries after a registry restart.
+  The runtime lookup restores access to documentation for unchanged modules.
+  """
   @spec beam_path(Project.t() | nil, module()) :: Path.t() | nil
   def beam_path(nil, _module), do: nil
 
   def beam_path(%Project{} = project, module) when is_atom(module) do
     case :ets.lookup(name(project), {:module, module}) do
       [{{:module, ^module}, %{beam_path: beam_path}}] -> beam_path
-      [] -> nil
+      [] -> engine_lookup(project, :beam_path, module, nil)
     end
   end
 

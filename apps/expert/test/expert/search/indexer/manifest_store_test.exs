@@ -118,6 +118,18 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
       assert Manifest.entries(loaded_manifest) == Manifest.entries(manifest)
     end
 
+    test "persists every output path", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+      [entry] = Manifest.entries(manifest(tmp_dir))
+      paths = [entry.output_path, Path.join(tmp_dir, "generated.ex")]
+      manifest = Manifest.new([ManifestEntry.put_output_paths(entry, paths)])
+
+      :ok = ManifestStore.commit(project, manifest)
+
+      assert {:ok, loaded_manifest} = ManifestStore.load(project)
+      assert [%ManifestEntry{output_paths: ^paths}] = Manifest.entries(loaded_manifest)
+    end
+
     test "encodes artifact kinds without persisted atoms", %{
       tmp_dir: tmp_dir
     } do

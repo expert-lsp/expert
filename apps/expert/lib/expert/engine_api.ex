@@ -17,6 +17,25 @@ defmodule Expert.EngineApi do
     |> :erpc.call(m, f, a)
   end
 
+  def call(%Project{} = project, m, f, a, timeout) do
+    project
+    |> Project.node_name()
+    |> :erpc.call(m, f, a, timeout)
+  end
+
+  @doc "Loads current project code and calls it with a timeout."
+  def call_fresh(%Project{} = project, m, f, a, timeout) do
+    node = Project.node_name(project)
+
+    case :erpc.call(node, Engine.Module.Loader, :ensure_fresh, [m], timeout) do
+      {:module, ^m} ->
+        :erpc.call(node, m, f, a, timeout)
+
+      {:error, reason} ->
+        raise ArgumentError, "could not load #{inspect(m)}: #{inspect(reason)}"
+    end
+  end
+
   def schedule_compile(%Project{} = project, force?) do
     call(project, Engine, :schedule_compile, [force?])
   end
@@ -31,6 +50,32 @@ defmodule Expert.EngineApi do
 
   def analyze(%Project{} = project, %Document{} = document, opts \\ []) do
     call(project, Ast, :analyze, [document, opts])
+  end
+
+  @doc """
+  Returns cursor analysis with imports from `use` in the project node.
+
+  Reuses the existing AST and import capture. Analyses with captured imports
+  return unchanged. A use outside the cursor scope does not require expansion.
+  """
+  @spec reanalyze_to(Project.t(), Analysis.t(), Position.t()) :: Analysis.t()
+  def reanalyze_to(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
+    analysis = Ast.reanalyze_to(analysis, position)
+
+    unexpanded_use? =
+      analysis
+      |> Analysis.scopes_at(position)
+      |> Enum.any?(fn scope ->
+        Enum.any?(scope.uses, fn use ->
+          is_nil(use.imported_mfas) and Position.compare(use.range.end, position) in [:lt, :eq]
+        end)
+      end)
+
+    if unexpanded_use? do
+      call(project, Analysis, :new, [Ast.from(analysis), analysis.document, [expand_uses: true]])
+    else
+      analysis
+    end
   end
 
   def expand_alias(
@@ -175,6 +220,15 @@ defmodule Expert.EngineApi do
 
   def module_exports(target, module),
     do: runtime_call(target, Engine.Modules, :exports, [module])
+
+  @doc "Returns a BEAM path from the project's code path without loading the module."
+  @spec beam_path(Project.t() | node(), module()) :: Path.t() | nil
+  def beam_path(target, module) do
+    case runtime_call(target, :code, :which, [module]) do
+      path when is_list(path) -> path |> List.to_string() |> Forge.Path.native()
+      unavailable when unavailable in [:non_existing, :preloaded, :cover_compiled] -> nil
+    end
+  end
 
   def runtime_versions(%Project{} = project) do
     call(project, Engine, :runtime_versions, [])

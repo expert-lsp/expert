@@ -213,11 +213,13 @@ defmodule Expert.Search.Indexer.Beams do
     entries =
       Enum.flat_map(results, fn
         {:indexed, _source_path, metadata, integration_entries, manifest_entry} ->
+          application = application(manifest_entry, opts)
+
           entries_from_metadata(
             metadata,
             Map.get(source_lines_by_path, source_path, %{}),
-            application(manifest_entry, opts)
-          ) ++ integration_entries
+            application
+          ) ++ Enum.map(integration_entries, &put_application(&1, application))
       end)
 
     [Entry.block_structure(source_path, %{root: %{}}) | entries]
@@ -227,6 +229,11 @@ defmodule Expert.Search.Indexer.Beams do
     applications = Keyword.get(opts, :applications, %{})
     Map.get(applications, Path.dirname(manifest_entry.input_path))
   end
+
+  defp put_application(%Entry{application: nil} = entry, application),
+    do: %{entry | application: application}
+
+  defp put_application(%Entry{} = entry, _application), do: entry
 
   defp metadata_from_beam({beam_path, beam_stat}, opts) do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
@@ -260,10 +267,14 @@ defmodule Expert.Search.Indexer.Beams do
 
     case source_stat_result do
       {:ok, _source_stat} ->
+        integration_entries = integration_entries(beam, metadata, source_path, opts[:project])
+
         {:ok, manifest_entry} =
           Manifest.Entry.beam(beam_path, source_path, beam_stat, source_stat_result)
 
-        integration_entries = integration_entries(beam, metadata, source_path, opts[:project])
+        output_paths = [source_path | Enum.map(integration_entries, & &1.path)]
+        manifest_entry = Manifest.Entry.put_output_paths(manifest_entry, output_paths)
+
         [{:indexed, source_path, metadata, integration_entries, manifest_entry}]
 
       :error ->

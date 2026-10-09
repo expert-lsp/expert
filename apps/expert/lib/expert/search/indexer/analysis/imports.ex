@@ -11,7 +11,10 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   def at(%Analysis{} = analysis, %Position{} = position, module_exports \\ &module_exports/1) do
     case Analysis.scopes_at(analysis, position) do
       [%Scope{} = scope | _] ->
-        imports(scope, position, module_exports)
+        case latest_use_with_imports(scope, position) do
+          nil -> imports(scope, position, module_exports)
+          use -> imports_after_use(scope, position, use, module_exports)
+        end
 
       _ ->
         []
