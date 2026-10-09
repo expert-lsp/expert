@@ -51,6 +51,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
 
     EngineApi.schedule_compile(project, true)
     assert_receive project_compiled(), @project_compile_timeout
+    Indexer.refresh(project)
     assert_receive project_index_ready(project: ^project), @project_index_timeout
 
     {:ok, project: project}
@@ -92,10 +93,11 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   describe "go to definition" do
     setup [:with_referenced_file]
 
-    test "resolves definitions from the manager index", %{
+    test "uses the index before the Engine is ready", %{
       project: project,
       uri: referenced_uri
     } do
+      assert Handlers.GoToDefinition.requires_engine?() == false
       patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
 
       uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
@@ -105,7 +107,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
       assert Location.uri(location) == referenced_uri
     end
 
-    test "resolves local variables in the manager", %{project: project} do
+    test "finds a local variable before the Engine is ready", %{project: project} do
       patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
 
       path = file_path(project, Path.join("lib", "my_definition.ex"))

@@ -8,7 +8,6 @@ defmodule Expert.Project.Indexer do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
-  alias Expert.Project.Node
   alias Expert.Search
   alias Forge.Project
 
@@ -21,33 +20,28 @@ defmodule Expert.Project.Indexer do
       :task_supervisor,
       :create_index,
       :update_index,
-      :initial_compile?,
       pending?: false
     ]
 
-    def new(%Project{} = project, opts) do
+    def new(project, opts) do
       %__MODULE__{
         project: project,
         task_supervisor: Keyword.fetch!(opts, :task_supervisor),
         create_index: Keyword.fetch!(opts, :create_index),
-        update_index: Keyword.fetch!(opts, :update_index),
-        initial_compile?: Keyword.get(opts, :initial_compile?, false)
+        update_index: Keyword.fetch!(opts, :update_index)
       }
     end
   end
 
-  def start_link(%Project{} = project) do
-    start_link(project, [])
-  end
+  def start_link(%Project{} = project), do: start_link(project, [])
 
-  def start_link(%Project{} = project, opts) when is_list(opts) do
+  def start_link(%Project{} = project, opts) do
     opts =
       Keyword.merge(
         [
           task_supervisor: task_supervisor_name(project),
           create_index: &Search.Indexer.create_index/1,
-          update_index: &Search.Indexer.update_index/1,
-          initial_compile?: false
+          update_index: &Search.Indexer.update_index/1
         ],
         opts
       )
@@ -55,14 +49,9 @@ defmodule Expert.Project.Indexer do
     GenServer.start_link(__MODULE__, [project, opts], name: name(project))
   end
 
-  def child_spec(%Project{} = project) do
-    %{
-      id: {__MODULE__, Project.unique_name(project)},
-      start: {__MODULE__, :start_link, [project]}
-    }
-  end
+  def child_spec(%Project{} = project), do: child_spec([project])
 
-  def child_spec([%Project{} = project | opts]) when is_list(opts) do
+  def child_spec([%Project{} = project | opts]) do
     %{
       id: {__MODULE__, Project.unique_name(project)},
       start: {__MODULE__, :start_link, [project, opts]}
@@ -75,107 +64,102 @@ defmodule Expert.Project.Indexer do
     :"#{Project.unique_name(project)}::indexer_task_supervisor"
   end
 
+  def refresh(%Project{} = project), do: GenServer.cast(name(project), :refresh)
+
   @impl GenServer
-  def init([%Project{} = project, opts]) do
-    EngineApi.register_listener(project, self(), [project_compiled()])
-    {:ok, State.new(project, opts), {:continue, :maybe_initial_compile}}
+  def init([project, opts]) do
+    Process.flag(:trap_exit, true)
+    {:ok, State.new(project, opts), {:continue, :warmup}}
   end
 
   @impl GenServer
-  def handle_continue(:maybe_initial_compile, %State{initial_compile?: true} = state) do
-    force? = Search.Store.load_status(state.project) not in [:stale, :ready]
-    Node.trigger_build(state.project, force?)
-    {:noreply, state}
-  end
+  def handle_continue(:warmup, %State{} = state) do
+    task =
+      Task.Supervisor.async(state.task_supervisor, fn ->
+        with :ok <- Search.Store.enable(state.project),
+             :empty <- Search.Store.load_status(state.project) do
+          Search.Indexer.warmup(state.project)
+        else
+          status when status in [:stale, :ready] -> :ok
+          error -> error
+        end
+      end)
 
-  def handle_continue(:maybe_initial_compile, %State{} = state), do: {:noreply, state}
+    {:noreply, %State{state | task: {:warmup, task}}}
+  end
 
   @impl GenServer
-  def handle_info(project_compiled(status: status), %State{} = state)
-      when status in [:success, :successful, :error] do
-    {:noreply, start_or_queue_index(state)}
+  def handle_cast(:refresh, %State{task: {:warmup, task}} = state) do
+    Task.shutdown(task, :brutal_kill)
+    {:noreply, start_refresh(%State{state | task: nil})}
   end
 
-  def handle_info({ref, result}, %State{task: %Task{ref: ref}} = state) do
+  def handle_cast(:refresh, %State{task: nil} = state) do
+    {:noreply, start_refresh(state)}
+  end
+
+  def handle_cast(:refresh, %State{} = state) do
+    {:noreply, %State{state | pending?: true}}
+  end
+
+  @impl GenServer
+  def handle_info({ref, result}, %State{task: {kind, %Task{ref: ref}}} = state) do
     Process.demonitor(ref, [:flush])
-    log_index_result(result)
-
-    {:noreply, complete_index(state, result)}
+    log_result(kind, result)
+    {:noreply, finish_task(state, result)}
   end
 
   def handle_info(
         {:DOWN, ref, :process, _pid, reason},
-        %State{task: %Task{ref: ref}} = state
+        %State{task: {kind, %Task{ref: ref}}} = state
       ) do
-    Logger.error("Search indexing failed: #{Exception.format_exit(reason)}")
-
-    {:noreply, complete_index(state, {:error, reason})}
+    Logger.error("Index #{kind} failed: #{Exception.format_exit(reason)}")
+    {:noreply, finish_task(state, {:error, reason})}
   end
 
-  def handle_info(_message, %State{} = state), do: {:noreply, state}
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
-  defp start_or_queue_index(%State{task: %Task{}} = state), do: %State{state | pending?: true}
+  @impl GenServer
+  def terminate(_reason, %State{task: {_kind, task}}), do: Task.shutdown(task, :brutal_kill)
+  def terminate(_reason, _state), do: :ok
 
-  defp start_or_queue_index(%State{} = state) do
+  defp start_refresh(%State{} = state) do
     task =
-      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        run_index(state.project, state.create_index, state.update_index)
+      Task.Supervisor.async(state.task_supervisor, fn ->
+        with :ok <- Search.Store.enable(state.project) do
+          case Search.Store.load_status(state.project) do
+            :empty -> state.create_index.(state.project)
+            _ -> update_index(state)
+          end
+        end
       end)
 
-    %State{state | task: task, pending?: false}
+    %State{state | task: {:refresh, task}, pending?: false}
   end
 
-  defp complete_index(%State{pending?: true} = state, _result),
-    do: start_or_queue_index(%State{state | task: nil, pending?: false})
-
-  defp complete_index(%State{} = state, :ok) do
-    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
-    %State{state | task: nil}
-  end
-
-  defp complete_index(%State{} = state, _result) do
-    %State{state | task: nil}
-  end
-
-  defp run_index(%Project{} = project, create_index, update_index) do
-    with :ok <- Search.Store.enable(project) do
-      persist_index(project, Search.Store.load_status(project), create_index, update_index)
-    end
-  end
-
-  defp persist_index(%Project{} = project, :empty, create_index, _update_index) do
-    persist_full_index(project, create_index)
-  end
-
-  defp persist_index(%Project{} = project, _status, create_index, update_index) do
-    persist_incremental_index(project, create_index, update_index)
-  end
-
-  defp persist_full_index(%Project{} = project, create_index) do
-    create_index.(project)
-  end
-
-  defp persist_incremental_index(%Project{} = project, create_index, update_index) do
-    case update_index.(project) do
+  defp update_index(%State{} = state) do
+    case state.update_index.(state.project) do
       {:error, {:store, reason}} ->
         Logger.warning(
           "Could not persist incremental index update, rebuilding full index: #{inspect(reason)}"
         )
 
-        persist_index(project, :empty, create_index, update_index)
+        state.create_index.(state.project)
 
       result ->
         result
     end
   end
 
-  defp log_index_result(:ok), do: :ok
+  defp finish_task(%State{pending?: true} = state, _result), do: start_refresh(state)
 
-  defp log_index_result({:error, reason}) do
-    Logger.warning("Could not refresh index: #{inspect(reason)}")
+  defp finish_task(%State{task: {:refresh, _}} = state, :ok) do
+    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
+    %State{state | task: nil}
   end
 
-  defp log_index_result(other) do
-    Logger.warning("Unexpected index refresh result: #{inspect(other)}")
-  end
+  defp finish_task(%State{} = state, _result), do: %State{state | task: nil}
+
+  defp log_result(kind, :ok), do: Logger.info("Index #{kind} finished")
+  defp log_result(kind, result), do: Logger.warning("Index #{kind} returned #{inspect(result)}")
 end
