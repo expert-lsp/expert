@@ -98,11 +98,10 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   defp snippet(label, text) do
-    %Candidate.Snippet{
+    %Candidate.Generic{
       label: label,
       snippet: text,
       detail: "Contextual",
-      priority: :contextual,
       kind: :field
     }
   end

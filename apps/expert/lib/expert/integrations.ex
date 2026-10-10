@@ -40,15 +40,8 @@ defmodule Expert.Integrations do
     {Expert.Integrations.Spark.Indexer, 1}
   ]
 
-  @completion_providers [
-    Expert.Integrations.SemanticMetadata.Completion,
-    Expert.Integrations.Spark.Completion
-  ]
-
-  @hover_providers [
-    Expert.Integrations.SemanticMetadata.Hover,
-    Expert.Integrations.Spark.Hover
-  ]
+  @completion_providers [Expert.Integrations.SemanticMetadata.Completion]
+  @hover_providers [Expert.Integrations.SemanticMetadata.Hover]
 
   @definition_providers [Expert.Integrations.SemanticMetadata.Definition]
 

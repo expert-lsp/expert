@@ -160,7 +160,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
           rewrite_source?: false
         )
 
-      integration_entry = Entry.integration(source_path, "test", :metadata, module, %{})
+      integration_entry = Entry.integration(source_path, "test", :metadata, inspect(module), %{})
 
       patch(Integrations, :index_beam, fn ^project, binary, %{module: ^module}, ^source_path ->
         assert is_binary(binary)
