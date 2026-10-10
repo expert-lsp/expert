@@ -24,6 +24,11 @@ defmodule Engine.CodeIntelligence.Definition do
     end
   end
 
+  @spec definition(Analysis.t(), Position.t(), Entity.resolved()) ::
+          {:ok, Location.t() | [Location.t()] | nil} | {:error, String.t()}
+  def definition(%Analysis{} = analysis, %Position{} = position, entity),
+    do: fetch_definition(entity, analysis, position)
+
   defp fetch_definition({type, entity} = resolved, %Analysis{} = analysis, %Position{} = position)
        when type in [:struct, :module] do
     module = Formats.module(entity)

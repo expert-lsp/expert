@@ -30,11 +30,11 @@ defmodule Expert.Search.Indexer do
   end
 
   def integrations_changed?(%Project{} = project) do
-    ManifestStore.integrations_changed?(project, Integrations.indexer_module_names())
+    ManifestStore.integrations_changed?(project, Integrations.indexer_versions())
   end
 
   def record_integrations(%Project{} = project) do
-    ManifestStore.record_integrations(project, Integrations.indexer_module_names())
+    ManifestStore.record_integrations(project, Integrations.indexer_versions())
   end
 
   def document(%Project{} = project, uri) do
@@ -69,10 +69,10 @@ defmodule Expert.Search.Indexer do
     try do
       case ManifestStore.load(project) do
         {:ok, %Manifest{} = manifest} ->
-          indexer_module_names = Integrations.indexer_module_names()
+          indexer_versions = Integrations.indexer_versions()
 
           integrations_changed? =
-            ManifestStore.integrations_changed?(project, manifest, indexer_module_names)
+            ManifestStore.integrations_changed?(project, manifest, indexer_versions)
 
           with :ok <- ManifestStore.invalidate(project) do
             if integrations_changed?,

@@ -4,6 +4,7 @@ defmodule Expert.Integrations do
   """
 
   alias Forge.Ast.Env
+  alias Forge.Document.Location
   alias Forge.Document.Range
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
@@ -11,51 +12,85 @@ defmodule Expert.Integrations do
   @callback index(Project.t(), binary(), map(), String.t()) :: [Entry.t()]
 
   @callback complete(Env.t()) ::
-              {:augment | :override, [{struct(), [atom()]}], boolean(), [atom()]} | :ignore
+              {:augment | :override, [{struct(), [atom()]}], boolean(), [atom()]}
+              | {:delegate, %{source: String.t()}}
+              | :ignore
 
-  @callback hover(Env.t()) :: [{String.t(), Range.t()}]
+  @callback hover(Env.t()) :: [{String.t(), Range.t() | nil}]
 
-  @optional_callbacks index: 4, complete: 1, hover: 1
+  @callback definition(Env.t()) :: [Location.t()]
 
-  @integrations [
-    {Expert.Integrations.SemanticMetadata.Indexer, [:index]},
-    {Expert.Integrations.Spark.Indexer, [:index]},
-    {Expert.Integrations.SemanticMetadata.Completion, [:complete]},
-    {Expert.Integrations.SemanticMetadata.Hover, [:hover]},
-    {Expert.Integrations.Spark.Completion, [:complete]},
-    {Expert.Integrations.Spark.Hover, [:hover]}
+  @callback resolve(Env.t()) ::
+              {:entity, map(), Range.t() | nil} | {:delegate, %{source: String.t()}} | :ignore
+
+  @callback references(Project.t(), entity :: tuple()) :: [Location.t()]
+
+  @callback signature_help(Env.t()) :: [map()] | :ignore
+
+  @optional_callbacks index: 4,
+                      complete: 1,
+                      hover: 1,
+                      definition: 1,
+                      resolve: 1,
+                      references: 2,
+                      signature_help: 1
+
+  @indexers [
+    {Expert.Integrations.SemanticMetadata.Indexer, 1},
+    {Expert.Integrations.Spark.Indexer, 1}
   ]
 
-  @beam_indexers for {module, capabilities} <- @integrations,
-                     :index in capabilities,
-                     do: module
+  @completion_providers [
+    Expert.Integrations.SemanticMetadata.Completion,
+    Expert.Integrations.Spark.Completion
+  ]
 
-  @completion_providers for {module, capabilities} <- @integrations,
-                            :complete in capabilities,
-                            do: module
+  @hover_providers [
+    Expert.Integrations.SemanticMetadata.Hover,
+    Expert.Integrations.Spark.Hover
+  ]
 
-  @hover_providers for {module, capabilities} <- @integrations,
-                       :hover in capabilities,
-                       do: module
+  @definition_providers [Expert.Integrations.SemanticMetadata.Definition]
 
-  @indexer_module_names @beam_indexers |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+  @resolve_providers [Expert.Integrations.SemanticMetadata.Resolve]
 
-  def indexer_module_names, do: @indexer_module_names
+  @references_providers [Expert.Integrations.SemanticMetadata.References]
+
+  @signature_help_providers [Expert.Integrations.SemanticMetadata.SignatureHelp]
+
+  @indexer_versions @indexers
+                    |> Enum.map(fn {module, version} -> {Atom.to_string(module), version} end)
+                    |> Enum.sort()
+
+  def indexer_versions, do: @indexer_versions
 
   def index_beam(project, binary, metadata, source_path) do
-    Enum.flat_map(@beam_indexers, & &1.index(project, binary, metadata, source_path))
+    Enum.flat_map(@indexers, fn {indexer, _version} ->
+      indexer.index(project, binary, metadata, source_path)
+    end)
   end
 
-  def complete(env) do
-    Enum.find_value(@completion_providers, :ignore, fn provider ->
-      case provider.complete(env) do
+  def complete(env), do: first_result(@completion_providers, & &1.complete(env))
+
+  def hover(env) do
+    Enum.flat_map(@hover_providers, & &1.hover(env))
+  end
+
+  def definition(env), do: Enum.flat_map(@definition_providers, & &1.definition(env))
+
+  def resolve(env), do: first_result(@resolve_providers, & &1.resolve(env))
+
+  def references(project, entity),
+    do: Enum.flat_map(@references_providers, & &1.references(project, entity))
+
+  def signature_help(env), do: first_result(@signature_help_providers, & &1.signature_help(env))
+
+  defp first_result(providers, call) do
+    Enum.find_value(providers, :ignore, fn provider ->
+      case call.(provider) do
         :ignore -> nil
         result -> result
       end
     end)
-  end
-
-  def hover(env) do
-    Enum.flat_map(@hover_providers, & &1.hover(env))
   end
 end

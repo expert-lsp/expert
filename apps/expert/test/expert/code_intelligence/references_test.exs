@@ -12,6 +12,8 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
   alias Expert.Search.Store
   alias Forge.Document
   alias Forge.Document.Location
+  alias Forge.Document.Position
+  alias Forge.Document.Range
 
   setup do
     project = project()
@@ -425,6 +427,43 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
       {_, code} = pop_cursor(query)
 
       assert [] == references(project, query, code)
+    end
+  end
+
+  describe "references through semantic metadata" do
+    test "follow the entity that a resolve handler names at the cursor", %{project: project} do
+      code = ~q[
+        defmodule MyWeb.Pages do
+          def controller, do: MyWeb.PageController
+        end
+      ]
+
+      entity = %{kind: :module, module: MyWeb.PageController}
+      patch(Expert.Integrations, :resolve, {:entity, entity, nil})
+
+      assert [location] = references(project, ~S[get "/", PageController|, :index], code)
+      assert decorate(code, location.range) =~ "do: «MyWeb.PageController»"
+      refute_received {:engine_resolve_entity, _position}
+    end
+
+    test "include the locations that references handlers give once", %{project: project} do
+      code = ~q[
+        defmodule Referencing do
+          @attr ReferencedModule
+        end
+      ]
+
+      document = Document.new(module_uri(project), code, 1)
+      indexed = Range.new(Position.new(document, 2, 9), Position.new(document, 2, 25))
+      provided = Range.new(Position.new(document, 1, 11), Position.new(document, 1, 22))
+
+      patch(Expert.Integrations, :references, fn ^project, {:module, ReferencedModule} ->
+        [Location.new(indexed, document.uri), Location.new(provided, document.uri)]
+      end)
+
+      assert [first, second] = references(project, "ReferencedModule|", code)
+      assert decorate(code, first.range) =~ "@attr «ReferencedModule»"
+      assert decorate(code, second.range) =~ "defmodule «Referencing» do"
     end
   end
 

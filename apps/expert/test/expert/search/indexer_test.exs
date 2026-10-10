@@ -101,8 +101,8 @@ defmodule Expert.Search.IndexerTest do
       Forge.Ast.analyze(document, opts)
     end)
 
-    patch(Integrations, :indexer_module_names, fn ->
-      ["Expert.Integrations.Spark.Indexer"]
+    patch(Integrations, :indexer_versions, fn ->
+      [{"Expert.Integrations.Spark.Indexer", 1}]
     end)
 
     patch(Integrations, :index_beam, fn _project, _binary, _metadata, _source_path -> [] end)
@@ -448,8 +448,16 @@ defmodule Expert.Search.IndexerTest do
       assert Enum.all?(entries, fn entry -> Path.extname(entry.path) in [".ex", ".exs"] end)
     end
 
-    test "indexes bare projects without treating root/deps as a dependency directory" do
-      bare_root = native_join([fixtures_path(), "scratch"])
+    @tag :tmp_dir
+    test "indexes bare projects without treating root/deps as a dependency directory", %{
+      tmp_dir: tmp_dir
+    } do
+      bare_root = native_join([tmp_dir, "scratch"])
+      File.mkdir_p!(bare_root)
+
+      source = native_join([fixtures_path(), "scratch", "bare_file.ex"])
+      File.cp!(source, native_join([bare_root, "bare_file.ex"]))
+
       bare_project = bare_root |> Forge.Document.Path.to_uri() |> Project.bare()
 
       patch(Engine, :get_project, fn -> bare_project end)
@@ -1156,7 +1164,7 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       entries: previous_entries
     } do
-      patch(Integrations, :indexer_module_names, fn -> ["New.Indexer"] end)
+      patch(Integrations, :indexer_versions, fn -> [{"New.Indexer", 1}] end)
 
       assert {entries, _paths_to_clear} = update_index(project)
 
@@ -1556,8 +1564,8 @@ defmodule Expert.Search.IndexerTest do
   end
 
   test "integration state uses the local indexer registry", %{project: project} do
-    names = ["Custom.Indexer"]
-    patch(Integrations, :indexer_module_names, fn -> names end)
+    versions = [{"Custom.Indexer", 1}]
+    patch(Integrations, :indexer_versions, fn -> versions end)
 
     assert :ok = ManifestStore.commit(project, Manifest.new([]))
     assert :ok = Indexer.record_integrations(project)

@@ -104,6 +104,15 @@ defmodule Expert.Test.SemanticMetadataCase do
 
   def hover(project, source, opts \\ []), do: project |> env(source, opts) |> Integrations.hover()
 
+  def definition(project, source, opts \\ []),
+    do: project |> env(source, opts) |> Integrations.definition()
+
+  def resolve(project, source, opts \\ []),
+    do: project |> env(source, opts) |> Integrations.resolve()
+
+  def signature_help(project, source, opts \\ []),
+    do: project |> env(source, opts) |> Integrations.signature_help()
+
   def env(project, source, opts \\ []) do
     {position, document} = CursorSupport.pop_cursor(source, Keyword.put_new(opts, :as, :document))
     {:ok, env} = Env.new(project, Ast.analyze(document), position)

@@ -3,7 +3,11 @@ defmodule Expert.Provider.Handlers.SignatureHelp do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Provider.Markdown
+  alias Forge.Ast.Analysis
+  alias Forge.Ast.Env
+  alias Forge.Document
   alias GenLSP.Requests
   alias GenLSP.Structures
 
@@ -18,20 +22,61 @@ defmodule Expert.Provider.Handlers.SignatureHelp do
       ) do
     %Context{document: document, project: project} = context
 
-    response =
-      case EngineApi.signature_help(project, document, params.position) do
-        %{active_param: active_param, signatures: [_ | _] = signatures} ->
-          %Structures.SignatureHelp{
-            active_signature: 0,
-            active_parameter: active_param,
-            signatures: Enum.map(signatures, &signature_information/1)
-          }
+    elixir = EngineApi.signature_help(project, document, params.position)
+    integration = integration_signatures(project, document, params.position)
 
-        _ ->
-          nil
+    {:ok, response(elixir, integration)}
+  end
+
+  defp integration_signatures(project, document, position) do
+    with {:ok, _document, %Analysis{} = analysis} <- Document.Store.fetch(document.uri, :analysis),
+         {:ok, env} <- Env.new(project, analysis, position) do
+      Integrations.signature_help(env)
+    else
+      _error -> :ignore
+    end
+  end
+
+  defp response(elixir, integration) do
+    {elixir_param, elixir_signatures} = elixir_signatures(elixir)
+
+    integration_signatures =
+      case integration do
+        :ignore -> []
+        signatures -> Enum.map(signatures, &integration_information/1)
       end
 
-    {:ok, response}
+    active_parameter =
+      case integration_signatures do
+        [first | _] -> first.active_parameter
+        [] -> elixir_param
+      end
+
+    case Enum.uniq_by(integration_signatures ++ elixir_signatures, & &1.label) do
+      [] ->
+        nil
+
+      signatures ->
+        %Structures.SignatureHelp{
+          active_signature: 0,
+          active_parameter: active_parameter,
+          signatures: signatures
+        }
+    end
+  end
+
+  defp elixir_signatures(%{active_param: active_param, signatures: [_ | _] = signatures}),
+    do: {active_param, Enum.map(signatures, &signature_information/1)}
+
+  defp elixir_signatures(_signature_help), do: {nil, []}
+
+  defp integration_information(%{label: label, parameters: parameters, doc: doc} = signature) do
+    %Structures.SignatureInformation{
+      label: label,
+      parameters: Enum.map(parameters, &%Structures.ParameterInformation{label: &1}),
+      active_parameter: signature.active_parameter,
+      documentation: if(doc not in [nil, ""], do: Markdown.to_content(doc))
+    }
   end
 
   defp signature_information(%{name: name, params: params} = signature) do

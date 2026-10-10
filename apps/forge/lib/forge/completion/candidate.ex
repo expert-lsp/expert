@@ -246,6 +246,7 @@ defmodule Forge.Completion.Candidate do
       :insert_text,
       :kind,
       :label,
+      :range,
       :snippet
     ]
 

@@ -13,6 +13,8 @@ defmodule Expert.Integrations.SemanticMetadata.Common do
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
   alias Forge.Completion.Candidate.ArgumentNames
+  alias Forge.Document.Position
+  alias Forge.Document.Range
   alias Forge.Formats
   alias Forge.Search.Indexer.Entry
 
@@ -214,6 +216,30 @@ defmodule Expert.Integrations.SemanticMetadata.Common do
   def entry_name(%{kind: :keyword, name: name}), do: Atom.to_string(name)
   def entry_name(%{kind: :literal, value: value}) when is_atom(value), do: Atom.to_string(value)
   def entry_name(%{kind: :literal, value: value}), do: inspect(value)
+
+  def identifier_at(%Env{} = env) do
+    with {:ok,
+          %{begin: {begin_line, begin_column}, context: context, end: {end_line, end_column}}} <-
+           Ast.surround_context(env.analysis, env.position),
+         identifier when is_binary(identifier) <- surround_identifier(context) do
+      range =
+        Range.new(
+          Position.new(env.document, begin_line, begin_column),
+          Position.new(env.document, end_line, end_column)
+        )
+
+      {identifier, range}
+    else
+      _ -> {nil, nil}
+    end
+  end
+
+  defp surround_identifier({context, chars})
+       when context in [:keyword, :local_call, :local_or_var, :unquoted_atom],
+       do: to_string(chars)
+
+  defp surround_identifier({:dot, _base, chars}), do: to_string(chars)
+  defp surround_identifier(_context), do: nil
 
   def hint(%Env{} = env) do
     case Code.Fragment.cursor_context(env.prefix) do

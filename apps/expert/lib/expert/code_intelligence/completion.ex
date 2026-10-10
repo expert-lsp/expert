@@ -6,6 +6,7 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Expert.Configuration
   alias Expert.EngineApi
   alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata.Delegation
   alias Expert.Project.Intelligence
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.ModuleRegistry
@@ -39,28 +40,29 @@ defmodule Expert.CodeIntelligence.Completion do
         %Position{} = position,
         %CompletionContext{} = context
       ) do
+    complete(project, analysis, position, context, false)
+  end
+
+  defp complete(project, analysis, position, context, delegated?) do
     case Env.new(project, analysis, position) do
       {:ok, env} ->
         cursor_env = EngineApi.cursor_env(project, env.document, position)
         env = %Env{env | analysis: %{env.analysis | cursor_env: cursor_env}}
 
-        hex_context =
-          if Hex.project_file?(project, analysis.document) do
-            case Hex.Context.detect(analysis, position) do
-              {:ok, ctx} -> ctx
-              :error -> nil
-            end
-          end
+        case Integrations.complete(env) do
+          {:delegate, _request} when delegated? ->
+            complete_regular(project, env, context, :ignore)
 
-        hex_items = hex_items_for_context(hex_context, project, env)
-        {regular_items, contextual_incomplete?} = completions(project, env, context)
-        all = hex_items ++ regular_items
-        log_candidates(all)
+          {:delegate, %{source: delegated_source}} ->
+            {delegated_analysis, delegated_position} =
+              Delegation.analyze(analysis, delegated_source, position)
 
-        if not is_nil(hex_context) or contextual_incomplete? do
-          %CompletionList{items: all, is_incomplete: true}
-        else
-          maybe_to_completion_list(all)
+            project
+            |> complete(delegated_analysis, delegated_position, context, true)
+            |> to_original_document(analysis.document)
+
+          integration_result ->
+            complete_regular(project, env, context, integration_result)
         end
 
       {:error, _} = error ->
@@ -68,6 +70,54 @@ defmodule Expert.CodeIntelligence.Completion do
         maybe_to_completion_list()
     end
   end
+
+  defp complete_regular(project, env, context, integration_result) do
+    hex_context =
+      if Hex.project_file?(project, env.document) do
+        case Hex.Context.detect(env.analysis, env.position) do
+          {:ok, ctx} -> ctx
+          :error -> nil
+        end
+      end
+
+    hex_items = hex_items_for_context(hex_context, project, env)
+
+    {regular_items, contextual_incomplete?} =
+      completions(project, env, context, integration_result)
+
+    all = hex_items ++ regular_items
+    log_candidates(all)
+
+    if not is_nil(hex_context) or contextual_incomplete? do
+      %CompletionList{items: all, is_incomplete: true}
+    else
+      maybe_to_completion_list(all)
+    end
+  end
+
+  defp to_original_document(%CompletionList{items: items} = list, document),
+    do: %CompletionList{list | items: to_original_document(items, document)}
+
+  defp to_original_document(items, document) when is_list(items),
+    do: Enum.map(items, &item_to_original_document(&1, document))
+
+  defp item_to_original_document(
+         %CompletionItem{text_edit: %Changes{} = changes} = item,
+         document
+       ) do
+    edits =
+      case changes.edits do
+        edits when is_list(edits) -> Enum.map(edits, &edit_to_original_document(&1, document))
+        edit -> edit_to_original_document(edit, document)
+      end
+
+    %CompletionItem{item | text_edit: Changes.new(document, edits)}
+  end
+
+  defp item_to_original_document(item, _document), do: item
+
+  defp edit_to_original_document(%Edit{range: range} = edit, document),
+    do: %Edit{edit | range: Delegation.to_document_range(range, document)}
 
   defp hex_items_for_context(nil, _project, _env), do: []
 
@@ -90,8 +140,8 @@ defmodule Expert.CodeIntelligence.Completion do
     Logger.info([log_iolist, "]"])
   end
 
-  defp completions(%Project{} = project, %Env{} = env, %CompletionContext{} = context) do
-    case Integrations.complete(env) do
+  defp completions(project, env, context, integration_result) do
+    case integration_result do
       {:override, candidates, incomplete?, _transforms} ->
         {translate_contextual_candidates(candidates, env), incomplete?}
 
@@ -106,12 +156,14 @@ defmodule Expert.CodeIntelligence.Completion do
   end
 
   defp translate_contextual_candidates(candidates, env) do
-    Enum.flat_map(candidates, fn {candidate, transforms} ->
+    candidates
+    |> Enum.flat_map(fn {candidate, transforms} ->
       case Translatable.translate(candidate, Builder, env) do
         :skip -> []
         items -> items |> List.wrap() |> transform(transforms)
       end
     end)
+    |> Enum.uniq_by(&{&1.label, &1.kind})
   end
 
   defp transform(items, transforms) do

@@ -34,33 +34,33 @@ defmodule Expert.Search.Indexer.ManifestStore do
     end
   end
 
-  def integrations_changed?(%Project{} = project, indexer_module_names)
-      when is_list(indexer_module_names) do
+  def integrations_changed?(%Project{} = project, indexer_versions)
+      when is_list(indexer_versions) do
     case load(project) do
       {:ok, %Manifest{} = manifest} ->
-        integrations_changed?(project, manifest, indexer_module_names)
+        integrations_changed?(project, manifest, indexer_versions)
 
       :missing ->
         true
     end
   end
 
-  def integrations_changed?(%Project{} = project, %Manifest{}, indexer_module_names)
-      when is_list(indexer_module_names) do
+  def integrations_changed?(%Project{} = project, %Manifest{}, indexer_versions)
+      when is_list(indexer_versions) do
     with {:ok, binary} <- File.read(integrations_path(project)),
-         {:ok, recorded_names} when is_list(recorded_names) <- safe_binary_to_term(binary) do
-      recorded_names != indexer_module_names
+         {:ok, recorded_versions} when is_list(recorded_versions) <- safe_binary_to_term(binary) do
+      recorded_versions != indexer_versions
     else
       _ -> true
     end
   end
 
-  def record_integrations(%Project{} = project, indexer_module_names)
-      when is_list(indexer_module_names) do
+  def record_integrations(%Project{} = project, indexer_versions)
+      when is_list(indexer_versions) do
     path = integrations_path(project)
 
     with :ok <- File.mkdir_p(Path.dirname(path)) do
-      write_file(path, :erlang.term_to_binary(indexer_module_names))
+      write_file(path, :erlang.term_to_binary(indexer_versions))
     end
   end
 

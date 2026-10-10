@@ -136,14 +136,11 @@ defmodule Expert.Project.Indexer do
   defp complete_index(%State{} = state, :ok) do
     state = %State{state | task: nil}
 
-    case maybe_record_integrations(state) do
-      :ok ->
-        broadcast_index_ready(state)
-
-      {:error, reason} ->
-        Logger.warning("Could not record search integrations: #{inspect(reason)}")
-        broadcast_index_ready(state)
+    with {:error, reason} <- maybe_record_integrations(state) do
+      Logger.warning("Could not record search integrations: #{inspect(reason)}")
     end
+
+    broadcast_index_ready(state)
   end
 
   defp complete_index(%State{} = state, _result) do
