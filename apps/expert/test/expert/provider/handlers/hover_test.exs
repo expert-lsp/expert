@@ -11,6 +11,7 @@ defmodule Expert.Provider.Handlers.HoverTest do
   alias Expert.Integrations
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
+  alias Expert.Provider.Markdown
   alias Expert.Search
   alias Expert.Search.Store
   alias Forge.Document
@@ -69,11 +70,15 @@ defmodule Expert.Provider.Handlers.HoverTest do
 
     assert {:ok, %Structures.Hover{contents: contents, range: range}} = hover(project, "|option")
     assert contents.kind == "markdown"
-    assert contents.value =~ "Generic documentation"
-    assert contents.value =~ "Integration documentation"
-    assert contents.value =~ "---"
-    assert range.start.character == 1
-    assert range.end.character == 7
+
+    assert contents.value ==
+             Markdown.join_sections(
+               ["Integration documentation", "Generic documentation"],
+               Markdown.separator()
+             )
+
+    assert range.start.character == 2
+    assert range.end.character == 6
   end
 
   test "deduplicates identical integration and generic hover documentation", %{project: project} do

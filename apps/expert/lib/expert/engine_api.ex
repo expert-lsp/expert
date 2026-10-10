@@ -33,6 +33,10 @@ defmodule Expert.EngineApi do
     call(project, Ast, :analyze, [document, opts])
   end
 
+  def cursor_env(%Project{} = project, %Document{} = document, %Position{} = position) do
+    call(project, Analysis, :cursor_env, [document, position])
+  end
+
   def expand_alias(
         %Project{} = project,
         segments_or_module,
