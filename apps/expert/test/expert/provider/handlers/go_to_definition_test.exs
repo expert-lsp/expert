@@ -9,12 +9,15 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   alias Expert.EngineApi
   alias Expert.EngineNode
   alias Expert.EngineSupervisor
+  alias Expert.Integrations
   alias Expert.Project.Indexer
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
   alias Expert.Search.Store
   alias Forge.Document
   alias Forge.Document.Location
+  alias Forge.Document.Position
+  alias Forge.Document.Range
   alias GenLSP.Requests.TextDocumentDefinition
   alias GenLSP.Structures
 
@@ -104,6 +107,45 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
 
       assert {:ok, %Location{} = location} = handle(request, project)
       assert Location.uri(location) == referenced_uri
+    end
+
+    test "answers with the locations that integrations give", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      {:ok, referenced} = Document.Store.open_temporary(referenced_uri)
+      position = Position.new(referenced, 1, 1)
+      location = Location.new(Range.new(position, position), referenced_uri)
+      patch(Integrations, :definition, [location])
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 4, 17)
+
+      assert {:ok, [^location]} = handle(request, project)
+    end
+
+    test "finds the definition of the entity that integrations resolve", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      {:ok, referenced} = Document.Store.open_temporary(referenced_uri)
+      position = Position.new(referenced, 1, 1)
+      location = Location.new(Range.new(position, position), referenced_uri)
+      patch(Integrations, :definition, [])
+      patch(Expert.CodeIntelligence.Definition, :definition, {:ok, nil})
+      patch(Integrations, :resolve, {:entity, %{kind: :module, module: MyDefinition}, nil})
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      patch(EngineApi, :entity_definition, fn ^project, _analysis, _position, entity ->
+        assert {:module, MyDefinition} == entity
+        {:ok, location}
+      end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 4, 17)
+
+      assert {:ok, ^location} = handle(request, project)
     end
 
     test "resolves local variables in the manager", %{project: project} do

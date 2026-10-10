@@ -3,6 +3,8 @@ defmodule Expert.CodeIntelligence.References do
 
   alias Expert.CodeIntelligence.Variable
   alias Expert.EngineApi
+  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata.Entity
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Manifest
@@ -31,13 +33,20 @@ defmodule Expert.CodeIntelligence.References do
         |> Enum.map(&Location.new(&1.range, analysis.document.uri))
 
       :error ->
-        case indexed_references(project, analysis, position, include_definitions?) do
-          [_ | _] = references ->
-            references
-
-          [] ->
-            engine_references(project, analysis, position, include_definitions?)
+        with :ignore <- integration_references(project, analysis, position, include_definitions?),
+             [] <- indexed_references(project, analysis, position, include_definitions?) do
+          engine_references(project, analysis, position, include_definitions?)
         end
+    end
+  end
+
+  defp integration_references(project, analysis, position, include_definitions?) do
+    case Entity.resolve_by_integrations(project, analysis, position) do
+      {:ok, entity, _range, analysis, position} ->
+        find_references({:ok, entity, nil}, project, analysis, position, include_definitions?)
+
+      _error ->
+        :ignore
     end
   end
 
@@ -56,8 +65,14 @@ defmodule Expert.CodeIntelligence.References do
 
   defp indexed_references(project, analysis, position, include_definitions?) do
     case entry_at(project, analysis, position) do
-      %Entry{} = reference -> references_for_entry(reference, project, include_definitions?)
-      nil -> []
+      %Entry{} = reference ->
+        unique_locations(
+          references_for_entry(reference, project, include_definitions?) ++
+            provided_references(project, entry_entity(reference))
+        )
+
+      nil ->
+        []
     end
   end
 
@@ -66,6 +81,28 @@ defmodule Expert.CodeIntelligence.References do
     |> EngineApi.resolve_entity(analysis, position)
     |> find_references(project, analysis, position, include_definitions?)
   end
+
+  defp entry_entity(%Entry{type: {kind, _}, subject: subject}) when kind in [:function, :macro] do
+    case Forge.Code.parse_mfa(subject) do
+      {module, function, arity} -> {:call, module, function, arity}
+      nil -> nil
+    end
+  end
+
+  defp entry_entity(%Entry{type: type, subject: subject}) when type in [:module, :struct],
+    do: {type, subject}
+
+  defp entry_entity(%Entry{}), do: nil
+
+  defp unique_locations(locations) do
+    Enum.uniq_by(locations, fn %Location{range: range} = location ->
+      {Location.uri(location), range.start.line, range.start.character, range.end.line,
+       range.end.character}
+    end)
+  end
+
+  defp provided_references(_project, nil), do: []
+  defp provided_references(project, entity), do: Integrations.references(project, entity)
 
   def entry_at(
         %Project{} = project,
@@ -152,9 +189,12 @@ defmodule Expert.CodeIntelligence.References do
          %Position{} = position,
          include_definitions?
        ) do
-    resolved
-    |> maybe_rewrite_resolution(analysis, position)
-    |> do_find_references(project, include_definitions?)
+    resolved = maybe_rewrite_resolution(resolved, analysis, position)
+
+    unique_locations(
+      do_find_references(resolved, project, include_definitions?) ++
+        provided_references(project, resolved)
+    )
   end
 
   defp find_references(_result, _project, _analysis, _position, _include_definitions?), do: []

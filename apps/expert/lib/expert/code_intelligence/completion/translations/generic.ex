@@ -16,18 +16,31 @@ defmodule Expert.CodeIntelligence.Completion.Translations.Generic do
         label: generic.label
       ]
 
-      case generic.snippet do
-        snippet when is_binary(snippet) ->
+      case {generic.snippet, range(generic, env)} do
+        {snippet, nil} when is_binary(snippet) ->
           builder.snippet(env, insertion_text(snippet, env), options)
 
-        _snippet ->
+        {snippet, range} when is_binary(snippet) ->
+          builder.text_edit_snippet(env, snippet, range, options)
+
+        {_snippet, nil} ->
           builder.plain_text(
             env,
             insertion_text(generic.insert_text || generic.label, env),
             options
           )
+
+        {_snippet, range} ->
+          builder.text_edit(env, generic.insert_text || generic.label, range, options)
       end
     end
+
+    defp range(%Candidate.Generic{range: {line, start_character, end_character}}, %Env{} = env)
+         when line == env.position.line and start_character <= env.position.character and
+                env.position.character <= end_character,
+         do: {start_character, end_character}
+
+    defp range(_generic, _env), do: nil
 
     defp insertion_text(text, %Env{} = env) do
       case Code.Fragment.cursor_context(env.prefix) do

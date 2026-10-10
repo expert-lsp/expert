@@ -2,6 +2,7 @@ defmodule Expert.Integrations.SemanticMetadata.Completion do
   @behaviour Expert.Integrations
 
   alias Expert.Integrations.SemanticMetadata.Common
+  alias Expert.Integrations.SemanticMetadata.Handlers
   alias Forge.Ast
   alias Forge.Ast.Env
 
@@ -11,9 +12,16 @@ defmodule Expert.Integrations.SemanticMetadata.Completion do
          false <- Env.in_context?(env, :comment),
          cursor_path = Ast.cursor_path(env.analysis, env.position),
          {:ok, scope} <- Common.scope_at(env, cursor_path, documents) do
-      static_result(scope, env)
+      complete_scope(scope, cursor_path, env)
     else
       _ -> :ignore
+    end
+  end
+
+  defp complete_scope(scope, cursor_path, env) do
+    case Handlers.complete(scope, cursor_path, env) do
+      {:delegate, _request} = delegation -> delegation
+      provided -> merge(static_result(scope, env), provided)
     end
   end
 
@@ -42,4 +50,12 @@ defmodule Expert.Integrations.SemanticMetadata.Completion do
 
   defp result([]), do: :ignore
   defp result(candidates), do: {:augment, candidates, true, []}
+
+  defp merge(:ignore, %{mode: :augment, candidates: []}), do: :ignore
+
+  defp merge(:ignore, %{mode: mode, candidates: provided, incomplete?: incomplete?}),
+    do: {mode, provided, incomplete?, []}
+
+  defp merge({:augment, static, true, []}, %{mode: mode, candidates: provided}),
+    do: {mode, static ++ provided, true, []}
 end

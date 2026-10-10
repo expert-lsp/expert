@@ -6,6 +6,7 @@ defmodule Expert.Provider.Handlers.Hover do
   alias Expert.Document.Context
   alias Expert.EngineApi
   alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata.Entity
   alias Expert.Provider.Markdown
   alias Expert.Search.Store
   alias Forge.Ast
@@ -98,7 +99,7 @@ defmodule Expert.Provider.Handlers.Hover do
 
   defp resolve_entity(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
     with :error <- References.indexed_call(project, analysis, position) do
-      EngineApi.resolve_entity(project, analysis, position)
+      Entity.resolve(project, analysis, position)
     end
   end
 
