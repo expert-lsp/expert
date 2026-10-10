@@ -1,6 +1,8 @@
 defmodule Expert.Provider.Handlers.CodeFolding do
   @behaviour Expert.Provider.Handler
 
+  import Forge.Document.Line
+
   alias Expert.Document.Context
   alias Forge.Ast
   alias Forge.Document
@@ -23,17 +25,17 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   defp folding_ranges(%Document{} = document) do
     case Ast.from(document) do
       {:ok, ast, comments} ->
-        ranges_from(ast, comments)
+        ranges_from(document, ast, comments)
 
       {:error, ast, _parse_error, comments} when is_tuple(ast) ->
-        ranges_from(ast, comments)
+        ranges_from(document, ast, comments)
 
       _ ->
         []
     end
   end
 
-  defp ranges_from(ast, comments) do
+  defp ranges_from(document, ast, comments) do
     {_, {blocks, strings}} =
       Macro.prewalk(ast, {[], []}, fn node, {blocks, strings} ->
         {node, {collect_block_range(node, blocks), collect_string_range(node, strings)}}
@@ -44,15 +46,88 @@ defmodule Expert.Provider.Handlers.CodeFolding do
       |> Enum.map(&to_block_folding_range/1)
       |> Enum.reject(&is_nil/1)
 
-    block_ranges ++ Enum.reject(strings, &is_nil/1) ++ comment_ranges(comments)
+    ast_ranges = block_ranges ++ Enum.reject(strings, &is_nil/1) ++ comment_ranges(comments)
+    claimed_start_lines = MapSet.new(ast_ranges, & &1.start_line)
+
+    indentation_ranges =
+      document
+      |> indentation_ranges()
+      |> Enum.reject(&MapSet.member?(claimed_start_lines, &1.start_line))
+
+    ast_ranges ++ indentation_ranges
   end
 
-  defp collect_block_range({form, meta, _args}, acc)
-       when form in [:fn, :<<>>] and is_list(meta),
-       do: collect_delimited_block(meta, acc)
+  defp indentation_ranges(%Document{lines: lines}) do
+    lines
+    |> Enum.map(fn line(text: text, line_number: line_number) ->
+      {line_number - 1, indentation(text)}
+    end)
+    |> pair_indentation_cells([], [], [])
+    |> Enum.map(fn {{start_line, _}, {end_line, _}} ->
+      %Structures.FoldingRange{
+        start_line: start_line,
+        end_line: end_line - 1,
+        kind: FoldingRangeKind.region()
+      }
+    end)
+  end
 
-  defp collect_block_range({_form, meta, _args}, acc) when is_list(meta),
-    do: collect_block(meta, acc)
+  defp indentation(line) do
+    trimmed = String.trim_leading(line)
+
+    if trimmed != "" do
+      String.length(line) - String.length(trimmed)
+    end
+  end
+
+  defp pair_indentation_cells([], _stack, _empty_lines, pairs), do: valid_pairs(pairs)
+
+  defp pair_indentation_cells([{_, nil} = cell | cells], stack, empty_lines, pairs) do
+    pair_indentation_cells(cells, stack, [cell | empty_lines], pairs)
+  end
+
+  defp pair_indentation_cells([cell | cells], [], empty_lines, pairs) do
+    pair_indentation_cells(cells, [cell], empty_lines, pairs)
+  end
+
+  defp pair_indentation_cells(
+         [{_, indentation} = cell | cells],
+         [{_, previous_indentation} | _] = stack,
+         _empty_lines,
+         pairs
+       )
+       when indentation > previous_indentation do
+    pair_indentation_cells(cells, [cell | stack], [], pairs)
+  end
+
+  defp pair_indentation_cells(
+         [{_, indentation} = cell | cells],
+         stack,
+         empty_lines,
+         pairs
+       ) do
+    {completed, remaining} =
+      Enum.split_while(stack, fn {_, previous_indentation} ->
+        indentation <= previous_indentation
+      end)
+
+    completed_pairs = Enum.map(completed, &{&1, cell, empty_lines})
+    pair_indentation_cells(cells, [cell | remaining], [], completed_pairs ++ pairs)
+  end
+
+  defp valid_pairs(pairs) do
+    pairs
+    |> Enum.map(fn
+      {start_cell, end_cell, []} -> {start_cell, end_cell}
+      {start_cell, _end_cell, empty_lines} -> {start_cell, List.last(empty_lines)}
+    end)
+    |> Enum.reject(fn {{start_line, _}, {end_line, _}} -> start_line + 1 >= end_line end)
+  end
+
+  defp collect_block_range({_form, meta, _args}, acc) when is_list(meta) do
+    acc = collect_block(meta, acc)
+    collect_delimited_block(meta, acc)
+  end
 
   defp collect_block_range(_node, acc), do: acc
 
@@ -95,8 +170,19 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   end
 
   defp collect_string_range({:__block__, meta, [str]}, acc)
-       when is_binary(str) and is_list(meta),
+       when (is_binary(str) or is_list(str)) and is_list(meta),
        do: collect_string(meta, str, acc)
+
+  defp collect_string_range({{:., _, [List, :to_charlist]}, meta, _args} = node, acc)
+       when is_list(meta) do
+    case Sourceror.get_range(node) do
+      %{start: start_position, end: end_position} ->
+        prepend_string_range(start_position[:line], end_position[:line], acc)
+
+      nil ->
+        acc
+    end
+  end
 
   defp collect_string_range({sigil, meta, [{:<<>>, _, [str]}, _mods]}, acc)
        when is_atom(sigil) and is_binary(str) and is_list(meta) do
@@ -112,20 +198,22 @@ defmodule Expert.Provider.Handlers.CodeFolding do
   defp collect_string(meta, str, acc) do
     start_line = Keyword.get(meta, :line)
     delimiter = Keyword.get(meta, :delimiter)
-    newlines = count_newlines(str)
 
-    cond do
-      not is_integer(start_line) or newlines < 1 ->
-        acc
+    if is_integer(start_line) and delimiter in ["\"", "'", "\"\"\"", "'''"] do
+      newlines = count_newlines(str)
 
-      delimiter == "\"\"\"" ->
-        prepend_string_range(start_line, start_line + newlines + 1, acc)
+      cond do
+        newlines < 1 ->
+          acc
 
-      delimiter == "\"" ->
-        prepend_string_range(start_line, start_line + newlines, acc)
+        delimiter in ["\"\"\"", "'''"] ->
+          prepend_string_range(start_line, start_line + newlines + 1, acc)
 
-      true ->
-        acc
+        true ->
+          prepend_string_range(start_line, start_line + newlines, acc)
+      end
+    else
+      acc
     end
   end
 
@@ -140,8 +228,12 @@ defmodule Expert.Provider.Handlers.CodeFolding do
     end
   end
 
-  defp count_newlines(str) do
+  defp count_newlines(str) when is_binary(str) do
     str |> :binary.matches("\n") |> length()
+  end
+
+  defp count_newlines(str) when is_list(str) do
+    Enum.count(str, &(&1 == ?\n))
   end
 
   defp comment_ranges(comments) do
