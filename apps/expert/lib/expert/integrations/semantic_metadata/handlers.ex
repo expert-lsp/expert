@@ -2,6 +2,7 @@ defmodule Expert.Integrations.SemanticMetadata.Handlers do
   @moduledoc false
 
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Integrations.SemanticMetadata.CursorScope
   alias Expert.Integrations.SemanticMetadata.Handler.Request
   alias Expert.Integrations.SemanticMetadata.Handler.Response
@@ -52,11 +53,11 @@ defmodule Expert.Integrations.SemanticMetadata.Handlers do
 
   def document_handlers(document, facet), do: handlers(Map.get(document, :data, []), facet)
 
-  def references(handlers, %Project{} = project, entity, files) do
+  def references(document, handlers, %Project{} = project, entity, files) do
     request = %{entity: entity, files: files}
 
     :references
-    |> call_handlers(handlers, project, request, &Response.locations/1)
+    |> call_handlers(document, handlers, project, request, &Response.locations/1)
     |> Enum.concat()
   end
 
@@ -67,29 +68,43 @@ defmodule Expert.Integrations.SemanticMetadata.Handlers do
 
       handlers ->
         request = Request.build(scope, cursor_path, env, fields)
-        call_handlers(facet, handlers, env.project, request, decoder)
+        call_handlers(facet, scope.document, handlers, env.project, request, decoder)
     end
   end
 
   # Release namespacing rewrites the `:expert` atom literal to `:xp_expert`.
-  # Libraries publish the key as `:expert`, so this matches it by name.
+  # Libraries publish the key as `:expert`, so this matches it by name. Expert's
+  # own documents are rewritten like this function, so they match the literal.
   defp handlers(data, facet) do
     for {key, %{facets: %{^facet => handlers}}} when is_atom(key) <- data,
-        Atom.to_string(key) == "expert",
+        key == :expert or Atom.to_string(key) == "expert",
         is_list(handlers),
         {module, function, 1} when is_atom(module) and is_atom(function) <- handlers,
         do: {module, function}
   end
 
-  defp call_handlers(facet, handlers, project, request, decoder) do
-    {microseconds, results} =
-      :timer.tc(EngineApi, :call_handlers, [project, handlers, [request]])
+  defp call_handlers(facet, document, handlers, project, request, decoder) do
+    {microseconds, results} = :timer.tc(fn -> run(document, handlers, project, request) end)
 
     Logger.debug("Handlers #{facet} count=#{length(handlers)} duration_us=#{microseconds}")
 
     for {{module, _function}, result} <- Enum.zip(handlers, results),
         {:ok, decoded} <- [decode(facet, module, result, decoder)],
         do: decoded
+  end
+
+  # The handlers of Expert's own documents are Expert code, so they run here
+  # instead of in the project.
+  defp run(document, handlers, project, request) do
+    if document in Integrations.documents(),
+      do: Enum.map(handlers, &call(&1, request)),
+      else: EngineApi.call_handlers(project, handlers, [request])
+  end
+
+  defp call({module, function}, request) do
+    {:ok, apply(module, function, [request])}
+  catch
+    kind, reason -> {:error, Exception.format(kind, reason, __STACKTRACE__)}
   end
 
   defp decode(facet, module, {:ok, response}, decoder) do
