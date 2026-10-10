@@ -150,7 +150,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert start_pos.context_line != nil
     end
 
-    test "indexes integration entries locally", %{tmp_dir: tmp_dir} do
+    test "indexes integration entries locally under the owner application", %{tmp_dir: tmp_dir} do
       module = unique_module("Integration")
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
 
@@ -167,11 +167,15 @@ defmodule Expert.Search.Indexer.BeamsTest do
         [integration_entry]
       end)
 
-      patch(ModuleRegistry, :put, fn ^project, ^module, ^beam_path, nil, _exports -> :ok end)
+      patch(ModuleRegistry, :put, fn ^project, ^module, ^beam_path, :owner, _exports -> :ok end)
 
-      {entries, _manifest_entries} = index_beams([beam_path], project: project)
+      {entries, _manifest_entries} =
+        index_beams([beam_path],
+          project: project,
+          applications: %{Path.dirname(beam_path) => :owner}
+        )
 
-      assert integration_entry in entries
+      assert %{integration_entry | application: :owner} in entries
     end
 
     test "synthesizes contextual ranges for macro-generated definitions from beam metadata", %{

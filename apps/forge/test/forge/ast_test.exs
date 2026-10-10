@@ -102,6 +102,13 @@ defmodule Forge.AstTest do
                |> elem(3)
                |> Ast.keyword_path_at_cursor()
     end
+
+    test "returns the keyword branch for a cursor inside an expression" do
+      assert {:ok, {:from, _, [_binding, options]}} =
+               Code.Fragment.container_cursor_to_quoted("from user in User, where: user.na")
+
+      assert {:ok, ["where"]} = Ast.keyword_path_at_cursor(options)
+    end
   end
 
   describe "path_at/2" do

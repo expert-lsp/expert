@@ -64,7 +64,7 @@ defmodule Expert.Provider.Handlers.Hover do
   defp combine_hovers(integration_hovers, generic_hover) do
     hovers =
       integration_hovers
-      |> prepend_hover(generic_hover)
+      |> append_hover(generic_hover)
       |> Enum.uniq_by(&elem(&1, 0))
 
     case hovers do
@@ -83,8 +83,8 @@ defmodule Expert.Provider.Handlers.Hover do
     end
   end
 
-  defp prepend_hover(hovers, {:ok, markdown, range}), do: [{markdown, range} | hovers]
-  defp prepend_hover(hovers, nil), do: hovers
+  defp append_hover(hovers, {:ok, markdown, range}), do: hovers ++ [{markdown, range}]
+  defp append_hover(hovers, nil), do: hovers
 
   defp hex_hover(%Document{} = document, analysis, %Position{} = position, project) do
     with true <- Hex.project_file?(project, document),

@@ -1,4 +1,5 @@
 Forge.Identifier.start()
+Application.ensure_all_started(:forge)
 
 random_number = :rand.uniform(500)
 

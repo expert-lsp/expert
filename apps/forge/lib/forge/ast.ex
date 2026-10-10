@@ -438,7 +438,12 @@ defmodule Forge.Ast do
     Enum.find_value(options, :error, fn
       {key, value} ->
         if contains_cursor?(value) do
-          keyword_path_at_cursor(value, path ++ [keyword_key(key)])
+          branch = path ++ [keyword_key(key)]
+
+          case keyword_path_at_cursor(value, branch) do
+            :error -> {:ok, branch}
+            result -> result
+          end
         end
 
       {:__cursor__, _, _} ->
@@ -452,9 +457,14 @@ defmodule Forge.Ast do
   defp keyword_path_at_cursor({:__cursor__, _, _}, path), do: {:ok, path}
   defp keyword_path_at_cursor(_ast, _path), do: :error
 
-  defp keyword_key(key) when is_atom(key), do: to_string(key)
-  defp keyword_key({:__block__, _, [key]}) when is_atom(key), do: to_string(key)
-  defp keyword_key(_key), do: nil
+  @doc """
+  Returns the name of a keyword list key as a string, or `nil` when the key is
+  not an atom.
+  """
+  @spec keyword_key(Macro.t()) :: String.t() | nil
+  def keyword_key(key) when is_atom(key), do: to_string(key)
+  def keyword_key({:__block__, _, [key]}) when is_atom(key), do: to_string(key)
+  def keyword_key(_key), do: nil
 
   @doc """
   Returns whether the cursor path is inside a function or macro definition.

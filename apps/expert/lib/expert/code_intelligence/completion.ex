@@ -1,4 +1,5 @@
 defmodule Expert.CodeIntelligence.Completion do
+  alias Expert.CodeIntelligence.BeamDocs
   alias Expert.CodeIntelligence.Completion.Builder
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Expert.CodeIntelligence.Hex
@@ -6,12 +7,16 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Expert.EngineApi
   alias Expert.Integrations
   alias Expert.Project.Intelligence
+  alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
+  alias Forge.Completion.Candidate.ArgumentNames
   alias Forge.Document.Changes
   alias Forge.Document.Edit
   alias Forge.Document.Position
+  alias Forge.Formats
   alias Forge.Project
   alias GenLSP.Enumerations.CompletionTriggerKind
   alias GenLSP.Structures.CompletionContext
@@ -36,6 +41,9 @@ defmodule Expert.CodeIntelligence.Completion do
       ) do
     case Env.new(project, analysis, position) do
       {:ok, env} ->
+        cursor_env = EngineApi.cursor_env(project, env.document, position)
+        env = %Env{env | analysis: %{env.analysis | cursor_env: cursor_env}}
+
         hex_context =
           if Hex.project_file?(project, analysis.document) do
             case Hex.Context.detect(analysis, position) do
@@ -122,6 +130,9 @@ defmodule Expert.CodeIntelligence.Completion do
 
   defp augment(items, ordinary_items, incomplete?) do
     items = Enum.map(items, &Builder.set_sort_scope(&1, "000"))
+    labels = MapSet.new(items, & &1.label)
+    ordinary_items = Enum.reject(ordinary_items, &MapSet.member?(labels, &1.label))
+
     {Enum.uniq_by(items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
   end
 
@@ -149,11 +160,72 @@ defmodule Expert.CodeIntelligence.Completion do
         |> Enum.map(&Translatable.translate(&1, Builder, env))
 
       true ->
-        project
-        |> EngineApi.complete(env)
-        |> to_completion_items(project, env, context)
+        candidates = EngineApi.complete(project, env)
+        candidates = candidates ++ indexed_candidates(project, env, candidates)
+        to_completion_items(candidates, project, env, context)
     end
   end
+
+  defp indexed_candidates(project, env, candidates) do
+    case Code.Fragment.cursor_context(env.prefix) do
+      :expr ->
+        imported_candidates(project, env, "", candidates)
+
+      {context, name} when context in [:local_or_var, :local_call] ->
+        imported_candidates(project, env, to_string(name), candidates)
+
+      _context ->
+        []
+    end
+  end
+
+  defp imported_candidates(project, env, prefix, candidates) do
+    exports = &ModuleRegistry.module_exports(project, &1)
+
+    listed =
+      for %struct{name: name, origin: origin, arity: arity} <- candidates,
+          struct in [Candidate.Function, Candidate.Macro],
+          into: MapSet.new(),
+          do: {origin, name, arity}
+
+    imports =
+      for {module, name, arity} = mfa <- Analyzer.imports_at(env.analysis, env.position, exports),
+          label = Atom.to_string(name),
+          String.starts_with?(label, prefix),
+          not MapSet.member?(listed, {Formats.module(module), label, arity}),
+          uniq: true,
+          do: mfa
+
+    for {module, mfas} <- Enum.group_by(imports, &elem(&1, 0)),
+        ModuleRegistry.beam_path(project, module) != nil,
+        docs = BeamDocs.fetch(project, module),
+        application = ModuleRegistry.application(project, module),
+        {_module, name, arity} <- mfas,
+        do: imported_candidate(module, name, arity, docs, application)
+  end
+
+  defp imported_candidate(module, name, arity, docs, application) do
+    {candidate_module, kind} =
+      if Map.has_key?(docs, {:macro, name, arity}),
+        do: {Candidate.Macro, :macro},
+        else: {Candidate.Function, :function}
+
+    {signatures, documentation, metadata} = Map.get(docs, {kind, name, arity}, {[], %{}, %{}})
+
+    candidate_module.new(%{
+      args_list: ArgumentNames.from_signatures(signatures, arity),
+      arity: arity,
+      metadata: Map.put(metadata, :app, application),
+      name: Atom.to_string(name),
+      origin: Formats.module(module),
+      summary: summary(documentation),
+      type: kind,
+      visibility: :public
+    })
+  end
+
+  defp summary(%{"en" => summary}), do: summary
+  defp summary(_documentation), do: ""
 
   defp should_emit_completions?(%Env{} = env) do
     if inside_comment?(env) or inside_string?(env) do
@@ -444,6 +516,8 @@ defmodule Expert.CodeIntelligence.Completion do
         false
     end
   end
+
+  defp typespec_or_type_candidate?(%Candidate.Generic{kind: :type_parameter}, _env), do: true
 
   defp typespec_or_type_candidate?(_, _) do
     false

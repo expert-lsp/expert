@@ -108,6 +108,7 @@ defmodule Expert.Search.Indexer do
       manifest
       |> Manifest.plan(paths)
       |> reindex_missing_outputs(manifest, paths, path_to_ids)
+      |> include_previous_beam_sources(manifest, paths.source_paths)
 
     {beam_items, beam_manifest_entries, sibling_paths} =
       beam_items_and_siblings(plan, manifest, paths, project)
@@ -285,6 +286,24 @@ defmodule Expert.Search.Indexer do
     }
   end
 
+  defp include_previous_beam_sources(%Manifest.Plan{} = plan, manifest, source_paths) do
+    current_sources = MapSet.new(source_paths)
+    affected_inputs = MapSet.new(plan.beam_paths_to_index ++ plan.input_paths_to_remove)
+
+    previous_sources =
+      for %Manifest.Entry{kind: :beam, input_path: input_path, output_path: output_path} <-
+            Manifest.entries(manifest),
+          MapSet.member?(affected_inputs, input_path),
+          MapSet.member?(current_sources, output_path) do
+        output_path
+      end
+
+    %Manifest.Plan{
+      plan
+      | source_paths_to_index: Enum.uniq(plan.source_paths_to_index ++ previous_sources)
+    }
+  end
+
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: {kind, _}})
        when kind in [:function, :macro],
        do: {path, subject, subtype, kind}
@@ -357,6 +376,7 @@ defmodule Expert.Search.Indexer do
 
   defp new_stream_state do
     %{
+      definition_keys: MapSet.new(),
       manifest_entries: [],
       source_keys: MapSet.new()
     }
@@ -432,9 +452,7 @@ defmodule Expert.Search.Indexer do
 
   defp consume_entry(:source, %{subtype: subtype} = entry, entries, state)
        when subtype in [:definition, :block_structure] do
-    state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
-
-    {[entry | entries], state}
+    {[entry | entries], Map.update!(state, :source_keys, &MapSet.put(&1, source_key(entry)))}
   end
 
   defp consume_entry(:source, entry, entries, state) do
@@ -442,11 +460,33 @@ defmodule Expert.Search.Indexer do
   end
 
   defp consume_entry(:beam, entry, entries, state) do
-    if MapSet.member?(state.source_keys, source_key(entry)) do
-      {entries, state}
-    else
-      {[entry | entries], state}
+    cond do
+      MapSet.member?(state.source_keys, source_key(entry)) ->
+        {entries, state}
+
+      duplicate_definition?(state, entry) ->
+        {entries, state}
+
+      true ->
+        {[entry | entries], remember_definition(state, entry)}
     end
+  end
+
+  defp duplicate_definition?(state, %{subtype: :definition} = entry) do
+    MapSet.member?(state.definition_keys, definition_key(entry))
+  end
+
+  defp duplicate_definition?(_state, _entry), do: false
+
+  defp remember_definition(state, %{subtype: :definition} = entry) do
+    Map.update!(state, :definition_keys, &MapSet.put(&1, definition_key(entry)))
+  end
+
+  defp remember_definition(state, _entry), do: state
+
+  defp definition_key(%{range: range} = entry) do
+    span = range && {range.start.line, range.start.character, range.end.line, range.end.character}
+    {entry.path, entry.subject, entry.type, span}
   end
 
   defp source_key(%{path: path, subtype: :block_structure}), do: {:block_structure, path}

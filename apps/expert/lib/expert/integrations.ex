@@ -18,7 +18,10 @@ defmodule Expert.Integrations do
   @optional_callbacks index: 4, complete: 1, hover: 1
 
   @integrations [
+    {Expert.Integrations.SemanticMetadata.Indexer, [:index]},
     {Expert.Integrations.Spark.Indexer, [:index]},
+    {Expert.Integrations.SemanticMetadata.Completion, [:complete]},
+    {Expert.Integrations.SemanticMetadata.Hover, [:hover]},
     {Expert.Integrations.Spark.Completion, [:complete]},
     {Expert.Integrations.Spark.Hover, [:hover]}
   ]

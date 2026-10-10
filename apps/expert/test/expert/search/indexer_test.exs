@@ -928,49 +928,7 @@ defmodule Expert.Search.IndexerTest do
 
   describe "update_index/1 with dependency beams" do
     test "reindexes beam siblings sharing source" do
-      tmp_dir = Path.join(System.tmp_dir!(), "indexer-#{unique_id()}")
-
-      on_exit(fn -> File.rm_rf!(tmp_dir) end)
-
-      parent = Module.concat(BeamDependencyIndexerTest, :SiblingParent)
-      child = Module.concat(parent, :Child)
-
-      dep_source = """
-      defmodule #{inspect(parent)} do
-        def parent_fun, do: :ok
-
-        defmodule Child do
-          def child_fun, do: :ok
-        end
-      end
-      """
-
-      %{beam_paths: beam_paths, project: project} =
-        with_beam_dependency(tmp_dir,
-          module: parent,
-          modules: [parent, child],
-          expected_modules: [parent, child],
-          rewrite_source?: false,
-          dep_source: dep_source
-        )
-
-      start_registry(project)
-
-      parent_beam_path =
-        Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(parent) <> ".beam"))
-
-      child_beam_path =
-        Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(child) <> ".beam"))
-
-      assert is_binary(parent_beam_path)
-      assert is_binary(child_beam_path)
-
-      {parent_entries, parent_manifest_entries} = index_beams([parent_beam_path])
-      FakeBackend.set_entries(parent_entries)
-      assert :ok = ManifestStore.commit(project, Manifest.new(parent_manifest_entries))
-
-      assert {updated_entries, _cleared_paths} = update_index(project)
-      updated_entries = Enum.to_list(updated_entries)
+      {updated_entries, parent, child} = update_sibling_index(:SiblingParent, "")
 
       assert Enum.any?(updated_entries, &(&1.subject == parent and &1.subtype == :definition))
       assert Enum.any?(updated_entries, &(&1.subject == child and &1.subtype == :definition))
@@ -980,6 +938,74 @@ defmodule Expert.Search.IndexerTest do
                &(&1.subject == child and &1.subtype == :definition)
              )
     end
+
+    test "keeps the semantic metadata of a beam that shares its source with siblings" do
+      restore(Integrations, :index_beam)
+
+      {updated_entries, parent, _child} =
+        update_sibling_index(:MetadataParent, """
+        Module.register_attribute(__MODULE__, :elixir_semantic_metadata,
+          accumulate: true,
+          persist: true
+        )
+
+        @elixir_semantic_metadata {
+          :elixir_semantic_metadata_v1,
+          %{
+            contexts: [%{mfa: {__MODULE__, :configure, 1}, block: :do, scope: :root}],
+            scopes: %{root: %{entries: [%{kind: :function, mfa: {__MODULE__, :value, 0}}]}}
+          }
+        }
+        """)
+
+      assert Enum.any?(
+               updated_entries,
+               &match?(
+                 %Entry{metadata: %{payload: %{contexts: [%{mfa: {^parent, :configure, 1}}]}}},
+                 &1
+               )
+             )
+    end
+  end
+
+  defp update_sibling_index(name, body) do
+    tmp_dir = Path.join(System.tmp_dir!(), "indexer-#{unique_id()}")
+    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+    parent = Module.concat(BeamDependencyIndexerTest, name)
+    child = Module.concat(parent, :Child)
+
+    dep_source = """
+    defmodule #{inspect(parent)} do
+      #{body}
+      def parent_fun, do: :ok
+
+      defmodule Child do
+        def child_fun, do: :ok
+      end
+    end
+    """
+
+    %{beam_paths: beam_paths, project: project} =
+      with_beam_dependency(tmp_dir,
+        module: parent,
+        modules: [parent, child],
+        expected_modules: [parent, child],
+        rewrite_source?: false,
+        dep_source: dep_source
+      )
+
+    start_registry(project)
+
+    parent_beam_path =
+      Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(parent) <> ".beam"))
+
+    {parent_entries, parent_manifest_entries} = index_beams([parent_beam_path])
+    FakeBackend.set_entries(parent_entries)
+    assert :ok = ManifestStore.commit(project, Manifest.new(parent_manifest_entries))
+
+    assert {updated_entries, _cleared_paths} = update_index(project)
+    {Enum.to_list(updated_entries), parent, child}
   end
 
   @ephemeral_file_name "ephemeral.ex"
