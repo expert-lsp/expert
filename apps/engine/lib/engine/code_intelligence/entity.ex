@@ -30,10 +30,7 @@ defmodule Engine.CodeIntelligence.Entity do
   """
   @spec resolve(Analysis.t(), Position.t()) :: {:ok, resolved, Range.t()} | {:error, term()}
   def resolve(%Analysis{} = analysis, %Position{} = position) do
-    analysis =
-      analysis
-      |> Ast.reanalyze_to(position)
-      |> Engine.CodeIntelligence.Heex.maybe_normalize(position)
+    analysis = Ast.reanalyze_to(analysis, position)
 
     with :ok <- check_commented(analysis, position),
          :ok <- check_in_string(analysis, position),
@@ -169,7 +166,7 @@ defmodule Engine.CodeIntelligence.Entity do
     with {:ok, module} <- expand_alias(alias_node, analysis, position) do
       case Ast.path_at(analysis, position) do
         {:ok, path} ->
-          arity = resolve_arity(path, position, analysis)
+          arity = arity_at_position(path, position)
           kind = kind_of_call(path, position)
           {:ok, {kind, module, fun, arity}, node_range}
 
@@ -183,7 +180,7 @@ defmodule Engine.CodeIntelligence.Entity do
     fun = List.to_atom(fun_chars)
 
     with {:ok, path} <- Ast.path_at(analysis, position),
-         arity = resolve_arity(path, position, analysis),
+         arity = arity_at_position(path, position),
          {module, ^fun, ^arity} <-
            Engine.Analyzer.resolve_local_call(analysis, position, fun, arity) do
       {:ok, {:call, module, fun, arity}, node_range}
@@ -461,13 +458,6 @@ defmodule Engine.CodeIntelligence.Entity do
   end
 
   defp arity_at_position([], _position), do: 0
-
-  defp resolve_arity(path, %Position{} = position, %Analysis{} = _analysis) do
-    case Enum.find(path, &match?({:sigil_H, _, _}, &1)) do
-      nil -> arity_at_position(path, position)
-      sigil -> Engine.CodeIntelligence.Heex.arity(sigil, position, &arity_at_position/2)
-    end
-  end
 
   # Walk up the path to see whether we're in the right-hand argument of
   # a `::` type operator, which would make the kind a `:type`, not a call.
