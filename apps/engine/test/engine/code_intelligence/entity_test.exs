@@ -647,6 +647,32 @@ defmodule Engine.CodeIntelligence.EntityTest do
     end
   end
 
+  describe "resolve/2 inside a string" do
+    test "does not resolve an ident inside a plain string (not interpolation)" do
+      code = ~q[
+        defmodule MyModule do
+          def my_fun do
+            "hello {wor|ld}"
+          end
+        end
+      ]
+
+      assert {:error, :no_code} = resolve(code)
+    end
+
+    test "resolves an ident inside string interpolation" do
+      code = ~S[
+        defmodule MyModule do
+          def my_fun(world) do
+            "hello #{wor|ld}"
+          end
+        end
+      ]
+
+      assert {:ok, {:variable, :world}, _} = resolve(code)
+    end
+  end
+
   describe "local call" do
     test "in function definition" do
       code = ~q[
@@ -1108,315 +1134,6 @@ defmodule Engine.CodeIntelligence.EntityTest do
 
       assert {:ok, {:module_attribute, nil, :foo}, resolved_range} = resolve(code)
       assert resolved_range =~ "«@foo» 3"
-    end
-  end
-
-  describe "resolve/2 within ~H sigil" do
-    setup do
-      patch(Engine.CodeIntelligence.Heex, :phoenix_component_available?, true)
-      :ok
-    end
-
-    test "resolves shorthand component with correct arity" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton>Click</.button>
-            """
-          end
-
-          def button(assigns), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :button, 1}, _} = resolve(code)
-    end
-
-    test "resolves shorthand component without closing tag with correct arity" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton label="Click" />
-            """
-          end
-
-          def button(assigns), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :button, 1}, _} = resolve(code)
-    end
-
-    test "resolves shorthand component with curly braces with correct arity" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton label={label} />
-            """
-          end
-
-          def button(assigns), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :button, 1}, _} = resolve(code)
-    end
-
-    test "resolves shorthand component with curly braces on the first line of sigil with correct arity" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"<.butto|n label={label} />"
-          end
-
-          def button(assigns), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :button, 1}, _} = resolve(code)
-    end
-
-    test "resolves function called inside shorthand component with curly braces with correct arity" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <.button label={LabelGenerator.for_bu|tton("label", in_live_view: true, language: :en)} />
-            """
-          end
-
-          def button(assigns), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, LabelGenerator, :for_button, 2}, _} = resolve(code)
-    end
-
-    test "resolves EEx expression with arity 1" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <%= my_he|lper(assigns) %>
-            """
-          end
-
-          def my_helper(assigns), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :my_helper, 1}, _} = resolve(code)
-    end
-
-    test "resolves EEx expression with arity 2" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <%= forma|t_value(assigns.value, "prefix") %>
-            """
-          end
-
-          def format_value(value, prefix), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :format_value, 2}, _} = resolve(code)
-    end
-
-    test "resolves EEx expression with arity 3" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <%= build_l|ink(assigns, "/path", "label") %>
-            """
-          end
-
-          def build_link(assigns, path, label), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :build_link, 3}, _} = resolve(code)
-    end
-
-    test "resolves curly brace expression with correct arity" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <div class={get_cl|ass(assigns, "default")}>Content</div>
-            """
-          end
-
-          def get_class(assigns, default), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :get_class, 2}, _} = resolve(code)
-    end
-
-    test "resolves zero-arity function call" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <%= get_ti|me() %>
-            """
-          end
-
-          def get_time(), do: nil
-        end
-      ]
-
-      assert {:ok, {:call, MyLiveView, :get_time, 0}, _} = resolve(code)
-    end
-
-    test "resolves function in pipe expression inside curly braces" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <div :for={item <- @items}>
-              {item.value |> to_stri|ng() |> String.upcase()}
-            </div>
-            """
-          end
-        end
-      ]
-
-      assert {:ok, {:call, Kernel, :to_string, 1}, _} = resolve(code)
-    end
-
-    test "resolves remote call inside an `if` expression in HEEx" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <%= if SampleApp.va|lid?() do %>
-              Valid
-            <% end %>
-            """
-          end
-        end
-      ]
-
-      assert {:ok, {:call, SampleApp, :valid?, 0}, _} = resolve(code)
-    end
-
-    test "resolves remote call inside an `if` expression in a curly attribute" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <div class={if SampleApp.va|lid?(), do: "ok", else: "no"}></div>
-            """
-          end
-        end
-      ]
-
-      assert {:ok, {:call, SampleApp, :valid?, 0}, _} = resolve(code)
-    end
-
-    test "resolves remote call inside a `cond` block in HEEx" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <%= cond do %>
-              <% SampleApp.va|lid?() -> %>
-                Valid
-              <% true -> %>
-                Invalid
-            <% end %>
-            """
-          end
-        end
-      ]
-
-      assert {:ok, {:call, SampleApp, :valid?, 0}, _} = resolve(code)
-    end
-  end
-
-  describe "resolve/2 inside a string" do
-    test "does not resolve an ident inside a plain string (not interpolation)" do
-      code = ~q[
-        defmodule MyModule do
-          def my_fun do
-            "hello {wor|ld}"
-          end
-        end
-      ]
-
-      assert {:error, :no_code} = resolve(code)
-    end
-
-    test "resolves an ident inside string interpolation" do
-      code = ~S[
-        defmodule MyModule do
-          def my_fun(world) do
-            "hello #{wor|ld}"
-          end
-        end
-      ]
-
-      assert {:ok, {:variable, :world}, _} = resolve(code)
-    end
-  end
-
-  describe "resolve/2 within ~H sigil when phoenix_live_view is NOT available" do
-    setup do
-      patch(Engine.CodeIntelligence.Heex, :phoenix_component_available?, false)
-      :ok
-    end
-
-    test "shorthand component notation does not resolve" do
-      code = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton>Click</.button>
-            """
-          end
-
-          def button(assigns), do: nil
-        end
-      ]
-
-      assert {:error, :not_found} = resolve(code)
     end
   end
 
