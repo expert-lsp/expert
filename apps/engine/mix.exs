@@ -48,6 +48,7 @@ defmodule Engine.MixProject do
       {:deps_nix, "~> 3.0", only: :dev},
       Mix.Credo.dependency(),
       Mix.Dialyzer.dependency(),
+      {:expert_eex, path: "../../extensions/eex"},
       {:elixir_sense,
        github: "elixir-lsp/elixir_sense", ref: "da065ae9ccc125d05b901b9eb6981ff559a8f9f1"},
       {:forge, path: "../forge"},

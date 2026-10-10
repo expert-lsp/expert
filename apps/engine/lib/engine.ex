@@ -70,6 +70,8 @@ defmodule Engine do
 
   defdelegate call_handlers(handlers, arguments), to: Engine.ExtensionHandlers, as: :call_all
 
+  def bundled_metadata, do: [ExpertEEx.Metadata.document()]
+
   defdelegate entity_definition(analysis, position, entity),
     to: CodeIntelligence.Definition,
     as: :definition

@@ -77,4 +77,15 @@ defmodule Engine.ExtensionHandlersTest do
 
     assert message =~ "Engine.ExtensionHandlersTest.Missing"
   end
+
+  test "the engine bundles the EEx extension, whose handlers it can call" do
+    assert [%{scopes: %{eex: %{data: [expert: %{facets: %{completion: [handler]}}]}}}] =
+             Engine.bundled_metadata()
+
+    {module, function, 1} = handler
+    request = %{source: "<%= fo %>", position: %{line: 1, character: 7}}
+
+    assert [{:ok, %{delegate: %{source: _source}}}] =
+             ExtensionHandlers.call_all([{module, function}], [request])
+  end
 end

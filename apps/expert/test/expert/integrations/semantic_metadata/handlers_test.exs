@@ -548,6 +548,14 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
   end
 
   describe "records" do
+    test "adds the documents that the engine bundles", %{project: project} do
+      document = sigil_document(completion: [{SigilHandler, :complete, 1}])
+      patch(EngineApi, :bundled_metadata, [document])
+      SemanticMetadata.load_bundled(project)
+
+      assert {:ok, [^document]} = SemanticMetadata.records(project)
+    end
+
     test "reports indexed metadata read failures", %{project: project} do
       patch(Store, :prefix, fn ^project, _prefix, _opts -> {:error, :unavailable} end)
 

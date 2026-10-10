@@ -1,6 +1,7 @@
 defmodule Expert.Integrations.SemanticMetadata do
   @moduledoc false
 
+  alias Expert.EngineApi
   alias Expert.Integrations.SemanticMetadata.Completion
   alias Expert.Integrations.SemanticMetadata.CursorScope
   alias Expert.Integrations.SemanticMetadata.Entity
@@ -26,12 +27,21 @@ defmodule Expert.Integrations.SemanticMetadata do
   def records(project) do
     case indexed_records(project) do
       {:ok, records} ->
-        {:ok, records}
+        {:ok, records ++ bundled_records(project)}
 
       {:error, reason} = error ->
         Logger.warning("Could not read semantic metadata: #{inspect(reason)}")
         error
     end
+  end
+
+  def load_bundled(project) do
+    :persistent_term.put(bundled_key(project), EngineApi.bundled_metadata(project))
+  end
+
+  def unload_bundled(project) do
+    :persistent_term.erase(bundled_key(project))
+    :ok
   end
 
   def indexed_records(project) do
@@ -49,7 +59,7 @@ defmodule Expert.Integrations.SemanticMetadata do
          {:ok, sigils} <-
            read(Store.prefix(project, Indexer.lookup_subject({:sigil, ""}), @integration_entries)),
          {:ok, documents} <- looked_up_documents(project, calls ++ sigils) do
-      {:ok, documents}
+      {:ok, documents ++ bundled_records(project)}
     else
       {:error, reason} = error ->
         Logger.warning("Could not read semantic metadata: #{inspect(reason)}")
@@ -195,6 +205,9 @@ defmodule Expert.Integrations.SemanticMetadata do
   defp read({:ok, entries}), do: {:ok, entries}
   defp read([]), do: {:ok, []}
   defp read({:error, _reason} = error), do: error
+
+  defp bundled_records(project), do: :persistent_term.get(bundled_key(project), [])
+  defp bundled_key(project), do: {__MODULE__, :bundled, project.root_uri}
 
   defp identifier_at(%Env{} = env) do
     position = Positions.fragment_cursor(env.document, env.position)

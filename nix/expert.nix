@@ -38,6 +38,8 @@ beamPackages.mixRelease rec {
     root = ./..;
     fileset = lib.fileset.unions [
       ../apps
+      # The engine depends on the EEx extension by path.
+      ../extensions/eex
       ../mix_credo.exs
       ../mix_dialyzer.exs
       ../mix_includes.exs

@@ -21,6 +21,10 @@ defmodule Expert.EngineApi do
     call(project, Engine, :call_handlers, [handlers, arguments])
   end
 
+  def bundled_metadata(%Project{} = project) do
+    call(project, Engine, :bundled_metadata)
+  end
+
   def schedule_compile(%Project{} = project, force?) do
     call(project, Engine, :schedule_compile, [force?])
   end
