@@ -158,7 +158,7 @@ defmodule Expert.Provider.Handlers.CallHierarchy do
 
   defp resolve_call(project, analysis, position) do
     with :error <- References.indexed_call(project, analysis, position) do
-      Expert.EngineApi.resolve_entity(project, analysis, position)
+      Expert.Integrations.SemanticMetadata.Entity.resolve(project, analysis, position)
     end
   end
 

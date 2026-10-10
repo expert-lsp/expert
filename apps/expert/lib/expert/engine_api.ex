@@ -17,6 +17,10 @@ defmodule Expert.EngineApi do
     |> :erpc.call(m, f, a)
   end
 
+  def call_handler(%Project{} = project, module, function, arguments, timeout) do
+    call(project, Engine, :call_handler, [module, function, arguments, timeout])
+  end
+
   def schedule_compile(%Project{} = project, force?) do
     call(project, Engine, :schedule_compile, [force?])
   end
@@ -108,6 +112,15 @@ defmodule Expert.EngineApi do
 
   def definition(%Project{} = project, %Document{} = document, %Position{} = position) do
     call(project, Engine, :definition, [document, position])
+  end
+
+  def entity_definition(
+        %Project{} = project,
+        %Analysis{} = analysis,
+        %Position{} = position,
+        entity
+      ) do
+    call(project, Engine, :entity_definition, [analysis, position, entity])
   end
 
   def implementation(%Project{} = project, %Document{} = document, %Position{} = position) do
