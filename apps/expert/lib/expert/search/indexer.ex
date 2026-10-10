@@ -108,6 +108,7 @@ defmodule Expert.Search.Indexer do
       manifest
       |> Manifest.plan(paths)
       |> reindex_missing_outputs(manifest, paths, path_to_ids)
+      |> include_previous_beam_sources(manifest, paths.source_paths)
 
     {beam_items, beam_manifest_entries, sibling_paths} =
       beam_items_and_siblings(plan, manifest, paths, project)
@@ -219,21 +220,22 @@ defmodule Expert.Search.Indexer do
       |> MapSet.new()
 
     output_paths =
-      for %Manifest.Entry{kind: :beam, input_path: input_path, output_path: output_path} <-
-            manifest_entries,
-          is_binary(output_path),
-          MapSet.member?(new_beam_paths, input_path),
-          into: MapSet.new() do
-        output_path
-      end
+      manifest_entries
+      |> Enum.filter(fn
+        %Manifest.Entry{kind: :beam, input_path: input_path} ->
+          MapSet.member?(new_beam_paths, input_path)
+
+        _entry ->
+          false
+      end)
+      |> Enum.flat_map(&Manifest.Entry.output_paths/1)
+      |> MapSet.new()
 
     current_beam_paths = MapSet.new(paths.beam_paths)
     planned_beam_paths = MapSet.new(plan.beam_paths_to_index)
 
-    for %Manifest.Entry{kind: :beam, input_path: input_path, output_path: output_path} <-
-          Manifest.entries(manifest),
-        is_binary(output_path),
-        MapSet.member?(output_paths, output_path),
+    for %Manifest.Entry{kind: :beam, input_path: input_path} = entry <- Manifest.entries(manifest),
+        Enum.any?(Manifest.Entry.output_paths(entry), &MapSet.member?(output_paths, &1)),
         MapSet.member?(current_beam_paths, input_path),
         not MapSet.member?(planned_beam_paths, input_path) do
       input_path
@@ -254,21 +256,23 @@ defmodule Expert.Search.Indexer do
       manifest
       |> Manifest.entries()
       |> Enum.reduce({[], []}, fn
-        %Manifest.Entry{input_path: input_path, output_path: output_path, kind: :source},
-        {source_acc, beam_acc}
-        when is_binary(output_path) ->
+        %Manifest.Entry{input_path: input_path, kind: :source} = entry, {source_acc, beam_acc} ->
           if MapSet.member?(source_paths, input_path) and
-               not MapSet.member?(stored_paths, output_path) do
+               Enum.any?(
+                 Manifest.Entry.output_paths(entry),
+                 &(not MapSet.member?(stored_paths, &1))
+               ) do
             {[input_path | source_acc], beam_acc}
           else
             {source_acc, beam_acc}
           end
 
-        %Manifest.Entry{input_path: input_path, output_path: output_path, kind: :beam},
-        {source_acc, beam_acc}
-        when is_binary(output_path) ->
+        %Manifest.Entry{input_path: input_path, kind: :beam} = entry, {source_acc, beam_acc} ->
           if MapSet.member?(beam_paths, input_path) and
-               not MapSet.member?(stored_paths, output_path) do
+               Enum.any?(
+                 Manifest.Entry.output_paths(entry),
+                 &(not MapSet.member?(stored_paths, &1))
+               ) do
             {source_acc, [input_path | beam_acc]}
           else
             {source_acc, beam_acc}
@@ -282,6 +286,29 @@ defmodule Expert.Search.Indexer do
       plan
       | source_paths_to_index: Enum.uniq(plan.source_paths_to_index ++ missing_source_paths),
         beam_paths_to_index: Enum.uniq(plan.beam_paths_to_index ++ missing_beam_paths)
+    }
+  end
+
+  defp include_previous_beam_sources(%Manifest.Plan{} = plan, manifest, source_paths) do
+    current_sources = MapSet.new(source_paths)
+    affected_inputs = MapSet.new(plan.beam_paths_to_index ++ plan.input_paths_to_remove)
+
+    previous_sources =
+      manifest
+      |> Manifest.entries()
+      |> Enum.filter(fn
+        %Manifest.Entry{kind: :beam, input_path: input_path} ->
+          MapSet.member?(affected_inputs, input_path)
+
+        _entry ->
+          false
+      end)
+      |> Enum.flat_map(&Manifest.Entry.output_paths/1)
+      |> Enum.filter(&MapSet.member?(current_sources, &1))
+
+    %Manifest.Plan{
+      plan
+      | source_paths_to_index: Enum.uniq(plan.source_paths_to_index ++ previous_sources)
     }
   end
 
@@ -343,10 +370,10 @@ defmodule Expert.Search.Indexer do
     current_source_paths = MapSet.new(current_source_paths)
 
     beam_source_paths =
-      for %Manifest.Entry{kind: :beam, output_path: output_path} <- manifest_entries,
-          MapSet.member?(current_source_paths, output_path) do
-        output_path
-      end
+      manifest_entries
+      |> Enum.filter(&match?(%Manifest.Entry{kind: :beam}, &1))
+      |> Enum.flat_map(&Manifest.Entry.output_paths/1)
+      |> Enum.filter(&MapSet.member?(current_source_paths, &1))
 
     Enum.uniq(source_paths ++ beam_source_paths)
   end
@@ -357,6 +384,7 @@ defmodule Expert.Search.Indexer do
 
   defp new_stream_state do
     %{
+      definition_keys: MapSet.new(),
       manifest_entries: [],
       source_keys: MapSet.new()
     }
@@ -432,7 +460,10 @@ defmodule Expert.Search.Indexer do
 
   defp consume_entry(:source, %{subtype: subtype} = entry, entries, state)
        when subtype in [:definition, :block_structure] do
-    state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
+    state =
+      state
+      |> Map.update!(:source_keys, &MapSet.put(&1, source_key(entry)))
+      |> remember_definition(entry)
 
     {[entry | entries], state}
   end
@@ -442,11 +473,37 @@ defmodule Expert.Search.Indexer do
   end
 
   defp consume_entry(:beam, entry, entries, state) do
-    if MapSet.member?(state.source_keys, source_key(entry)) do
-      {entries, state}
-    else
-      {[entry | entries], state}
+    cond do
+      MapSet.member?(state.source_keys, source_key(entry)) ->
+        {entries, state}
+
+      duplicate_definition?(state, entry) ->
+        {entries, state}
+
+      true ->
+        {[entry | entries], remember_definition(state, entry)}
     end
+  end
+
+  defp duplicate_definition?(state, %{subtype: :definition} = entry) do
+    MapSet.member?(state.definition_keys, definition_key(entry))
+  end
+
+  defp duplicate_definition?(_state, _entry), do: false
+
+  defp remember_definition(state, %{subtype: :definition} = entry) do
+    Map.update!(state, :definition_keys, &MapSet.put(&1, definition_key(entry)))
+  end
+
+  defp remember_definition(state, _entry), do: state
+
+  defp definition_key(%{range: nil} = entry) do
+    {entry.path, entry.subject, entry.type, entry.subtype, nil}
+  end
+
+  defp definition_key(entry) do
+    {entry.path, entry.subject, entry.type, entry.subtype, entry.range.start.line,
+     entry.range.start.character, entry.range.end.line, entry.range.end.character}
   end
 
   defp source_key(%{path: path, subtype: :block_structure}), do: {:block_structure, path}

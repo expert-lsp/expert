@@ -438,7 +438,12 @@ defmodule Forge.Ast do
     Enum.find_value(options, :error, fn
       {key, value} ->
         if contains_cursor?(value) do
-          keyword_path_at_cursor(value, path ++ [keyword_key(key)])
+          branch = path ++ [keyword_key(key)]
+
+          case keyword_path_at_cursor(value, branch) do
+            :error -> {:ok, branch}
+            result -> result
+          end
         end
 
       {:__cursor__, _, _} ->

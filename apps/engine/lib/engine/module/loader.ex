@@ -60,6 +60,21 @@ defmodule Engine.Module.Loader do
     match?({:module, ^module_name}, ensure_loaded(module_name))
   end
 
+  @doc "Loads a module again when its BEAM file changed."
+  def ensure_fresh(module_name) do
+    Agent.get_and_update(__MODULE__, fn state ->
+      result = load_fresh(module_name)
+
+      state =
+        case result do
+          {:module, ^module_name} -> Map.put(state, module_name, result)
+          _ -> Map.delete(state, module_name)
+        end
+
+      {result, state}
+    end)
+  end
+
   def loaded?(module_name) do
     Agent.get(__MODULE__, fn
       %{^module_name => {:module, _}} ->
@@ -68,5 +83,24 @@ defmodule Engine.Module.Loader do
       _ ->
         false
     end)
+  end
+
+  defp load_fresh(module_name) do
+    case :code.module_status(module_name) do
+      :not_loaded -> Code.ensure_loaded(module_name)
+      :loaded -> {:module, module_name}
+      :modified -> reload(module_name)
+      :removed -> {:error, :removed}
+    end
+  end
+
+  defp reload(module_name) do
+    with true <- :code.soft_purge(module_name),
+         {:module, ^module_name} = result <- :code.load_file(module_name) do
+      result
+    else
+      false -> {:error, :old_code}
+      {:error, _reason} = error -> error
+    end
   end
 end

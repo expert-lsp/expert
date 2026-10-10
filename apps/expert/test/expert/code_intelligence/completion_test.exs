@@ -4,6 +4,7 @@ defmodule Expert.CodeIntelligence.CompletionTest do
 
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
   alias GenLSP.Structures.CompletionItem
@@ -67,6 +68,19 @@ defmodule Expert.CodeIntelligence.CompletionTest do
 
   test "ensure completion works for project", %{project: project} do
     refute [] == complete(project, "Project.|")
+  end
+
+  test "prefers ordinary completion when an augmented item has the same label", %{
+    project: project
+  } do
+    contextual = %Candidate.Generic{label: "where", kind: :field}
+    ordinary = %Candidate.Generic{label: "where", kind: :function}
+
+    patch(Integrations, :complete, {:augment, [{contextual, []}], true, []})
+    patch(EngineApi, :complete, [ordinary])
+
+    assert [%CompletionItem{label: "where", kind: kind}] = complete(project, "w|")
+    assert kind == CompletionItemKind.function()
   end
 
   describe "single character atom completions" do

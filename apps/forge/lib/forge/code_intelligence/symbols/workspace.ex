@@ -50,6 +50,8 @@ defmodule Forge.CodeIntelligence.Symbols.Workspace do
     Formats.module(entry.subject)
   end
 
+  defp symbol_name(_type, %{metadata: %{display_name: name}}) when is_binary(name), do: name
+
   defp symbol_name(_, entry),
     do: entry.subject
 end

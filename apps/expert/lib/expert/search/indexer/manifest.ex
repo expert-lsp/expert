@@ -11,6 +11,7 @@ defmodule Expert.Search.Indexer.Manifest do
     defstruct [
       :input_path,
       :output_path,
+      :output_paths,
       :kind,
       :mtime,
       :size,
@@ -25,6 +26,7 @@ defmodule Expert.Search.Indexer.Manifest do
     @type t :: %__MODULE__{
             input_path: Path.t(),
             output_path: Path.t() | nil,
+            output_paths: [Path.t()] | nil,
             kind: kind(),
             mtime: file_time(),
             size: non_neg_integer(),
@@ -44,6 +46,7 @@ defmodule Expert.Search.Indexer.Manifest do
          %__MODULE__{
            entry
            | source_path: output_path,
+             output_paths: [output_path],
              source_mtime: source_stat.mtime,
              source_size: source_stat.size
          }}
@@ -56,6 +59,7 @@ defmodule Expert.Search.Indexer.Manifest do
        %__MODULE__{
          input_path: path,
          output_path: output_path,
+         output_paths: [output_path],
          kind: :beam,
          mtime: beam_stat.mtime,
          size: beam_stat.size,
@@ -116,6 +120,14 @@ defmodule Expert.Search.Indexer.Manifest do
          mtime: beam_stat.mtime,
          size: beam_stat.size
        }}
+    end
+
+    def output_paths(%__MODULE__{output_paths: paths}) when is_list(paths), do: paths
+    def output_paths(%__MODULE__{output_path: path}) when is_binary(path), do: [path]
+    def output_paths(%__MODULE__{}), do: []
+
+    def put_output_paths(%__MODULE__{} = entry, paths) when is_list(paths) do
+      %{entry | output_paths: Enum.uniq(paths)}
     end
 
     def matches_file?(%__MODULE__{} = entry) do
@@ -271,10 +283,7 @@ defmodule Expert.Search.Indexer.Manifest do
 
   def output_paths(entries) when is_list(entries) do
     entries
-    |> Enum.flat_map(fn
-      %Entry{output_path: output_path} when is_binary(output_path) -> [output_path]
-      _entry -> []
-    end)
+    |> Enum.flat_map(&Entry.output_paths/1)
     |> MapSet.new()
   end
 
@@ -338,9 +347,9 @@ defmodule Expert.Search.Indexer.Manifest do
       manifest
       |> entries()
       |> Enum.flat_map(fn
-        %Entry{kind: :beam, input_path: input_path, output_path: output_path}
-        when is_binary(output_path) ->
-          if MapSet.member?(beam_paths, input_path) and MapSet.member?(dirty_outputs, output_path) do
+        %Entry{kind: :beam, input_path: input_path} = entry ->
+          if MapSet.member?(beam_paths, input_path) and
+               Enum.any?(Entry.output_paths(entry), &MapSet.member?(dirty_outputs, &1)) do
             [input_path]
           else
             []
@@ -357,7 +366,7 @@ defmodule Expert.Search.Indexer.Manifest do
     input_paths
     |> Enum.flat_map(fn input_path ->
       case fetch(manifest, input_path) do
-        {:ok, %Entry{output_path: output_path}} when is_binary(output_path) -> [output_path]
+        {:ok, %Entry{} = entry} -> Entry.output_paths(entry)
         _ -> []
       end
     end)
@@ -382,11 +391,9 @@ defmodule Expert.Search.Indexer.Manifest do
     }
   end
 
-  defp put_output(outputs, %Entry{output_path: output_path}) when is_binary(output_path) do
-    MapSet.put(outputs, output_path)
+  defp put_output(outputs, %Entry{} = entry) do
+    Enum.reduce(Entry.output_paths(entry), outputs, &MapSet.put(&2, &1))
   end
-
-  defp put_output(outputs, _entry), do: outputs
 
   defp empty_file?(path) do
     case File.stat(path) do

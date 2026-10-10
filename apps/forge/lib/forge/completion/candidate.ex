@@ -68,6 +68,7 @@ defmodule Forge.Completion.Candidate do
       :type,
       :visibility,
       :spec,
+      :summary,
       :metadata,
       parens?: true
     ]
@@ -207,6 +208,24 @@ defmodule Forge.Completion.Candidate do
     end
   end
 
+  defmodule Generic do
+    @moduledoc false
+    defstruct [
+      :detail,
+      :documentation,
+      :filter_text,
+      :insert_text,
+      :kind,
+      :label,
+      :priority,
+      :snippet
+    ]
+
+    def new(%{} = elixir_sense_map) do
+      struct(__MODULE__, elixir_sense_map)
+    end
+  end
+
   defmodule MixTask do
     defstruct [:full_name, :metadata, :name, :subtype, :summary, :type]
 
@@ -278,6 +297,10 @@ defmodule Forge.Completion.Candidate do
 
   def from_elixir_sense(%{type: :generic, kind: :snippet} = elixir_sense_map) do
     Snippet.new(elixir_sense_map)
+  end
+
+  def from_elixir_sense(%{type: :generic} = elixir_sense_map) do
+    Generic.new(elixir_sense_map)
   end
 
   def from_elixir_sense(%{type: :variable} = elixir_sense_map) do

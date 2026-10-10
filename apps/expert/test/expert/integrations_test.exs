@@ -3,6 +3,7 @@ defmodule Expert.IntegrationsTest do
 
   test "returns stable names for enabled BEAM indexers" do
     assert Expert.Integrations.indexer_module_names() == [
+             Atom.to_string(Expert.Integrations.SemanticMetadata.Indexer),
              Atom.to_string(Expert.Integrations.Spark.Indexer)
            ]
   end

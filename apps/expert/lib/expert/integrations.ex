@@ -15,12 +15,19 @@ defmodule Expert.Integrations do
 
   @callback hover(Env.t()) :: [{String.t(), Range.t()}]
 
-  @optional_callbacks index: 4, complete: 1, hover: 1
+  @callback signature_help(Env.t()) ::
+              %{active_argument: non_neg_integer() | nil, signatures: [map()]} | :ignore
+
+  @optional_callbacks index: 4, complete: 1, hover: 1, signature_help: 1
 
   @integrations [
+    {Expert.Integrations.SemanticMetadata.Indexer, [:index]},
     {Expert.Integrations.Spark.Indexer, [:index]},
+    {Expert.Integrations.SemanticMetadata.Completion, [:complete]},
+    {Expert.Integrations.SemanticMetadata.Hover, [:hover]},
     {Expert.Integrations.Spark.Completion, [:complete]},
-    {Expert.Integrations.Spark.Hover, [:hover]}
+    {Expert.Integrations.Spark.Hover, [:hover]},
+    {Expert.Integrations.SemanticMetadata.SignatureHelp, [:signature_help]}
   ]
 
   @beam_indexers for {module, capabilities} <- @integrations,
@@ -34,6 +41,10 @@ defmodule Expert.Integrations do
   @hover_providers for {module, capabilities} <- @integrations,
                        :hover in capabilities,
                        do: module
+
+  @signature_help_providers for {module, capabilities} <- @integrations,
+                                :signature_help in capabilities,
+                                do: module
 
   @indexer_module_names @beam_indexers |> Enum.map(&Atom.to_string/1) |> Enum.sort()
 
@@ -54,5 +65,14 @@ defmodule Expert.Integrations do
 
   def hover(env) do
     Enum.flat_map(@hover_providers, & &1.hover(env))
+  end
+
+  def signature_help(env) do
+    Enum.find_value(@signature_help_providers, :ignore, fn provider ->
+      case provider.signature_help(env) do
+        :ignore -> nil
+        result -> result
+      end
+    end)
   end
 end

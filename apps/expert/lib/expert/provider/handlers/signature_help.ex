@@ -3,7 +3,11 @@ defmodule Expert.Provider.Handlers.SignatureHelp do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Provider.Markdown
+  alias Forge.Ast.Analysis
+  alias Forge.Ast.Env
+  alias Forge.Document
   alias GenLSP.Requests
   alias GenLSP.Structures
 
@@ -18,20 +22,58 @@ defmodule Expert.Provider.Handlers.SignatureHelp do
       ) do
     %Context{document: document, project: project} = context
 
-    response =
-      case EngineApi.signature_help(project, document, params.position) do
-        %{active_param: active_param, signatures: [_ | _] = signatures} ->
-          %Structures.SignatureHelp{
-            active_signature: 0,
-            active_parameter: active_param,
-            signatures: Enum.map(signatures, &signature_information/1)
-          }
+    builtin = EngineApi.signature_help(project, document, params.position)
+    plugin = integration_signatures(project, document, params.position)
 
-        _ ->
-          nil
+    {:ok, response(builtin, plugin)}
+  end
+
+  defp integration_signatures(project, document, position) do
+    with {:ok, _document, %Analysis{} = analysis} <- Document.Store.fetch(document.uri, :analysis),
+         analysis = EngineApi.reanalyze_to(project, analysis, position),
+         {:ok, env} <- Env.new(project, analysis, position) do
+      Integrations.signature_help(env)
+    else
+      _error -> :ignore
+    end
+  end
+
+  defp response(builtin, plugin) do
+    {builtin_param, builtin_signatures} = builtin_signatures(builtin)
+
+    {active_parameter, plugin_signatures} =
+      case plugin do
+        %{active_argument: active_argument, signatures: signatures} ->
+          {active_argument, Enum.map(signatures, &plugin_information/1)}
+
+        :ignore ->
+          {nil, []}
       end
 
-    {:ok, response}
+    case Enum.uniq_by(plugin_signatures ++ builtin_signatures, & &1.label) do
+      [] ->
+        nil
+
+      signatures ->
+        %Structures.SignatureHelp{
+          active_signature: 0,
+          active_parameter: active_parameter || builtin_param,
+          signatures: signatures
+        }
+    end
+  end
+
+  defp builtin_signatures(%{active_param: active_param, signatures: [_ | _] = signatures}),
+    do: {active_param, Enum.map(signatures, &signature_information/1)}
+
+  defp builtin_signatures(_signature_help), do: {nil, []}
+
+  defp plugin_information(%{label: label, parameters: parameters, doc: doc}) do
+    %Structures.SignatureInformation{
+      label: label,
+      parameters: Enum.map(parameters, &%Structures.ParameterInformation{label: &1}),
+      documentation: if(doc not in [nil, ""], do: Markdown.to_content(doc))
+    }
   end
 
   defp signature_information(%{name: name, params: params} = signature) do
