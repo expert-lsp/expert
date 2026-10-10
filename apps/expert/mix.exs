@@ -32,6 +32,7 @@ defmodule Expert.MixProject do
   def extra_applications do
     [
       :logger,
+      :eex,
       :runtime_tools,
       :kernel,
       :telemetry,

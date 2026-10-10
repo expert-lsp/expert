@@ -543,6 +543,15 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       assert Enum.sort(documents) == Enum.sort([query, sigil])
     end
 
+    test "reads Expert's own documents whose contexts apply", %{project: project} do
+      env = env(project, "<%= fo| %>", document: "file:///lib/page.eex")
+
+      assert {:ok, documents} =
+               SemanticMetadata.documents_at(env, Ast.cursor_path(env.analysis, env.position))
+
+      assert documents == [Expert.Integrations.EEx.document()]
+    end
+
     test "reads no documents in a comment", %{project: project} do
       put_documents(project, [query_document([])])
       patch(SemanticMetadata, :documents_at, fn _env, _cursor_path -> flunk("read documents") end)
@@ -552,6 +561,11 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
   end
 
   describe "records" do
+    test "adds Expert's own documents", %{project: project} do
+      assert {:ok, documents} = SemanticMetadata.records(project)
+      assert Expert.Integrations.EEx.document() in documents
+    end
+
     test "reports indexed metadata read failures", %{project: project} do
       patch(Store, :prefix, fn ^project, _prefix, _opts -> {:error, :unavailable} end)
 
@@ -746,6 +760,22 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
 
       assert_received {:request, %{imports: imports}}
       assert {Enum, :map, 2} in imports
+    end
+
+    test "completes EEx templates with Expert's handler", %{project: project} do
+      put_documents(project, [query_document([])])
+
+      patch(EngineApi, :call_handlers, fn _project, _handlers, _arguments ->
+        send(self(), :called_project)
+        []
+      end)
+
+      source = "<% import My.Query, only: [from: 2] %>\n<%= from user in User, where: coal| %>"
+
+      assert %CompletionList{items: [%CompletionItem{label: "coalesce(arg1, arg2)"}]} =
+               complete_document(project, source, "lib/query.eex")
+
+      refute_received :called_project
     end
 
     test "follows a handler delegation only once", %{project: project} do

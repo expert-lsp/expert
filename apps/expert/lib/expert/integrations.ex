@@ -18,6 +18,8 @@ defmodule Expert.Integrations do
 
   def indexer_versions, do: @indexer_versions
 
+  def documents, do: [Expert.Integrations.EEx.document()]
+
   def index_beam(project, binary, exports, metadata, source_path) do
     Enum.flat_map(@indexers, fn {indexer, _version} ->
       indexer.index(project, binary, exports, metadata, source_path)

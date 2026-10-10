@@ -28,7 +28,7 @@ defmodule Expert.Integrations.SemanticMetadata.Indexer do
 
   def entries(source_path, key, document) do
     lookups =
-      for lookup <- document.contexts |> Enum.map(&lookup/1) |> Enum.uniq(),
+      for lookup <- lookups(document),
           do: Entry.integration(source_path, @provider, :context, lookup_key(lookup), key)
 
     [Entry.integration(source_path, @provider, :dsl, key, document) | lookups]
@@ -40,6 +40,8 @@ defmodule Expert.Integrations.SemanticMetadata.Indexer do
 
   def lookup_subject(lookup),
     do: Entry.integration_subject_prefix(@provider, :context) <> lookup_key(lookup)
+
+  def lookups(document), do: document.contexts |> Enum.map(&lookup/1) |> Enum.uniq()
 
   # Decoding the attributes creates an atom for every name in them, so only the
   # modules that publish semantic metadata are decoded.

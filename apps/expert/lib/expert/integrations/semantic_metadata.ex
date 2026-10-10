@@ -1,6 +1,7 @@
 defmodule Expert.Integrations.SemanticMetadata do
   @moduledoc false
 
+  alias Expert.Integrations
   alias Expert.Integrations.SemanticMetadata.Completion
   alias Expert.Integrations.SemanticMetadata.CursorScope
   alias Expert.Integrations.SemanticMetadata.Entity
@@ -26,7 +27,7 @@ defmodule Expert.Integrations.SemanticMetadata do
   def records(project) do
     case indexed_records(project) do
       {:ok, records} ->
-        {:ok, records}
+        {:ok, records ++ Integrations.documents()}
 
       {:error, reason} = error ->
         Logger.warning("Could not read semantic metadata: #{inspect(reason)}")
@@ -41,15 +42,14 @@ defmodule Expert.Integrations.SemanticMetadata do
   end
 
   def documents_at(%Env{project: project} = env, cursor_path) do
-    lookups =
-      for lookup <- [{:language, env.document.language_id} | call_lookups(cursor_path)],
-          do: Indexer.lookup_subject(lookup)
+    lookups = [{:language, env.document.language_id} | call_lookups(cursor_path)]
+    subjects = for lookup <- lookups, do: Indexer.lookup_subject(lookup)
 
-    with {:ok, calls} <- read(Store.exact_many(project, lookups, @integration_entries)),
+    with {:ok, calls} <- read(Store.exact_many(project, subjects, @integration_entries)),
          {:ok, sigils} <-
            read(Store.prefix(project, Indexer.lookup_subject({:sigil, ""}), @integration_entries)),
          {:ok, documents} <- looked_up_documents(project, calls ++ sigils) do
-      {:ok, documents}
+      {:ok, documents ++ integration_documents(lookups)}
     else
       {:error, reason} = error ->
         Logger.warning("Could not read semantic metadata: #{inspect(reason)}")
@@ -126,7 +126,7 @@ defmodule Expert.Integrations.SemanticMetadata do
 
       for {document, handlers} <- handlers,
           [_ | _] = files <- [calls_of(calls, document)],
-          location <- Handlers.references(handlers, project, entity, files),
+          location <- Handlers.references(document, handlers, project, entity, files),
           do: location
     else
       _ -> []
@@ -175,6 +175,14 @@ defmodule Expert.Integrations.SemanticMetadata do
 
   defp call_lookups(cursor_path),
     do: for(name <- CursorScope.call_names(cursor_path), do: {:call, name})
+
+  # Expert's own documents aren't indexed, so they are matched against the lookups
+  # here, the way the index matches the others.
+  defp integration_documents(lookups) do
+    for document <- Integrations.documents(),
+        Enum.any?(Indexer.lookups(document), &(&1 in lookups or match?({:sigil, _}, &1))),
+        do: document
+  end
 
   defp looked_up_documents(_project, []), do: {:ok, []}
 
