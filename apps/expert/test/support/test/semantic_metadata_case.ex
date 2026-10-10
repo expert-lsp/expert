@@ -94,7 +94,7 @@ defmodule Expert.Test.SemanticMetadataCase do
     path = Path.join(dir, "source.ex")
     File.write!(path, source)
     options = Code.compiler_options()
-    Code.compiler_options(docs: true)
+    Code.compiler_options(docs: true, debug_info: true)
 
     try do
       {:ok, [module], %{compile_warnings: [], runtime_warnings: []}} =

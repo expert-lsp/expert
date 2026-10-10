@@ -3,14 +3,11 @@ defmodule Forge.Search.Indexer.EntryTest do
 
   alias Forge.Search.Indexer.Entry
 
-  test "builds integration subjects and prefixes" do
-    assert Entry.integration_subject("spark", :extension, My.Extension) ==
-             "$integration/spark/extension/Elixir.My.Extension"
+  test "builds integration entries under the prefix of their provider and kind" do
+    entry = Entry.integration("/lib.ex", "semantic", :dsl, "My.DSL/0", %{})
 
-    assert Entry.integration_subject_prefix("spark", :extension) ==
-             "$integration/spark/extension/"
-
-    assert Entry.integration_subject_prefix("spark", :behaviour, My.Behaviour) ==
-             "$integration/spark/behaviour/Elixir.My.Behaviour/"
+    assert entry.subject == "$integration/semantic/dsl/My.DSL/0"
+    assert String.starts_with?(entry.subject, Entry.integration_subject_prefix("semantic", :dsl))
+    assert {entry.type, entry.subtype} == {:metadata, :integration}
   end
 end

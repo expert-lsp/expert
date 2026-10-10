@@ -1808,7 +1808,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, :empty} = Sqlite.prepare(pid)
 
       path = Path.join(System.tmp_dir!(), "integration.ex")
-      entry = Entry.integration(path, "test", :dsl, Integration.Owner, %{option: "value"})
+      entry = Entry.integration(path, "test", :dsl, "Integration.Owner", %{option: "value"})
 
       {:ok, entry: entry}
     end
