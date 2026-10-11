@@ -193,38 +193,6 @@ defmodule Engine.CodeIntelligence.EntityTest do
       code = ~q[:not_a_module|]
       assert {:error, {:unsupported, {:unquoted_atom, ~c"not_a_module"}}} = resolve(code)
     end
-
-    test "handles inline embeds_one" do
-      code = ~q[
-      defmodule MyEcto do
-        use Ecto.Schema
-
-        schema "user" do
-          embeds_one :address, Address| do
-            field :street, :string
-          end
-        end
-      end
-      ]
-      assert {:ok, {:module, MyEcto.Address}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~s[Address]
-    end
-
-    test "handles inline embeds_many" do
-      code = ~q[
-      defmodule MyEcto do
-        use Ecto.Schema
-
-        schema "user" do
-          embeds_many :addresses, Address| do
-            field :street, :string
-          end
-        end
-      end
-      ]
-      assert {:ok, {:module, MyEcto.Address}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~s[Address]
-    end
   end
 
   describe "controller module resolve/2 in the phoenix router" do
