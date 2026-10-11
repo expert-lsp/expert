@@ -33,8 +33,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     Extractors.FunctionDefinition,
     Extractors.FunctionReference,
     Extractors.StructDefinition,
-    Extractors.StructReference,
-    Extractors.EctoSchema
+    Extractors.StructReference
   ]
 
   def new(%Analysis{} = analysis, extractors \\ nil) do
