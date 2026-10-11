@@ -146,6 +146,20 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
       assert {:ok, ^location} = handle(request, project)
     end
 
+    test "resolves the alias of a struct literal to the struct definition", %{project: project} do
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 12, 7)
+
+      assert {:ok, %Location{range: range} = location} = handle(request, project)
+
+      assert Location.uri(location) ==
+               Document.Path.ensure_uri(file_path(project, "lib/struct.ex"))
+
+      assert range.start.line == 2
+    end
+
     test "resolves local variables in the manager", %{project: project} do
       patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
 

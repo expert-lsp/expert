@@ -53,9 +53,7 @@ defmodule Expert.Search.Indexer.Beams do
 
       entries =
         metadata
-        |> entries_from_metadata(
-          source_lines(source_path, [metadata |> metadata_position() |> elem(0)])
-        )
+        |> entries_from_metadata(source_lines(source_path, source_line_numbers(metadata)))
         |> Enum.filter(&definition?/1)
 
       {:ok, entries}
@@ -201,28 +199,30 @@ defmodule Expert.Search.Indexer.Beams do
   defp entries_from_indexed_results([], _opts), do: []
 
   defp entries_from_indexed_results(results, opts) do
-    source_lines_by_path = source_lines_by_path(results)
-
     results
     |> Enum.group_by(fn
       {:indexed, source_path, _metadata, _integration_entries, _manifest_entry} -> source_path
     end)
     |> Enum.flat_map(fn {source_path, results} ->
-      entries_from_group(source_path, results, source_lines_by_path, opts)
+      entries_from_group(source_path, results, opts)
     end)
   end
 
-  defp entries_from_group(source_path, results, source_lines_by_path, opts) do
+  defp entries_from_group(source_path, results, opts) do
+    line_numbers =
+      Enum.flat_map(results, fn {:indexed, _path, metadata, _integration_entries, _manifest} ->
+        source_line_numbers(metadata)
+      end)
+
+    source_lines = source_lines(source_path, line_numbers)
+
     entries =
       Enum.flat_map(results, fn
         {:indexed, _source_path, metadata, integration_entries, manifest_entry} ->
           application = application(manifest_entry, opts)
 
-          entries_from_metadata(
-            metadata,
-            Map.get(source_lines_by_path, source_path, %{}),
-            application
-          ) ++ Enum.map(integration_entries, &put_application(&1, application))
+          entries_from_metadata(metadata, source_lines, application) ++
+            Enum.map(integration_entries, &%{&1 | application: application})
       end)
 
     [Entry.block_structure(source_path, %{root: %{}}) | entries]
@@ -232,11 +232,6 @@ defmodule Expert.Search.Indexer.Beams do
     applications = Keyword.get(opts, :applications, %{})
     Map.get(applications, Path.dirname(manifest_entry.input_path))
   end
-
-  defp put_application(%Entry{application: nil} = entry, application),
-    do: %{entry | application: application}
-
-  defp put_application(%Entry{} = entry, _application), do: entry
 
   defp metadata_from_beam({beam_path, beam_stat}, opts) do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
@@ -354,7 +349,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp entries_from_metadata(metadata, source_lines, app \\ nil) do
     context = entry_context(metadata, app)
 
-    module_entries(metadata, context, module_range(metadata, source_lines)) ++
+    module_entries(metadata, context, source_lines) ++
       public_definition_entries(metadata, context)
   end
 
@@ -369,7 +364,9 @@ defmodule Expert.Search.Indexer.Beams do
     }
   end
 
-  defp module_entries(metadata, context, module_range) do
+  defp module_entries(metadata, context, source_lines) do
+    module_range = module_range(metadata, source_lines)
+
     case protocol_implementation(metadata) do
       {:ok, protocol} ->
         [
@@ -385,11 +382,36 @@ defmodule Expert.Search.Indexer.Beams do
           _struct ->
             [
               module_definition(context, module_type(metadata), module_range),
-              module_definition(context, :struct, module_range)
+              module_definition(
+                context,
+                :struct,
+                struct_range(metadata, source_lines, module_range)
+              )
             ]
         end
     end
   end
+
+  # On the module's own line, the module range already points at the name.
+  defp struct_range(metadata, source_lines, module_range) do
+    with line when is_integer(line) and line != module_range.start.line <- struct_line(metadata),
+         text when is_binary(text) <- Map.get(source_lines, line),
+         trimmed when trimmed != "" <- String.trim(text) do
+      range(line, Forge.Text.count_leading_spaces(text) + 1, String.length(trimmed))
+    else
+      _ -> module_range
+    end
+  end
+
+  defp struct_line(metadata) do
+    case List.keyfind(Map.get(metadata, :definitions, []), {:__struct__, 0}, 0) do
+      {_function, :def, definition_metadata, _clauses} -> definition_metadata[:line]
+      nil -> nil
+    end
+  end
+
+  defp source_line_numbers(metadata),
+    do: [metadata |> metadata_position() |> elem(0), struct_line(metadata)]
 
   defp module_definition(context, type, range) do
     Entry.definition(
@@ -827,20 +849,16 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp module_definition_name_span(line_text, module_name) do
-    with {:ok, search_start_byte} <- module_name_search_start(line_text),
-         {:ok, start_byte, length} <-
-           module_name_match(line_text, search_start_byte, module_name) do
+    with {:ok, start_byte, length} <-
+           module_name_match(line_text, module_name_search_start(line_text), module_name) do
       byte_span_to_column_span(line_text, start_byte, length)
     end
   end
 
   defp module_name_search_start(line_text) do
-    ["defmodule", "defprotocol"]
-    |> Enum.flat_map(&:binary.matches(line_text, &1))
-    |> Enum.min_by(&elem(&1, 0), fn -> nil end)
-    |> case do
-      {byte_index, length} -> {:ok, byte_index + length}
-      nil -> :error
+    case :binary.match(line_text, ["defmodule", "defprotocol"]) do
+      {byte_index, length} -> byte_index + length
+      :nomatch -> 0
     end
   end
 
@@ -902,19 +920,6 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp byte_span_to_column_span(_line_text, _start_byte, _byte_length), do: :error
-
-  defp source_lines_by_path(results) do
-    results
-    |> Enum.group_by(
-      fn {:indexed, source_path, _metadata, _integration_entries, _manifest_entry} ->
-        source_path
-      end,
-      fn {:indexed, _source_path, metadata, _integration_entries, _manifest_entry} ->
-        metadata |> metadata_position() |> elem(0)
-      end
-    )
-    |> Map.new(fn {source_path, lines} -> {source_path, source_lines(source_path, lines)} end)
-  end
 
   defp source_lines(source_path, lines) do
     source_lines = lines |> Enum.filter(&valid_line?/1) |> Enum.uniq() |> Enum.sort()
