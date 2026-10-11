@@ -162,10 +162,10 @@ defmodule Expert.CodeIntelligence.Completion do
       %Result{mode: :augment, candidates: candidates, incomplete?: incomplete?} ->
         candidates
         |> translate_contextual_candidates(env)
-        |> augment(ordinary_completions(project, env, context), incomplete?)
+        |> augment(ordinary_completions(project, env, context, integration_result), incomplete?)
 
       %Result{mode: :ignore} ->
-        {ordinary_completions(project, env, context), false}
+        {ordinary_completions(project, env, context, integration_result), false}
     end
   end
 
@@ -188,7 +188,7 @@ defmodule Expert.CodeIntelligence.Completion do
     {Enum.uniq_by(items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
   end
 
-  defp ordinary_completions(project, env, context) do
+  defp ordinary_completions(project, env, context, integration_result) do
     prefix_tokens = Env.prefix_tokens(env, 1)
 
     cond do
@@ -212,11 +212,22 @@ defmodule Expert.CodeIntelligence.Completion do
         |> Enum.map(&Translatable.translate(&1, Builder, env))
 
       true ->
-        candidates = EngineApi.complete(project, env)
+        candidates =
+          project |> EngineApi.complete(env) |> without_plugin_candidates(integration_result)
+
         candidates = candidates ++ indexed_candidates(project, env, candidates)
         to_completion_items(candidates, project, env, context)
     end
   end
+
+  # ElixirSense has plugins for some libraries, such as Phoenix and Ecto, and
+  # their suggestions come back as generic candidates. Where semantic metadata
+  # selects a scope, that scope describes the library instead, so this drops
+  # them.
+  defp without_plugin_candidates(candidates, %Result{mode: :ignore}), do: candidates
+
+  defp without_plugin_candidates(candidates, %Result{}),
+    do: Enum.reject(candidates, &match?(%Candidate.Generic{}, &1))
 
   defp indexed_candidates(project, env, candidates) do
     case Code.Fragment.cursor_context(env.prefix) do

@@ -5,7 +5,6 @@ defmodule Engine.CodeIntelligence.Entity do
   alias Forge.Document
   alias Forge.Document.Position
   alias Forge.Document.Range
-  alias Forge.Formats
   alias Future.Code, as: Code
   alias Sourceror.Zipper
 
@@ -231,9 +230,7 @@ defmodule Engine.CodeIntelligence.Entity do
   defp resolve_module(charlist, {{line, column}, {line, _}}, analysis, %Position{} = position) do
     module_before_cursor = module_before_position(charlist, column, position)
 
-    maybe_prepended = maybe_prepend_phoenix_scope_module(module_before_cursor, analysis, position)
-
-    with {:ok, module} <- expand_alias(maybe_prepended, analysis, position) do
+    with {:ok, module} <- expand_alias(module_before_cursor, analysis, position) do
       end_column = column + String.length(module_before_cursor)
       {:ok, {:module, module}, {{line, column}, {line, end_column}}}
     end
@@ -246,51 +243,6 @@ defmodule Engine.CodeIntelligence.Entity do
     with {:ok, module} <- expand_alias(charlist, analysis, position) do
       {:ok, {:module, module}, node_range}
     end
-  end
-
-  defp maybe_prepend_phoenix_scope_module(module_string, analysis, position) do
-    with {:ok, scope_segments} <- fetch_phoenix_scope_alias_segments(analysis, position),
-         {:ok, scope_module} <-
-           Engine.Analyzer.expand_alias(scope_segments, analysis, position),
-         cursor_module = Module.concat(scope_module, module_string),
-         true <-
-           phoenix_controller_module?(cursor_module) or phoenix_liveview_module?(cursor_module) do
-      Formats.module(cursor_module)
-    else
-      _ ->
-        module_string
-    end
-  end
-
-  # fetch the alias segments from ancestor `scope` macros
-  # e.g. `scope "/foo", FooWeb.Controllers`
-  # the alias module is `FooWeb.Controllers`, and the segments is `[:FooWeb, :Controllers]`
-  defp fetch_phoenix_scope_alias_segments(analysis, position) do
-    # Ast.cursor_path returns nodes from innermost to outermost,
-    # so we need to reverse.
-    segments =
-      analysis
-      |> Ast.cursor_path(position)
-      |> Enum.filter(&match?({:scope, _, [_ | _]}, &1))
-      |> Enum.reverse()
-      |> Enum.flat_map(fn
-        {:scope, _, [_, {:__aliases__, _, segments} | _]} -> segments
-        _ -> []
-      end)
-
-    if segments == [] do
-      :error
-    else
-      {:ok, segments}
-    end
-  end
-
-  defp phoenix_controller_module?(module) do
-    function_exists?(module, :call, 2) and function_exists?(module, :action, 2)
-  end
-
-  defp phoenix_liveview_module?(module) do
-    function_exists?(module, :mount, 3) and function_exists?(module, :render, 1)
   end
 
   # Take only the segments at and before the cursor, e.g.
@@ -482,11 +434,6 @@ defmodule Engine.CodeIntelligence.Entity do
     else
       _ -> :error
     end
-  end
-
-  defp function_exists?(module, function, arity) do
-    # Wrap the `function_exported?` from `Kernel` to simplify testing.
-    function_exported?(module, function, arity)
   end
 
   defp current_module(%Analysis{} = analysis, %Position{} = position) do
