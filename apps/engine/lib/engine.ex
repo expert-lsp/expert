@@ -68,9 +68,7 @@ defmodule Engine do
 
   defdelegate runtime_versions, to: Forge.VM.Versions, as: :current
 
-  defdelegate call_handler(module, function, arguments, timeout),
-    to: Engine.ExtensionHandlers,
-    as: :call
+  defdelegate call_handlers(handlers, arguments), to: Engine.ExtensionHandlers, as: :call_all
 
   defdelegate entity_definition(analysis, position, entity),
     to: CodeIntelligence.Definition,

@@ -17,8 +17,8 @@ defmodule Expert.EngineApi do
     |> :erpc.call(m, f, a)
   end
 
-  def call_handler(%Project{} = project, module, function, arguments, timeout) do
-    call(project, Engine, :call_handler, [module, function, arguments, timeout])
+  def call_handlers(%Project{} = project, handlers, arguments) do
+    call(project, Engine, :call_handlers, [handlers, arguments])
   end
 
   def schedule_compile(%Project{} = project, force?) do

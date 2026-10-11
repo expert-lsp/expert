@@ -1,6 +1,7 @@
 defmodule Expert.Integrations.SemanticMetadata.Delegation do
   @moduledoc false
 
+  alias Expert.Integrations.SemanticMetadata.Handler.Positions
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Document
@@ -9,13 +10,9 @@ defmodule Expert.Integrations.SemanticMetadata.Delegation do
 
   def analyze(%Analysis{document: document}, source, %Position{} = position) do
     delegated = Document.new(document.uri, source, document.version, "elixir")
-    {Ast.analyze(delegated), Position.new(delegated, position.line, position.character)}
+    {Ast.analyze(delegated), Positions.delegated_cursor(document, delegated, position)}
   end
 
-  def to_document_range(%Range{start: start, end: stop}, %Document{} = document) do
-    Range.new(
-      Position.new(document, start.line, start.character),
-      Position.new(document, stop.line, stop.character)
-    )
-  end
+  def to_document_range(%Range{} = range, %Document{} = delegated, %Document{} = document),
+    do: Positions.from_delegated(range, delegated, document)
 end

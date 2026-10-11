@@ -4,12 +4,11 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
   alias Expert.CodeIntelligence.Definition
   alias Expert.Document.Context
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Integrations.SemanticMetadata.Delegation
   alias Expert.Integrations.SemanticMetadata.Entity
   alias Expert.Project.Store
   alias Forge.Ast.Analysis
-  alias Forge.Ast.Env
   alias Forge.Document
   alias Forge.Document.Location
   alias GenLSP.Requests
@@ -26,18 +25,28 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
         %Context{} = context
       ) do
     %Context{document: document, project: project} = context
+    position = params.position
 
     result =
       if Store.ready?(project) do
-        with [] <- integration_definitions(project, document, params.position),
-             {:ok, nil} <- Definition.definition(project, document, params.position) do
-          engine_definition(project, document, params.position)
-        else
-          [_ | _] = locations -> {:ok, locations}
-          {:ok, _location} = result -> result
+        case Document.Store.fetch(document.uri, :analysis) do
+          {:ok, _document, %Analysis{} = analysis} ->
+            cursor = SemanticMetadata.cursor(project, analysis, position)
+
+            with [] <- SemanticMetadata.definition(cursor),
+                 :ignore <- resolved_definition(project, analysis, position, cursor),
+                 {:ok, nil} <- Definition.definition(project, document, position) do
+              EngineApi.definition(project, document, position)
+            else
+              [_ | _] = locations -> {:ok, locations}
+              result -> result
+            end
+
+          _error ->
+            EngineApi.definition(project, document, position)
         end
       else
-        Definition.definition(project, document, params.position)
+        Definition.definition(project, document, position)
       end
 
     case result do
@@ -50,36 +59,28 @@ defmodule Expert.Provider.Handlers.GoToDefinition do
     end
   end
 
-  defp engine_definition(project, document, position) do
-    with {:ok, _document, %Analysis{} = analysis} <- Document.Store.fetch(document.uri, :analysis),
-         {:ok, entity, _range, entity_analysis, entity_position} <-
-           Entity.resolve_by_integrations(project, analysis, position) do
-      case EngineApi.entity_definition(project, entity_analysis, entity_position, entity) do
-        {:ok, locations} when is_list(locations) ->
-          {:ok, Enum.map(locations, &to_document(&1, analysis.document))}
+  defp resolved_definition(project, analysis, position, cursor) do
+    case Entity.resolve_by_integrations(project, analysis, position, cursor) do
+      {:ok, entity, _range, entity_analysis, entity_position} ->
+        case EngineApi.entity_definition(project, entity_analysis, entity_position, entity) do
+          {:ok, locations} when is_list(locations) ->
+            {:ok,
+             Enum.map(locations, &to_document(&1, entity_analysis.document, analysis.document))}
 
-        {:ok, %Location{} = location} ->
-          {:ok, to_document(location, analysis.document)}
+          {:ok, %Location{} = location} ->
+            {:ok, to_document(location, entity_analysis.document, analysis.document)}
 
-        other ->
-          other
-      end
-    else
-      _ -> EngineApi.definition(project, document, position)
+          other ->
+            other
+        end
+
+      _error ->
+        :ignore
     end
   end
 
-  defp to_document(%Location{uri: uri} = location, %Document{uri: uri} = document),
-    do: Location.new(Delegation.to_document_range(location.range, document), document)
+  defp to_document(%Location{uri: uri} = location, delegated, %Document{uri: uri} = document),
+    do: Location.new(Delegation.to_document_range(location.range, delegated, document), document)
 
-  defp to_document(location, _document), do: location
-
-  defp integration_definitions(project, document, position) do
-    with {:ok, _document, %Analysis{} = analysis} <- Document.Store.fetch(document.uri, :analysis),
-         {:ok, env} <- Env.new(project, analysis, position) do
-      Integrations.definition(env)
-    else
-      _error -> []
-    end
-  end
+  defp to_document(location, _delegated, _document), do: location
 end

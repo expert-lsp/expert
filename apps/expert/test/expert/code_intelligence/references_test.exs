@@ -443,7 +443,7 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
       ]
 
       entity = %{kind: :module, module: MyWeb.PageController}
-      patch(Expert.Integrations, :resolve, {:entity, entity, nil})
+      patch(Expert.Integrations.SemanticMetadata, :resolve, {:entity, entity, nil})
 
       assert [location] = references(project, ~S[get "/", PageController|, :index], code)
       assert decorate(code, location.range) =~ "do: «MyWeb.PageController»"
@@ -461,7 +461,8 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
       indexed = Range.new(Position.new(document, 2, 9), Position.new(document, 2, 25))
       provided = Range.new(Position.new(document, 1, 11), Position.new(document, 1, 22))
 
-      patch(Expert.Integrations, :references, fn ^project, {:module, ReferencedModule} ->
+      patch(Expert.Integrations.SemanticMetadata, :references, fn ^project,
+                                                                  {:module, ReferencedModule} ->
         [Location.new(indexed, document.uri), Location.new(provided, document.uri)]
       end)
 
@@ -477,10 +478,12 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
         end
       /
 
-      patch(Expert.Integrations, :resolve, fn _env -> flunk("called the integrations") end)
+      patch(Expert.Integrations.SemanticMetadata, :cursor, fn _, _, _ ->
+        flunk("called semantic metadata")
+      end)
 
-      patch(Expert.Integrations, :references, fn _project, _entity ->
-        flunk("called the integrations")
+      patch(Expert.Integrations.SemanticMetadata, :references, fn _project, _entity ->
+        flunk("called semantic metadata")
       end)
 
       assert [location] = references(project, "Enum.map|(a, b)", code, false, false)

@@ -1,6 +1,7 @@
 defmodule Expert.Integrations.SemanticMetadata.Sigil do
   @moduledoc false
 
+  alias Expert.Integrations.SemanticMetadata.Handler.Positions
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Document.Position
@@ -8,15 +9,10 @@ defmodule Expert.Integrations.SemanticMetadata.Sigil do
   @heredoc_delimiters ["\"\"\"", "'''"]
   @closing_delimiters %{"(" => ")", "[" => "]", "{" => "}", "<" => ">"}
 
-  @doc """
-  Returns the sigil whose content holds `position`.
-
-  `:range` covers the whole sigil, from `~` to its modifiers. `:content` covers
-  the text between the delimiters. Both use 1-based lines and characters, and
-  their `:end` is exclusive.
-  """
   def at(%Analysis{} = analysis, %Position{} = position) do
-    cursor = {position.line, position.character}
+    %{line: line, character: character} = Positions.cursor(analysis.document, position)
+    position = %Position{position | character: character}
+    cursor = {line, character}
 
     with {:ok, path} <- Ast.path_at(analysis, position),
          %{} = sigil <- Enum.find_value(path, &sigil/1),

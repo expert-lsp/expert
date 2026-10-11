@@ -4,7 +4,8 @@ defmodule Expert.CodeIntelligence.CompletionTest do
 
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
   alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
   alias GenLSP.Structures.CompletionItem
@@ -91,7 +92,10 @@ defmodule Expert.CodeIntelligence.CompletionTest do
     contextual = %Candidate.Generic{label: "where", kind: :field}
     ordinary = %Candidate.Generic{label: "where", kind: :function}
 
-    patch(Integrations, :complete, {:augment, [{contextual, []}], true, []})
+    patch(SemanticMetadata, :complete, fn env ->
+      %Result{mode: :augment, candidates: [contextual], incomplete?: true, env: env}
+    end)
+
     patch(EngineApi, :complete, [ordinary])
 
     assert [%CompletionItem{label: "where", kind: kind}] = complete(project, "w|")
