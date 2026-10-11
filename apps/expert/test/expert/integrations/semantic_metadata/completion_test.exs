@@ -1,6 +1,7 @@
 defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
   use Expert.Test.SemanticMetadataCase, async: false
 
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
   alias Expert.Test.EnumUse
   alias Forge.Completion.Candidate
 
@@ -11,7 +12,11 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
       dsl_document(%{root: %{entries: [%{kind: :future_kind, mfa: {My.DSL, :value, 0}}]}})
     ])
 
-    assert {:augment, [{%Candidate.Generic{label: "value/0", kind: :future_kind}, []}], true, []} =
+    assert %Result{
+             mode: :augment,
+             candidates: [%Candidate.Generic{label: "value/0", kind: :future_kind}],
+             incomplete?: true
+           } =
              complete(project, "My.DSL.configure do\n  val|\nend")
   end
 
@@ -20,21 +25,25 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
   } do
     put_documents(project, [query_document()])
 
-    assert {:augment,
-            [
-              {%Candidate.Function{
+    assert %Result{
+             mode: :augment,
+             candidates: [
+               %Candidate.Function{
                  name: "coalesce",
                  arity: 2,
                  argument_names: ["arg1", "arg2"],
                  summary: "Returns the first non-null value."
-               }, []}
-            ], true, []} = complete(project, "import My.Query\nfrom user in User, where: coal|")
+               }
+             ],
+             incomplete?: true
+           } = complete(project, "import My.Query\nfrom user in User, where: coal|")
   end
 
   test "has no scope in the value of a key without a value scope", %{project: project} do
     put_documents(project, [query_document()])
 
-    assert :ignore = complete(project, "import My.Query\nfrom user in User, limit: |")
+    assert %Result{mode: :ignore} =
+             complete(project, "import My.Query\nfrom user in User, limit: |")
   end
 
   test "matches a call by its arity, counting the arguments after the cursor", %{
@@ -54,7 +63,7 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
     ])
 
     assert labels(complete(project, "My.Repo.insert(chan|, returning: true)")) == ["changeset/0"]
-    assert :ignore = complete(project, "My.Repo.insert(chan|)")
+    assert %Result{mode: :ignore} = complete(project, "My.Repo.insert(chan|)")
 
     assert labels(complete(project, "My.DSL.field :name, :st|, default: \"\"")) == [":string"]
   end
@@ -171,7 +180,11 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
       })
     ])
 
-    assert {:augment, [{%Candidate.Function{summary: "Pointer documentation."}, []}], true, []} =
+    assert %Result{
+             mode: :augment,
+             candidates: [%Candidate.Function{summary: "Pointer documentation."}],
+             incomplete?: true
+           } =
              complete(project, "My.DSL.configure do\n  val|\nend")
 
     refute :code.is_loaded(module)
@@ -194,7 +207,7 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
       dsl_document(%{root: %{entries: [%{kind: :function, mfa: {module, :value, 2}}]}})
     ])
 
-    assert {:augment, [{%Candidate.Function{} = candidate, []}], true, []} =
+    assert %Result{mode: :augment, candidates: [%Candidate.Function{} = candidate]} =
              complete(project, "My.DSL.configure do\n  val|\nend")
 
     assert candidate.argument_names == ["name", "opts"]
@@ -226,13 +239,13 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
       test "applies only after #{directive}", %{project: project} do
         source = imported_source(unquote(declaration), before: "map([], scope_val|)")
 
-        assert :ignore = complete(project, source)
+        assert %Result{mode: :ignore} = complete(project, source)
       end
 
       test "applies only in the function with #{directive}", %{project: project} do
         source = imported_source(unquote(declaration), sibling: "map([], scope_val|)")
 
-        assert :ignore = complete(project, source)
+        assert %Result{mode: :ignore} = complete(project, source)
       end
     end
 
@@ -266,11 +279,11 @@ defmodule Expert.Integrations.SemanticMetadata.CompletionTest do
     """
   end
 
-  defp labels({:augment, candidates, true, []}) do
+  defp labels(%Result{mode: :augment, candidates: candidates, incomplete?: true}) do
     candidates
     |> Enum.map(fn
-      {%{name: name, arity: arity}, []} -> "#{name}/#{arity}"
-      {candidate, []} -> candidate.label
+      %{name: name, arity: arity} -> "#{name}/#{arity}"
+      candidate -> candidate.label
     end)
     |> Enum.sort()
   end

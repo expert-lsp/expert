@@ -2,17 +2,19 @@ defmodule Expert.Integrations.SemanticMetadata.Entity do
   @moduledoc false
 
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Integrations.SemanticMetadata.Delegation
   alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Ast.Analysis
-  alias Forge.Ast.Env
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Project
 
-  def resolve(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
-    case resolve_by_integrations(project, analysis, position) do
+  def resolve(%Project{} = project, %Analysis{} = analysis, %Position{} = position),
+    do: resolve(project, analysis, position, SemanticMetadata.cursor(project, analysis, position))
+
+  def resolve(%Project{} = project, %Analysis{} = analysis, %Position{} = position, cursor) do
+    case resolve_by_integrations(project, analysis, position, cursor) do
       {:ok, entity, range, _analysis, _position} -> {:ok, entity, range}
       :ignore -> EngineApi.resolve_entity(project, analysis, position)
       error -> error
@@ -24,10 +26,19 @@ defmodule Expert.Integrations.SemanticMetadata.Entity do
         %Analysis{} = analysis,
         %Position{} = position
       ) do
-    case Env.new(project, analysis, position) do
-      {:ok, env} -> resolution(Integrations.resolve(env), project, analysis, position)
-      _error -> :ignore
-    end
+    cursor = SemanticMetadata.cursor(project, analysis, position)
+    resolve_by_integrations(project, analysis, position, cursor)
+  end
+
+  def resolve_by_integrations(
+        %Project{} = project,
+        %Analysis{} = analysis,
+        %Position{} = position,
+        cursor
+      ) do
+    cursor
+    |> SemanticMetadata.resolve()
+    |> resolution(project, analysis, position)
   end
 
   defp resolution({:entity, entity, range}, _project, analysis, position),
@@ -37,8 +48,8 @@ defmodule Expert.Integrations.SemanticMetadata.Entity do
     {delegated, delegated_position} = Delegation.analyze(analysis, source, position)
 
     with {:ok, entity, range} <- EngineApi.resolve_entity(project, delegated, delegated_position) do
-      {:ok, entity, Delegation.to_document_range(range, analysis.document), delegated,
-       delegated_position}
+      {:ok, entity, Delegation.to_document_range(range, delegated.document, analysis.document),
+       delegated, delegated_position}
     end
   end
 
