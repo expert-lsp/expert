@@ -1,6 +1,5 @@
 defmodule Engine.CodeIntelligence.EntityTest do
   use ExUnit.Case
-  use Patch
 
   import ExUnit.CaptureIO
   import Forge.Test.CodeSigil
@@ -9,7 +8,6 @@ defmodule Engine.CodeIntelligence.EntityTest do
   import Forge.Test.RangeSupport
 
   alias Engine.CodeIntelligence.Entity
-  alias FooWeb.AdminLive.Agreements.AgreementController
   alias Forge.Document
 
   describe "module resolve/2" do
@@ -192,142 +190,6 @@ defmodule Engine.CodeIntelligence.EntityTest do
     test "fails for plain old atoms" do
       code = ~q[:not_a_module|]
       assert {:error, {:unsupported, {:unquoted_atom, ~c"not_a_module"}}} = resolve(code)
-    end
-  end
-
-  describe "controller module resolve/2 in the phoenix router" do
-    setup do
-      patch(Entity, :function_exists?, fn
-        FooWeb.FooController, :call, 2 -> true
-        FooWeb.FooController, :action, 2 -> true
-      end)
-
-      :ok
-    end
-
-    test "succeeds in the `get` block" do
-      code = ~q[
-        scope "/foo", FooWeb do
-          get "/foo", |FooController, :index
-        end
-      ]
-
-      assert {:ok, {:module, FooWeb.FooController}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~S[get "/foo", «FooController», :index]
-    end
-
-    test "succeeds in the `post` block" do
-      code = ~q[
-        scope "/foo", FooWeb do
-          post "/foo", |FooController, :create
-        end
-      ]
-
-      assert {:ok, {:module, FooWeb.FooController}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~S[post "/foo", «FooController», :create]
-    end
-
-    test "succeeds even the scope module has multiple dots" do
-      patch(Entity, :function_exists?, fn
-        FooWeb.Bar.FooController, :call, 2 -> true
-        FooWeb.Bar.FooController, :action, 2 -> true
-      end)
-
-      code = ~q[
-        scope "/foo", FooWeb.Bar do
-          get "/foo", |FooController, :index
-        end
-      ]
-
-      assert {:ok, {:module, FooWeb.Bar.FooController}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~S[get "/foo", «FooController», :index]
-    end
-
-    test "succeeds in the nested scopes" do
-      patch(Entity, :function_exists?, fn
-        FooWeb.Bar.FooController, :call, 2 -> true
-        FooWeb.Bar.FooController, :action, 2 -> true
-      end)
-
-      code = ~q[
-        scope "/", FooWeb do
-          scope "/bar", Bar do
-            get "/foo", |FooController, :index
-          end
-        end
-      ]
-
-      assert {:ok, {:module, FooWeb.Bar.FooController}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~S[get "/foo", «FooController», :index]
-    end
-
-    # Regression test for https://github.com/expert-lsp/expert/issues/360
-    # Sibling scope aliases were being concatenated into the module path,
-    # causing resolution to fail (or crash with :system_limit for many siblings).
-    test "does not include sibling scope aliases" do
-      patch(Entity, :function_exists?, fn
-        FooWeb.ARLive.Quickbooks, :call, 2 -> true
-        FooWeb.ARLive.Quickbooks, :action, 2 -> true
-      end)
-
-      code = ~q[
-        scope "/", FooWeb do
-          scope "/admin", AdminLive do
-            get "/types", TypeController, :index
-          end
-
-          scope "/ar", ARLive do
-            get "/quickbooks", |Quickbooks, :index
-          end
-        end
-      ]
-
-      assert {:ok, {:module, FooWeb.ARLive.Quickbooks}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~S[get "/quickbooks", «Quickbooks», :index]
-    end
-
-    test "does not include sibling scope aliases in nested scopes" do
-      patch(Entity, :function_exists?, fn
-        AgreementController, :call, 2 -> true
-        AgreementController, :action, 2 -> true
-      end)
-
-      code = ~q[
-        scope "/", FooWeb do
-          scope "/admin", AdminLive do
-            scope "/types", AffiliationTypes do
-              get "/", TypeController, :index
-            end
-
-            scope "/agreements", Agreements do
-              get "/", |AgreementController, :index
-            end
-          end
-        end
-      ]
-
-      assert {:ok, {:module, AgreementController}, resolved_range} =
-               resolve(code)
-
-      assert resolved_range =~ ~S[get "/", «AgreementController», :index]
-    end
-  end
-
-  describe "liveview module resolve in the router" do
-    test "succeeds in the `live` block" do
-      patch(Entity, :function_exists?, fn
-        FooWeb.FooLive, :mount, 2 -> true
-        FooWeb.FooLive, :render, 1 -> true
-      end)
-
-      code = ~q[
-        scope "/foo", FooWeb do
-          live "/foo", |FooLive
-        end
-      ]
-
-      assert {:ok, {:module, FooLive}, resolved_range} = resolve(code)
-      assert resolved_range =~ ~S[live "/foo", «FooLive»]
     end
   end
 

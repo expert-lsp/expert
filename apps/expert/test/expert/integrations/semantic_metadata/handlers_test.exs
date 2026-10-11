@@ -856,6 +856,18 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       assert {range.start.character, range.end.character} == {utf16 - 4, utf16}
     end
 
+    test "leaves ElixirSense plugin suggestions out of a scope only", %{project: project} do
+      put_documents(project, [query_document([])])
+      patch(EngineApi, :complete, [%Candidate.Generic{label: "plugin", kind: :class}])
+
+      inside = complete_document(project, "My.Query.from(user in User, where: co|)", "lib/a.ex")
+      outside = complete_document(project, "plugi|", "lib/b.ex")
+
+      assert "coalesce(arg1, arg2)" in labels(inside)
+      refute "plugin" in labels(inside)
+      assert "plugin" in labels(outside)
+    end
+
     test "returns no items where a handler overrides completion with no items", %{
       project: project
     } do
@@ -956,6 +968,9 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       assert %CompletionList{items: []} = result
     end
   end
+
+  defp labels(%CompletionList{items: items}), do: labels(items)
+  defp labels(items), do: Enum.map(items, & &1.label)
 
   defp complete_tag_name(project, items_for) do
     put_documents(project, [sigil_document(SigilHandler)])
