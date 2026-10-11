@@ -3,10 +3,9 @@ defmodule Expert.Provider.Handlers.SignatureHelp do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Provider.Markdown
   alias Forge.Ast.Analysis
-  alias Forge.Ast.Env
   alias Forge.Document
   alias GenLSP.Requests
   alias GenLSP.Structures
@@ -29,11 +28,14 @@ defmodule Expert.Provider.Handlers.SignatureHelp do
   end
 
   defp integration_signatures(project, document, position) do
-    with {:ok, _document, %Analysis{} = analysis} <- Document.Store.fetch(document.uri, :analysis),
-         {:ok, env} <- Env.new(project, analysis, position) do
-      Integrations.signature_help(env)
-    else
-      _error -> :ignore
+    case Document.Store.fetch(document.uri, :analysis) do
+      {:ok, _document, %Analysis{} = analysis} ->
+        project
+        |> SemanticMetadata.cursor(analysis, position)
+        |> SemanticMetadata.signature_help()
+
+      _error ->
+        :ignore
     end
   end
 

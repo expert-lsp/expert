@@ -5,7 +5,8 @@ defmodule Expert.CodeIntelligence.Completion do
   alias Expert.CodeIntelligence.Hex
   alias Expert.Configuration
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
   alias Expert.Integrations.SemanticMetadata.Delegation
   alias Expert.Project.Intelligence
   alias Expert.Search.Indexer.Analyzer
@@ -46,23 +47,26 @@ defmodule Expert.CodeIntelligence.Completion do
   defp complete(project, analysis, position, context, delegated?) do
     case Env.new(project, analysis, position) do
       {:ok, env} ->
-        cursor_env = EngineApi.cursor_env(project, env.document, position)
-        env = %Env{env | analysis: %{env.analysis | cursor_env: cursor_env}}
+        case SemanticMetadata.complete(env) do
+          %Result{mode: :delegate} when delegated? ->
+            complete_regular(
+              project,
+              analysis,
+              position,
+              context,
+              %Result{env: env}
+            )
 
-        case Integrations.complete(env) do
-          {:delegate, _request} when delegated? ->
-            complete_regular(project, env, context, :ignore)
-
-          {:delegate, %{source: delegated_source}} ->
+          %Result{mode: :delegate, delegate: %{source: delegated_source}} ->
             {delegated_analysis, delegated_position} =
               Delegation.analyze(analysis, delegated_source, position)
 
             project
             |> complete(delegated_analysis, delegated_position, context, true)
-            |> to_original_document(analysis.document)
+            |> to_original_document(delegated_analysis.document, analysis.document)
 
           integration_result ->
-            complete_regular(project, env, context, integration_result)
+            complete_regular(project, analysis, position, context, integration_result)
         end
 
       {:error, _} = error ->
@@ -71,10 +75,16 @@ defmodule Expert.CodeIntelligence.Completion do
     end
   end
 
-  defp complete_regular(project, env, context, integration_result) do
+  defp complete_regular(
+         project,
+         analysis,
+         position,
+         context,
+         %Result{env: %Env{} = env} = integration_result
+       ) do
     hex_context =
-      if Hex.project_file?(project, env.document) do
-        case Hex.Context.detect(env.analysis, env.position) do
+      if Hex.project_file?(project, analysis.document) do
+        case Hex.Context.detect(analysis, position) do
           {:ok, ctx} -> ctx
           :error -> nil
         end
@@ -95,29 +105,33 @@ defmodule Expert.CodeIntelligence.Completion do
     end
   end
 
-  defp to_original_document(%CompletionList{items: items} = list, document),
-    do: %CompletionList{list | items: to_original_document(items, document)}
+  defp to_original_document(%CompletionList{items: items} = list, delegated, document),
+    do: %CompletionList{list | items: to_original_document(items, delegated, document)}
 
-  defp to_original_document(items, document) when is_list(items),
-    do: Enum.map(items, &item_to_original_document(&1, document))
+  defp to_original_document(items, delegated, document) when is_list(items),
+    do: Enum.map(items, &item_to_original_document(&1, delegated, document))
 
   defp item_to_original_document(
          %CompletionItem{text_edit: %Changes{} = changes} = item,
+         delegated,
          document
        ) do
     edits =
       case changes.edits do
-        edits when is_list(edits) -> Enum.map(edits, &edit_to_original_document(&1, document))
-        edit -> edit_to_original_document(edit, document)
+        edits when is_list(edits) ->
+          Enum.map(edits, &edit_to_original_document(&1, delegated, document))
+
+        edit ->
+          edit_to_original_document(edit, delegated, document)
       end
 
     %CompletionItem{item | text_edit: Changes.new(document, edits)}
   end
 
-  defp item_to_original_document(item, _document), do: item
+  defp item_to_original_document(item, _delegated, _document), do: item
 
-  defp edit_to_original_document(%Edit{range: range} = edit, document),
-    do: %Edit{edit | range: Delegation.to_document_range(range, document)}
+  defp edit_to_original_document(%Edit{range: range} = edit, delegated, document),
+    do: %Edit{edit | range: Delegation.to_document_range(range, delegated, document)}
 
   defp hex_items_for_context(nil, _project, _env), do: []
 
@@ -142,43 +156,29 @@ defmodule Expert.CodeIntelligence.Completion do
 
   defp completions(project, env, context, integration_result) do
     case integration_result do
-      {:override, candidates, incomplete?, _transforms} ->
+      %Result{mode: :override, candidates: candidates, incomplete?: incomplete?} ->
         {translate_contextual_candidates(candidates, env), incomplete?}
 
-      {:augment, candidates, incomplete?, transforms} ->
-        contextual_items = translate_contextual_candidates(candidates, env)
-        ordinary_items = project |> ordinary_completions(env, context) |> transform(transforms)
-        augment(contextual_items, ordinary_items, incomplete?)
+      %Result{mode: :augment, candidates: candidates, incomplete?: incomplete?} ->
+        candidates
+        |> translate_contextual_candidates(env)
+        |> augment(ordinary_completions(project, env, context), incomplete?)
 
-      :ignore ->
+      %Result{mode: :ignore} ->
         {ordinary_completions(project, env, context), false}
     end
   end
 
   defp translate_contextual_candidates(candidates, env) do
     candidates
-    |> Enum.flat_map(fn {candidate, transforms} ->
+    |> Enum.flat_map(fn candidate ->
       case Translatable.translate(candidate, Builder, env) do
         :skip -> []
-        items -> items |> List.wrap() |> transform(transforms)
+        items -> List.wrap(items)
       end
     end)
     |> Enum.uniq_by(&{&1.label, &1.kind})
   end
-
-  defp transform(items, transforms) do
-    Enum.reduce(transforms, items, fn
-      :wrap_list, items -> Enum.map(items, &wrap_list_item/1)
-    end)
-  end
-
-  defp wrap_list_item(
-         %CompletionItem{text_edit: %Changes{edits: %Edit{text: text} = edit} = changes} = item
-       ) do
-    %CompletionItem{item | text_edit: %Changes{changes | edits: %Edit{edit | text: "[#{text}]"}}}
-  end
-
-  defp wrap_list_item(item), do: item
 
   defp augment(items, ordinary_items, incomplete?) do
     items = Enum.map(items, &Builder.set_sort_scope(&1, "000"))
@@ -234,6 +234,16 @@ defmodule Expert.CodeIntelligence.Completion do
   defp imported_candidates(project, env, prefix, candidates) do
     exports = &ModuleRegistry.module_exports(project, &1)
 
+    analysis =
+      case Analysis.cursor_env_at(env.analysis, env.position) do
+        nil ->
+          cursor_env = EngineApi.cursor_env(project, env.document, env.position)
+          %{env.analysis | cursor_env: cursor_env}
+
+        _cursor_env ->
+          env.analysis
+      end
+
     listed =
       for %struct{name: name, origin: origin, arity: arity} <- candidates,
           struct in [Candidate.Function, Candidate.Macro],
@@ -241,7 +251,7 @@ defmodule Expert.CodeIntelligence.Completion do
           do: {origin, name, arity}
 
     imports =
-      for {module, name, arity} = mfa <- Analyzer.imports_at(env.analysis, env.position, exports),
+      for {module, name, arity} = mfa <- Analyzer.imports_at(analysis, env.position, exports),
           label = Atom.to_string(name),
           String.starts_with?(label, prefix),
           not MapSet.member?(listed, {Formats.module(module), label, arity}),

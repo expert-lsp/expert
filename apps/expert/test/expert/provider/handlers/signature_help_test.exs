@@ -82,7 +82,7 @@ defmodule Expert.Provider.Handlers.SignatureHelpTest do
       }
     end)
 
-    patch(Expert.Integrations, :signature_help, [
+    patch(Expert.Integrations.SemanticMetadata, :signature_help, [
       %{
         label: "map(enumerable, fun)",
         parameters: ["enumerable", "fun"],

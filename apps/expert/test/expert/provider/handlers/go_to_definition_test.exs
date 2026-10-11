@@ -9,7 +9,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   alias Expert.EngineApi
   alias Expert.EngineNode
   alias Expert.EngineSupervisor
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Project.Indexer
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
@@ -115,7 +115,7 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
       {:ok, referenced} = Document.Store.open_temporary(referenced_uri)
       position = Position.new(referenced, 1, 1)
       location = Location.new(Range.new(position, position), referenced_uri)
-      patch(Integrations, :definition, [location])
+      patch(SemanticMetadata, :definition, [location])
       patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
 
       uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
@@ -131,9 +131,8 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
       {:ok, referenced} = Document.Store.open_temporary(referenced_uri)
       position = Position.new(referenced, 1, 1)
       location = Location.new(Range.new(position, position), referenced_uri)
-      patch(Integrations, :definition, [])
-      patch(Expert.CodeIntelligence.Definition, :definition, {:ok, nil})
-      patch(Integrations, :resolve, {:entity, %{kind: :module, module: MyDefinition}, nil})
+      patch(SemanticMetadata, :definition, [])
+      patch(SemanticMetadata, :resolve, {:entity, %{kind: :module, module: MyDefinition}, nil})
       patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
 
       patch(EngineApi, :entity_definition, fn ^project, _analysis, _position, entity ->

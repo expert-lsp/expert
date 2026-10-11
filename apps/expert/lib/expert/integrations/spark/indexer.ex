@@ -32,7 +32,8 @@ defmodule Expert.Integrations.Spark.Indexer do
           scopes: scopes
         },
         key = Enum.join([module, name, callable_arity, index], "/"),
-        do: Indexer.entry(source_path, key, document)
+        entry <- Indexer.entries(source_path, key, document),
+        do: entry
   end
 
   defp entries(_doc, _module, _source_path), do: []

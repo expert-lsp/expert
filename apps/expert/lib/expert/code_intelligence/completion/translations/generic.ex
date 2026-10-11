@@ -35,10 +35,8 @@ defmodule Expert.CodeIntelligence.Completion.Translations.Generic do
       end
     end
 
-    defp range(%Candidate.Generic{range: {line, start_character, end_character}}, %Env{} = env)
-         when line == env.position.line and start_character <= env.position.character and
-                env.position.character <= end_character,
-         do: {start_character, end_character}
+    defp range(%Candidate.Generic{range: {_line, start_character, end_character}}, _env),
+      do: {start_character, end_character}
 
     defp range(_generic, _env), do: nil
 

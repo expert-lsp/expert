@@ -29,8 +29,8 @@ defmodule Expert.Integrations.SemanticMetadata.EntityTest do
   end
 
   test "resolves the entity that a resolve handler names", %{project: project} do
-    patch(EngineApi, :call_handler, fn _project, My.Resolver, :resolve, [_request], _timeout ->
-      {:ok, %{entity: %{kind: :function, module: My.Format, name: :format, arity: 1}}}
+    patch(EngineApi, :call_handlers, fn _project, [{My.Resolver, :resolve}], [_request] ->
+      [{:ok, %{entity: %{kind: :function, module: My.Format, name: :format, arity: 1}}}]
     end)
 
     assert {:ok, {:call, My.Format, :format, 1}, range} =
@@ -42,8 +42,8 @@ defmodule Expert.Integrations.SemanticMetadata.EntityTest do
   test "resolves the Elixir source that a handler delegates to", %{project: project} do
     delegated = String.duplicate(" ", 35) <> "String.upcase(user)"
 
-    patch(EngineApi, :call_handler, fn _project, My.Resolver, :resolve, [_request], _timeout ->
-      {:ok, %{delegate: %{source: delegated}}}
+    patch(EngineApi, :call_handlers, fn _project, [{My.Resolver, :resolve}], [_request] ->
+      [{:ok, %{delegate: %{source: delegated}}}]
     end)
 
     assert {:ok, {:module, String}, range} =
@@ -53,8 +53,8 @@ defmodule Expert.Integrations.SemanticMetadata.EntityTest do
   end
 
   test "resolves with Elixir when no handler answers", %{project: project} do
-    patch(EngineApi, :call_handler, fn _project, My.Resolver, :resolve, [_request], _timeout ->
-      {:ok, nil}
+    patch(EngineApi, :call_handlers, fn _project, [{My.Resolver, :resolve}], [_request] ->
+      [{:ok, nil}]
     end)
 
     assert {:ok, {:module, String}, _range} =

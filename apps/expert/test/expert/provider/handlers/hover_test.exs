@@ -8,7 +8,7 @@ defmodule Expert.Provider.Handlers.HoverTest do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
   alias Expert.Provider.Markdown
@@ -58,8 +58,10 @@ defmodule Expert.Provider.Handlers.HoverTest do
   end
 
   test "combines integration and generic hover documentation", %{project: project} do
-    patch(Integrations, :hover, fn env ->
-      [{"Integration documentation", hover_range(env.document, 1, 2, 1, 6)}]
+    document = Forge.Document.new("file:///hovered.ex", "option", 1)
+
+    patch(SemanticMetadata, :hover, fn _cursor ->
+      [{"Integration documentation", hover_range(document, 1, 2, 1, 6)}]
     end)
 
     patch(EngineApi, :resolve_entity, {:error, :not_found})
@@ -81,9 +83,28 @@ defmodule Expert.Provider.Handlers.HoverTest do
     assert range.end.character == 6
   end
 
+  test "finds the semantic metadata scope once", %{project: project} do
+    test = self()
+
+    patch(SemanticMetadata, :cursor, fn _project, _analysis, _position ->
+      send(test, :cursor)
+      :error
+    end)
+
+    patch(EngineApi, :resolve_entity, {:error, :not_found})
+    patch(EngineApi, :hover, {:ok, "Generic documentation", nil})
+
+    hover(project, "|option")
+
+    assert_received :cursor
+    refute_received :cursor
+  end
+
   test "deduplicates identical integration and generic hover documentation", %{project: project} do
-    patch(Integrations, :hover, fn env ->
-      [{"Same documentation", hover_range(env.document, 1, 1, 1, 7)}]
+    document = Forge.Document.new("file:///hovered.ex", "option", 1)
+
+    patch(SemanticMetadata, :hover, fn _cursor ->
+      [{"Same documentation", hover_range(document, 1, 1, 1, 7)}]
     end)
 
     patch(EngineApi, :resolve_entity, {:error, :not_found})

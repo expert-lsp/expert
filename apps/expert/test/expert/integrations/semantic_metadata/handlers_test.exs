@@ -6,7 +6,8 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
   alias Expert.CodeIntelligence.Completion
   alias Expert.CodeIntelligence.Hex
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
   alias Expert.Integrations.SemanticMetadata.Handlers
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Store
@@ -14,10 +15,6 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
   alias Forge.Completion.Candidate
   alias Forge.Document
   alias Forge.Document.Location
-  alias Forge.Document.Position
-  alias Forge.Document.Range
-  alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Indexer.Source.Block
   alias GenLSP.Enumerations.CompletionTriggerKind
   alias GenLSP.Structures.CompletionContext
   alias GenLSP.Structures.CompletionItem
@@ -31,7 +28,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document(expert: %{facets: %{completion: [{handler, :complete, 1}]}})
       ])
 
-      patch(EngineApi, :call_handler, fn ^project, ^handler, :complete, [request], _timeout ->
+      stub_handler_calls(fn ^project, ^handler, :complete, [request] ->
         send(self(), {:request, request})
         {:ok, [%{label: "name", kind: :field}]}
       end)
@@ -45,7 +42,11 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       end
       """
 
-      assert {:augment, [{%Candidate.Generic{label: "name", kind: :field}, []}], true, []} =
+      assert %Result{
+               mode: :augment,
+               candidates: [%Candidate.Generic{label: "name", kind: :field}],
+               incomplete?: true
+             } =
                complete(project, source)
 
       assert_received {:request,
@@ -74,12 +75,14 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document(expert: %{facets: %{completion: [{handler, :complete, 1}]}})
       ])
 
-      patch(EngineApi, :call_handler, fn ^project, ^handler, :complete, [_request], _timeout ->
+      stub_handler_calls(fn ^project, ^handler, :complete, [_request] ->
         send(self(), :called)
         {:ok, []}
       end)
 
-      assert :ignore = complete(project, "My.Query.from(user in Account, lock: user.na|")
+      assert %Result{mode: :ignore} =
+               complete(project, "My.Query.from(user in Account, lock: user.na|")
+
       refute_received :called
     end
 
@@ -96,7 +99,9 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         |> put_in([:contexts, Access.at(0), :mfa], {query, :from, 2})
       ])
 
-      patch(EngineApi, :call_handler, {:ok, [%{label: "name", kind: :field}]})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, [%{label: "name", kind: :field}]}
+      end)
 
       source = """
       defmodule Example do
@@ -105,7 +110,11 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       end
       """
 
-      assert {:augment, [{%Candidate.Generic{label: "name", kind: :field}, []}], true, []} =
+      assert %Result{
+               mode: :augment,
+               candidates: [%Candidate.Generic{label: "name", kind: :field}],
+               incomplete?: true
+             } =
                complete(project, source)
 
       assert [{"Returns the first non-null value.", _range}] =
@@ -127,7 +136,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         }
       ])
 
-      patch(EngineApi, :call_handler, fn ^project, ^handler, :complete, [request], _timeout ->
+      stub_handler_calls(fn ^project, ^handler, :complete, [request] ->
         send(self(), {:request, request})
         {:ok, [%{label: "name", kind: :field}]}
       end)
@@ -139,7 +148,11 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       end
       """
 
-      assert {:augment, [{%Candidate.Generic{label: "name"}, []}], true, []} =
+      assert %Result{
+               mode: :augment,
+               candidates: [%Candidate.Generic{label: "name"}],
+               incomplete?: true
+             } =
                complete(project, source)
 
       assert_received {:request,
@@ -171,12 +184,16 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         }
       ])
 
-      patch(EngineApi, :call_handler, fn ^project, ^handler, :complete, [request], _timeout ->
+      stub_handler_calls(fn ^project, ^handler, :complete, [request] ->
         send(self(), {:request, request})
         {:ok, [%{label: "user.created", kind: :value}]}
       end)
 
-      assert {:augment, [{%Candidate.Generic{label: "user.created"}, []}], true, []} =
+      assert %Result{
+               mode: :augment,
+               candidates: [%Candidate.Generic{label: "user.created"}],
+               incomplete?: true
+             } =
                complete(project, "My.Events.subscribe(\"user.cr|\")")
 
       assert_received {:request, %{context: :string, hint: "user.cr"}}
@@ -195,14 +212,19 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         )
       ])
 
-      patch(EngineApi, :call_handler, {:ok, [%{label: "context_name", kind: :field}]})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, [%{label: "context_name", kind: :field}]}
+      end)
 
-      assert {:augment,
-              [
-                {%Candidate.Function{name: "coalesce", arity: 2}, []},
-                {%Candidate.Function{name: "nullif", arity: 2}, []},
-                {%Candidate.Generic{label: "context_name"}, []}
-              ], true, []} = complete(project, "My.Query.from(user in Account, where: |")
+      assert %Result{
+               mode: :augment,
+               candidates: [
+                 %Candidate.Function{name: "coalesce", arity: 2},
+                 %Candidate.Function{name: "nullif", arity: 2},
+                 %Candidate.Generic{label: "context_name"}
+               ],
+               incomplete?: true
+             } = complete(project, "My.Query.from(user in Account, where: |")
     end
 
     test "keeps the scope entries when a handler returns an empty override", %{
@@ -214,9 +236,15 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         )
       ])
 
-      patch(EngineApi, :call_handler, {:ok, %{mode: :override, incomplete?: false, items: []}})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{mode: :override, incomplete?: false, items: []}}
+      end)
 
-      assert {:override, [{%Candidate.Function{name: "coalesce", arity: 2}, []}], true, []} =
+      assert %Result{
+               mode: :override,
+               candidates: [%Candidate.Function{name: "coalesce", arity: 2}],
+               incomplete?: true
+             } =
                complete(project, "My.Query.from(user in Account, where: coa|")
     end
 
@@ -236,11 +264,11 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         )
       ])
 
-      patch(EngineApi, :call_handler, fn
-        ^project, ^first, :complete, [_request], _timeout ->
+      stub_handler_calls(fn
+        ^project, ^first, :complete, [_request] ->
           {:ok, [%{label: "first", kind: :field}, %{label: "shared", kind: :field}]}
 
-        ^project, ^second, :complete, [_request], _timeout ->
+        ^project, ^second, :complete, [_request] ->
           {:ok,
            %{
              mode: :override,
@@ -248,18 +276,21 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
              items: [%{label: "shared", kind: :field}, %{label: "second", kind: :field}]
            }}
 
-        ^project, ^hover_provider, :provide, [_request], _timeout ->
+        ^project, ^hover_provider, :provide, [_request] ->
           send(self(), :called_hover_handler)
           {:ok, []}
       end)
 
-      assert {:override,
-              [
-                {%Candidate.Generic{label: "first"}, []},
-                {%Candidate.Generic{label: "shared"}, []},
-                {%Candidate.Generic{label: "shared"}, []},
-                {%Candidate.Generic{label: "second"}, []}
-              ], true, []} = complete(project, "My.Query.from(user in Account, where: value|")
+      assert %Result{
+               mode: :override,
+               candidates: [
+                 %Candidate.Generic{label: "first"},
+                 %Candidate.Generic{label: "shared"},
+                 %Candidate.Generic{label: "shared"},
+                 %Candidate.Generic{label: "second"}
+               ],
+               incomplete?: true
+             } = complete(project, "My.Query.from(user in Account, where: value|")
 
       refute_received :called_hover_handler
     end
@@ -271,9 +302,12 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         )
       ])
 
-      patch(EngineApi, :call_handler, {:error, "handler failed"})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:error, "handler failed"}
+      end)
 
-      assert :ignore = complete(project, "My.Query.from(user in Account, where: user.na|")
+      assert %Result{mode: :ignore} =
+               complete(project, "My.Query.from(user in Account, where: user.na|")
     end
 
     test "keeps the items of the other handlers when one fails", %{project: project} do
@@ -286,19 +320,22 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         )
       ])
 
-      patch(EngineApi, :call_handler, fn
-        _project, ^failing, :complete, [_request], _timeout ->
+      stub_handler_calls(fn
+        _project, ^failing, :complete, [_request] ->
           {:error, "timed out after 10000 ms"}
 
-        _project, ^working, :complete, [_request], _timeout ->
+        _project, ^working, :complete, [_request] ->
           {:ok, [%{label: "name", kind: :field}]}
       end)
 
-      assert {:augment,
-              [
-                {%Candidate.Function{name: "coalesce"}, []},
-                {%Candidate.Generic{label: "name"}, []}
-              ], true, []} =
+      assert %Result{
+               mode: :augment,
+               candidates: [
+                 %Candidate.Function{name: "coalesce"},
+                 %Candidate.Generic{label: "name"}
+               ],
+               incomplete?: true
+             } =
                complete(project, "My.Query.from(user in Account, where: |")
     end
 
@@ -307,16 +344,14 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document(expert: %{facets: %{completion: [{unique_module("Limit"), :complete, 1}]}})
       ])
 
-      patch(
-        EngineApi,
-        :call_handler,
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
         {:ok, for(index <- 0..500, do: %{label: "item-#{index}", kind: :value})}
-      )
+      end)
 
-      assert {:augment, items, true, []} =
+      assert %Result{mode: :augment, candidates: items, incomplete?: true} =
                complete(project, "My.Query.from(user in Account, where: user.na|")
 
-      assert Enum.map(items, fn {item, []} -> item.label end) ==
+      assert Enum.map(items, & &1.label) ==
                for(index <- 0..499, do: "item-#{index}")
     end
 
@@ -331,9 +366,11 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document(expert: %{facets: %{completion: [{handler, :complete, 1}]}})
       ])
 
-      patch(EngineApi, :call_handler, {:ok, [%{label: "name", kind: :field}, %{label: :invalid}]})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, [%{label: "name", kind: :field}, %{label: :invalid}]}
+      end)
 
-      assert {:ignore, log} =
+      assert {%Result{mode: :ignore}, log} =
                with_log(fn ->
                  complete(project, "My.Query.from(user in Account, where: user.na|")
                end)
@@ -351,16 +388,16 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document(expert: %{facets: %{hover: [{first, :hover, 1}, {second, :hover, 1}]}})
       ])
 
-      patch(EngineApi, :call_handler, fn
-        ^project, ^first, :hover, [request], _timeout ->
+      stub_handler_calls(fn
+        ^project, ^first, :hover, [request] ->
           send(self(), {:request, request})
           {:ok, "First hover"}
 
-        ^project, ^second, :hover, [_request], _timeout ->
+        ^project, ^second, :hover, [_request] ->
           {:ok, nil}
       end)
 
-      source = "My.Query.from(user in Account, where: coal|esce(user.name, 0))"
+      source = ~s{My.Query.from(user in Account, where: "é" <> coal|esce(user.name, 0))}
 
       assert [{"First hover", range}, {"Returns the first non-null value.", range}] =
                hover(project, source)
@@ -369,8 +406,8 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
                        %{
                          identifier: "coalesce",
                          range: %{
-                           start: %{line: 1, character: 39},
-                           end: %{line: 1, character: 47}
+                           start: %{line: 1, character: 47},
+                           end: %{line: 1, character: 55}
                          },
                          semantic: %{scope: :expressions}
                        }}
@@ -378,26 +415,31 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
   end
 
   describe "hover where Elixir reads no identifier" do
-    test "sends no identifier and takes the range of the handler", %{project: project} do
+    test "converts a handler range from codepoint columns", %{project: project} do
       put_documents(project, [sigil_document(hover: [{SigilHandler, :hover, 1}])])
 
-      patch(EngineApi, :call_handler, fn _project, SigilHandler, :hover, [request], _timeout ->
+      stub_handler_calls(fn _project, SigilHandler, :hover, [request] ->
         send(self(), {:request, request})
-        range = %{start: %{line: 3, character: 10}, end: %{line: 3, character: 16}}
+        range = %{start: %{line: 3, character: 13}, end: %{line: 3, character: 19}}
         {:ok, %{contents: "Renders a button.", range: range}}
       end)
 
       source = ~S'''
       defmodule MyWeb.Page do
         def render(assigns) do
-          ~H"<.but|ton />"
+          ~H"é <.but|ton />"
         end
       end
       '''
 
       assert [{"Renders a button.", range}] = hover(project, source)
-      assert {range.start.line, range.start.character} == {3, 10}
-      assert {range.end.line, range.end.character} == {3, 16}
+      assert {range.start.line, range.start.character} == {3, 12}
+      assert {range.end.line, range.end.character} == {3, 18}
+      assert {:ok, lsp_range} = Expert.Protocol.Conversions.to_lsp(range)
+
+      assert {lsp_range.start.line, lsp_range.start.character, lsp_range.end.character} ==
+               {2, 12, 18}
+
       assert_received {:request, %{identifier: nil, range: nil}}
     end
   end
@@ -416,11 +458,9 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
 
       range = %{start: %{line: 2, character: 3}, end: %{line: 2, character: 3}}
 
-      patch(
-        EngineApi,
-        :call_handler,
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
         {:ok, [%{path: path, range: range}]}
-      )
+      end)
 
       source = ~S'''
       defmodule MyWeb.Page do
@@ -453,22 +493,65 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
     test "returns the entity of a handler with its range", %{project: project} do
       range = %{start: %{line: 3, character: 12}, end: %{line: 3, character: 18}}
       entity = %{kind: :function, module: MyWeb.Helpers, name: :format, arity: 1}
-      patch(EngineApi, :call_handler, {:ok, %{entity: entity, range: range}})
+
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{entity: entity, range: range}}
+      end)
 
       assert {:entity, ^entity, resolved_range} = resolve(project, @source)
       assert {resolved_range.start.character, resolved_range.end.character} == {12, 18}
     end
 
     test "returns the delegation of a handler", %{project: project} do
-      patch(EngineApi, :call_handler, {:ok, %{delegate: %{source: "format(@date)"}}})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{delegate: %{source: "format(@date)"}}}
+      end)
 
       assert {:delegate, %{source: "format(@date)"}} = resolve(project, @source)
     end
 
     test "ignores an entity outside the spec", %{project: project} do
-      patch(EngineApi, :call_handler, {:ok, %{entity: {:call, MyWeb.Helpers, :format, 1}}})
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{entity: {:call, MyWeb.Helpers, :format, 1}}}
+      end)
 
       assert :ignore = resolve(project, @source)
+    end
+  end
+
+  describe "documents at the cursor" do
+    test "reads only the documents whose contexts can apply", %{project: project} do
+      query = query_document([])
+      template = language_document("eex", unique_module("Template"))
+      sigil = sigil_document(SigilHandler)
+
+      other = %{
+        contexts: [%{mfa: {My.Other, :run, 1}, argument: 0, scope: :options}],
+        scopes: %{options: %{entries: []}}
+      }
+
+      put_documents(project, [query, template, sigil, other])
+      env = env(project, "My.Query.from(user in User, where: |)")
+
+      assert {:ok, documents} =
+               SemanticMetadata.documents_at(env, Ast.cursor_path(env.analysis, env.position))
+
+      assert Enum.sort(documents) == Enum.sort([query, sigil])
+    end
+
+    test "reads no documents in a comment", %{project: project} do
+      put_documents(project, [query_document([])])
+      patch(SemanticMetadata, :documents_at, fn _env, _cursor_path -> flunk("read documents") end)
+
+      assert %Result{mode: :ignore} = complete(project, "# My.Query.from(user in User, where: |)")
+    end
+  end
+
+  describe "records" do
+    test "reports indexed metadata read failures", %{project: project} do
+      patch(Store, :prefix, fn ^project, _prefix, _opts -> {:error, :unavailable} end)
+
+      assert {:error, :unavailable} = SemanticMetadata.records(project)
     end
   end
 
@@ -484,36 +567,23 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       tmp_dir: tmp_dir
     } do
       path = Path.join(tmp_dir, "router.ex")
-      source = ~s(get "/", PageController, :index\nget "/a", PageController, :show\n)
+      source = ~s(My.Router.get "/", PageController, :index\nMy.Router.get "/a", Page, :show\n)
       File.write!(path, source)
+      index_source(project, path, source)
       handler = unique_module("References")
       put_documents(project, [references_document(handler)])
-      document = Document.new(Document.Path.ensure_uri(path), source, 1)
 
-      calls =
-        for line <- [2, 1] do
-          start = Position.new(document, line, 1)
-          range = Range.new(start, Position.new(document, line, 4))
-          Entry.reference(path, Block.root(), "My.Router.get/3", {:function, :usage}, range, :app)
-        end
-
-      patch(Store, :exact_many, fn ^project, ["My.Router.get/3"], [subtype: :reference] ->
-        {:ok, calls}
-      end)
-
-      patch(EngineApi, :call_handler, fn ^project, ^handler, :references, [request], _timeout ->
+      stub_handler_calls(fn ^project, ^handler, :references, [request] ->
         send(self(), {:request, request})
-        range = %{start: %{line: 1, character: 10}, end: %{line: 1, character: 24}}
+        range = %{start: %{line: 1, character: 20}, end: %{line: 1, character: 34}}
         {:ok, [%{path: path, range: range}]}
       end)
 
       assert [%Location{range: range} = location] =
-               Integrations.references(project, {:module, MyWeb.PageController})
+               SemanticMetadata.references(project, {:module, MyWeb.PageController})
 
-      assert Location.uri(location) == document.uri
-      assert {range.start.character, range.end.character} == {10, 24}
-
-      call = &%{position: %{line: &1, character: 1}, target: {My.Router, :get, 3}}
+      assert Location.uri(location) == Document.Path.ensure_uri(path)
+      assert {range.start.character, range.end.character} == {20, 34}
 
       assert_received {:request,
                        %{
@@ -523,59 +593,40 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
 
       assert Forge.Path.normalize(request_path) == Forge.Path.normalize(path)
 
-      assert calls == [call.(1), call.(2)]
+      assert [%{position: %{line: 1}}, %{position: %{line: 2}}] = calls
+      assert Enum.all?(calls, &(&1.target == {My.Router, :get, 3}))
     end
 
     test "calls no handler when no file calls the functions of its contexts", %{
       project: project
     } do
       put_documents(project, [references_document(unique_module("Unused"))])
-      patch(Store, :exact_many, {:ok, []})
+      stub_handler_calls(fn _project, _module, _function, _arguments -> flunk("called") end)
 
-      patch(EngineApi, :call_handler, fn _project, _module, _function, _arguments, _timeout ->
-        flunk("called")
-      end)
-
-      assert [] = Integrations.references(project, {:module, MyWeb.Page})
+      assert [] = SemanticMetadata.references(project, {:module, MyWeb.Page})
     end
 
     test "calls no handler without a document that registers one", %{project: project} do
       put_documents(project, [sigil_document(resolve: [{SigilHandler, :resolve, 1}])])
+      stub_handler_calls(fn _project, _module, _function, _arguments -> flunk("called") end)
 
-      patch(EngineApi, :call_handler, fn _project, _module, _function, _arguments, _timeout ->
-        flunk("called")
-      end)
-
-      assert [] = Integrations.references(project, {:module, MyWeb.Page})
+      assert [] = SemanticMetadata.references(project, {:module, MyWeb.Page})
     end
 
     test "sends a call as a macro when its module exports that macro", %{project: project} do
       handler = unique_module("MacroReferences")
       module = unique_module("Router")
       :ok = ModuleRegistry.put(project, module, "/router.beam", :test, [{:"MACRO-get", 4}])
+      index_source(project, "/router.ex", ~s(My.Router.get "/", PageController, :index\n))
       put_documents(project, [references_document(handler)])
-      document = Document.new("file:///router.ex", "get \"/\", PageController, :index\n", 1)
-      range = Range.new(Position.new(document, 1, 1), Position.new(document, 1, 4))
 
-      call =
-        Entry.reference(
-          "/router.ex",
-          Block.root(),
-          "My.Router.get/3",
-          {:function, :usage},
-          range,
-          :app
-        )
-
-      patch(Store, :exact_many, {:ok, [call]})
-
-      patch(EngineApi, :call_handler, fn ^project, ^handler, :references, [request], _timeout ->
+      stub_handler_calls(fn ^project, ^handler, :references, [request] ->
         send(self(), {:entity, request.entity})
         {:ok, []}
       end)
 
-      Integrations.references(project, {:call, module, :get, 3})
-      Integrations.references(project, {:call, module, :get, 4})
+      SemanticMetadata.references(project, {:call, module, :get, 3})
+      SemanticMetadata.references(project, {:call, module, :get, 4})
 
       assert_received {:entity, %{kind: :macro, module: ^module, name: :get, arity: 3}}
       assert_received {:entity, %{kind: :function, module: ^module, name: :get, arity: 4}}
@@ -595,8 +646,8 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         )
       ])
 
-      patch(EngineApi, :call_handler, fn
-        ^project, ^first, :signatures, [request], _timeout ->
+      stub_handler_calls(fn
+        ^project, ^first, :signatures, [request] ->
           send(self(), {:request, request})
 
           {:ok,
@@ -609,7 +660,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
              }
            ]}
 
-        ^project, ^second, :signatures, [_request], _timeout ->
+        ^project, ^second, :signatures, [_request] ->
           {:ok, [%{label: "nullif(left, right)", parameters: ["left", "right"]}]}
       end)
 
@@ -645,7 +696,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document(expert: %{facets: %{signature_help: [{handler, :signatures, 1}]}})
       ])
 
-      patch(EngineApi, :call_handler, fn _project, ^handler, :signatures, [_request], _ ->
+      stub_handler_calls(fn _project, ^handler, :signatures, [_request] ->
         {:ok, [%{label: "coalesce(value)", parameters: ["value"], active_parameter: 1}]}
       end)
 
@@ -657,7 +708,6 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
     setup do
       patch(EngineApi, :complete, [])
       patch(EngineApi, :project_apps, [])
-      patch(Store, :exact_many, {:ok, []})
       patch(Hex, :project_file?, false)
       :ok
     end
@@ -665,7 +715,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
     test "sends the imports at the cursor to a sigil handler", %{project: project} do
       put_documents(project, [sigil_document(SigilHandler)])
 
-      patch(EngineApi, :call_handler, fn _project, SigilHandler, :complete, [request], _ ->
+      stub_handler_calls(fn _project, SigilHandler, :complete, [request] ->
         send(self(), {:request, request})
 
         {:ok,
@@ -694,7 +744,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
 
       put_documents(project, [language_document("elixir", handler)])
 
-      patch(EngineApi, :call_handler, fn _project, ^handler, :complete, [request], _timeout ->
+      stub_handler_calls(fn _project, ^handler, :complete, [request] ->
         send(self(), :called)
         {:ok, %{delegate: %{source: request.source}}}
       end)
@@ -712,9 +762,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
         query_document([])
       ])
 
-      patch(
-        EngineApi,
-        :call_handler,
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
         {:ok,
          %{
            delegate: %{
@@ -722,7 +770,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
                "   import My.Query, only: [from: 2] ; \n    from user in User, where: coal ; "
            }
          }}
-      )
+      end)
 
       source = "<% import My.Query, only: [from: 2] %>\n<%= from user in User, where: coal| %>"
 
@@ -738,12 +786,77 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
              } = complete_document(project, source, "lib/query.eex")
     end
 
+    test "keeps the cursor at its codepoint column in a delegated source", %{project: project} do
+      put_documents(project, [
+        language_document("eex", unique_module("Template")),
+        query_document([])
+      ])
+
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{delegate: %{source: "            My.Query.from(user in User, where: coal ; "}}}
+      end)
+
+      line = "<p>é</p><%= My.Query.from(user in User, where: coal %>"
+      document = Document.new("file:///lib/query.eex", line, 1)
+      prefix = "<p>é</p><%= My.Query.from(user in User, where: coal"
+      lsp_position = %GenLSP.Structures.Position{line: 0, character: String.length(prefix)}
+      {:ok, position} = Expert.Protocol.Conversions.to_elixir(lsp_position, document)
+
+      assert %CompletionList{items: [%CompletionItem{label: "coalesce(arg1, arg2)"} = item]} =
+               Completion.complete(
+                 project,
+                 Ast.analyze(document),
+                 position,
+                 %CompletionContext{trigger_kind: CompletionTriggerKind.invoked()}
+               )
+
+      assert {:ok, %GenLSP.Structures.TextEdit{range: range}} =
+               Expert.Protocol.Convert.to_lsp(item.text_edit)
+
+      assert {range.start.character, range.end.character} ==
+               {String.length(prefix) - 4, String.length(prefix)}
+    end
+
+    test "sends the editor the range of a delegated edit in UTF-16", %{project: project} do
+      put_documents(project, [
+        language_document("eex", unique_module("Template")),
+        query_document([])
+      ])
+
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{delegate: %{source: "             My.Query.from(user in User, where: coal ; "}}}
+      end)
+
+      line = "<p>🎸🎸</p><%= My.Query.from(user in User, where: coal %>"
+      document = Document.new("file:///lib/query.eex", line, 1)
+      prefix = "<p>🎸🎸</p><%= My.Query.from(user in User, where: coal"
+      utf16 = prefix |> :unicode.characters_to_binary(:utf8, :utf16) |> byte_size() |> div(2)
+      lsp_position = %GenLSP.Structures.Position{line: 0, character: utf16}
+      {:ok, position} = Expert.Protocol.Conversions.to_elixir(lsp_position, document)
+
+      assert %CompletionList{items: [%CompletionItem{} = item]} =
+               Completion.complete(
+                 project,
+                 Ast.analyze(document),
+                 position,
+                 %CompletionContext{trigger_kind: CompletionTriggerKind.invoked()}
+               )
+
+      assert {:ok, %GenLSP.Structures.TextEdit{range: range}} =
+               Expert.Protocol.Convert.to_lsp(item.text_edit)
+
+      assert {range.start.character, range.end.character} == {utf16 - 4, utf16}
+    end
+
     test "returns no items where a handler overrides completion with no items", %{
       project: project
     } do
       put_documents(project, [language_document("eex", unique_module("Template"))])
       patch(EngineApi, :complete, [%Candidate.Generic{label: "ordinary"}])
-      patch(EngineApi, :call_handler, {:ok, %{mode: :override, incomplete?: false, items: []}})
+
+      stub_handler_calls(fn _project, _module, _function, _arguments ->
+        {:ok, %{mode: :override, incomplete?: false, items: []}}
+      end)
 
       assert %CompletionList{items: []} = complete_document(project, "text|", "lib/query.eex")
     end
@@ -779,6 +892,52 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       assert {range.end.line, range.end.character} == {position.line, position.character}
     end
 
+    test "counts the characters of positions in codepoints", %{project: project} do
+      put_documents(project, [sigil_document(SigilHandler)])
+
+      stub_handler_calls(fn _project, SigilHandler, :complete, [request] ->
+        send(self(), {:request, request})
+        %{line: line, character: character} = request.position
+
+        range = %{
+          start: %{line: line, character: character - 2},
+          end: %{line: line, character: character}
+        }
+
+        {:ok,
+         %{
+           mode: :override,
+           incomplete?: false,
+           items: [%{label: "button", kind: :function, range: range}]
+         }}
+      end)
+
+      source = ~S'''
+      defmodule MyWeb.Page do
+        def render(assigns) do
+          ~H"<p>é</p><.bu"
+        end
+      end
+      '''
+
+      document = Document.new("file:///lib/page.ex", source, 1)
+      prefix = ~S(    ~H"<p>é</p><.bu)
+      lsp_position = %GenLSP.Structures.Position{line: 2, character: String.length(prefix)}
+      {:ok, position} = Expert.Protocol.Conversions.to_elixir(lsp_position, document)
+
+      assert [%CompletionItem{text_edit: %Document.Changes{edits: %Document.Edit{range: range}}}] =
+               Completion.complete(
+                 project,
+                 Ast.analyze(document),
+                 position,
+                 %CompletionContext{trigger_kind: CompletionTriggerKind.invoked()}
+               )
+
+      assert_received {:request, %{position: %{line: 3, character: 20}, sigil: sigil}}
+      assert sigil.content.start == %{line: 3, character: 8}
+      assert {range.start.character, range.end.character} == {18, 20}
+    end
+
     test "ignores the result of a handler whose item range spans lines", %{project: project} do
       {_position, result} =
         complete_tag_name(project, fn %{position: %{line: line}} ->
@@ -793,7 +952,7 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
   defp complete_tag_name(project, items_for) do
     put_documents(project, [sigil_document(SigilHandler)])
 
-    patch(EngineApi, :call_handler, fn _project, SigilHandler, :complete, [request], _timeout ->
+    stub_handler_calls(fn _project, SigilHandler, :complete, [request] ->
       {:ok, %{mode: :override, incomplete?: false, items: items_for.(request)}}
     end)
 
@@ -818,6 +977,12 @@ defmodule Expert.Integrations.SemanticMetadata.HandlersTest do
       position,
       %CompletionContext{trigger_kind: CompletionTriggerKind.invoked()}
     )
+  end
+
+  defp stub_handler_calls(stub) do
+    patch(EngineApi, :call_handlers, fn project, handlers, arguments ->
+      for {module, function} <- handlers, do: stub.(project, module, function, arguments)
+    end)
   end
 
   defp language_document(language_id, handler) do

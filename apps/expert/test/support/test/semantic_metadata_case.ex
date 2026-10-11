@@ -3,10 +3,12 @@ defmodule Expert.Test.SemanticMetadataCase do
   use ExUnit.CaseTemplate
 
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Integrations.SemanticMetadata.Indexer
   alias Expert.Search.Indexer.ModuleRegistry
+  alias Expert.Search.Indexer.Source
   alias Expert.Search.Store
+  alias Expert.Search.Store.Backends.Sqlite
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
@@ -23,9 +25,21 @@ defmodule Expert.Test.SemanticMetadataCase do
       import unquote(__MODULE__)
 
       setup do
-        project = project()
+        {:ok, _} = Application.ensure_all_started(:briefly)
+        {:ok, root} = Briefly.create(directory: true)
+        project = root |> Forge.Document.Path.to_uri() |> Forge.Project.new()
         start_supervised!({Expert.Project.Store, []})
         start_supervised!({ModuleRegistry, project})
+
+        start_supervised!(
+          {Sqlite, [project, runtime_versions: %{erlang: "test-erlang", elixir: "test-elixir"}]}
+        )
+
+        start_supervised!({Store, [project, Sqlite]})
+        {:ok, supervisor} = ExUnit.fetch_test_supervisor()
+        # Delete the directory after the supervised SQLite connection has closed.
+        :ok = Briefly.give_away(root, supervisor)
+        :ok = Store.enable(project)
 
         patch(EngineApi, :call, fn ^project, Analysis, :cursor_env, arguments ->
           apply(Analysis, :cursor_env, arguments)
@@ -40,12 +54,12 @@ defmodule Expert.Test.SemanticMetadataCase do
     attributes = [elixir_semantic_metadata: Enum.map(documents, &{@version, &1})]
     metadata = %{module: unique_module("Metadata"), attributes: attributes}
     entries = Indexer.index(project, "", metadata, "/lib.ex")
+    Store.insert(project, entries)
+  end
 
-    Patch.patch(Store, :prefix, fn ^project, prefix, _constraints ->
-      {:ok, Enum.filter(entries, &String.starts_with?(&1.subject, prefix))}
-    end)
-
-    :ok
+  def index_source(project, path, source) do
+    {:ok, entries} = Source.index(path, source)
+    Store.insert(project, entries)
   end
 
   def compile_metadata!(documents) do
@@ -100,24 +114,25 @@ defmodule Expert.Test.SemanticMetadataCase do
     do: Module.concat(__MODULE__, "#{name}#{System.unique_integer([:positive])}")
 
   def complete(project, source, opts \\ []),
-    do: project |> env(source, opts) |> Integrations.complete()
+    do: project |> env(source, opts) |> SemanticMetadata.complete()
 
-  def hover(project, source, opts \\ []), do: project |> env(source, opts) |> Integrations.hover()
-
-  def definition(project, source, opts \\ []),
-    do: project |> env(source, opts) |> Integrations.definition()
-
-  def resolve(project, source, opts \\ []),
-    do: project |> env(source, opts) |> Integrations.resolve()
+  def hover(project, source, opts \\ []), do: request(:hover, project, source, opts)
+  def definition(project, source, opts \\ []), do: request(:definition, project, source, opts)
+  def resolve(project, source, opts \\ []), do: request(:resolve, project, source, opts)
 
   def signature_help(project, source, opts \\ []),
-    do: project |> env(source, opts) |> Integrations.signature_help()
+    do: request(:signature_help, project, source, opts)
 
   def env(project, source, opts \\ []) do
     {position, document} = CursorSupport.pop_cursor(source, Keyword.put_new(opts, :as, :document))
     {:ok, env} = Env.new(project, Ast.analyze(document), position)
-    cursor_env = EngineApi.cursor_env(project, document, position)
-    %Env{env | analysis: %{env.analysis | cursor_env: cursor_env}}
+    env
+  end
+
+  defp request(function, project, source, opts) do
+    env = env(project, source, opts)
+    cursor = SemanticMetadata.cursor(project, env.analysis, env.position)
+    apply(SemanticMetadata, function, [cursor])
   end
 
   defp unload(module) do

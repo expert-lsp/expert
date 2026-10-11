@@ -1,7 +1,13 @@
 defmodule Engine.ExtensionHandlers do
   @moduledoc false
 
-  def call(module, function, arguments, timeout) do
+  @timeout 10_000
+
+  def call_all(handlers, arguments, timeout \\ @timeout) do
+    for {module, function} <- handlers, do: call(module, function, arguments, timeout)
+  end
+
+  defp call(module, function, arguments, timeout) do
     task = Task.Supervisor.async_nolink(__MODULE__.Supervisor, module, function, arguments)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
