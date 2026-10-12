@@ -223,6 +223,23 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, [[7]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
+
+    test "configures memory-mapped I/O on prepare", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      spy(Exqlite.Basic)
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+
+      assert_called(Exqlite.Basic.exec(_, "PRAGMA mmap_size = 268435456", []))
+    end
   end
 
   describe "replace_all/2" do

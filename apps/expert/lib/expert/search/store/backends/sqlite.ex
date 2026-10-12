@@ -22,6 +22,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @sqlite_variable_limit 32_766
   @insert_batch_size 4_000
   @busy_timeout_ms Application.compile_env(:expert, :search_store_sqlite_busy_timeout_ms, 5_000)
+  @mmap_size Application.compile_env(:expert, :search_store_sqlite_mmap_size, 268_435_456)
 
   defmodule State do
     defstruct [:conn, :database_path, :project, :runtime_versions]
@@ -629,7 +630,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp configure_database(%State{} = state) do
     with :ok <- exec(state, "PRAGMA busy_timeout = #{@busy_timeout_ms}"),
-         :ok <- exec(state, "PRAGMA synchronous = NORMAL") do
+         :ok <- exec(state, "PRAGMA synchronous = NORMAL"),
+         :ok <- exec(state, "PRAGMA mmap_size = #{@mmap_size}") do
       exec(state, "PRAGMA case_sensitive_like = ON")
     end
   end
