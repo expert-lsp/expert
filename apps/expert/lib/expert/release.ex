@@ -51,6 +51,8 @@ defmodule Expert.Release do
       File.cp_r!(source, dest_path)
     end
 
+    File.rm_rf!(Path.join([dest, "apps", "forge", "lib", "test"]))
+
     for exs_file <- Path.wildcard(root_exs) do
       dest_path = Path.join([dest, Path.basename(exs_file)])
       File.cp_r!(exs_file, dest_path)

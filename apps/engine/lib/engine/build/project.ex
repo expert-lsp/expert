@@ -144,10 +144,5 @@ defmodule Engine.Build.Project do
 
     Progress.report(token, message: "mix loadconfig")
     Mix.Task.run(:loadconfig)
-
-    if not Elixir.Features.compile_keeps_current_directory?() do
-      Progress.report(token, message: "mix deps.compile")
-      Mix.Task.run("deps.safe_compile", ~w(--skip-umbrella-children))
-    end
   end
 end
