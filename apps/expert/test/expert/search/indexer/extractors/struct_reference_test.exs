@@ -4,7 +4,7 @@ defmodule Expert.Search.Indexer.Extractors.StructReferenceTest do
   import ExUnit.CaptureLog
 
   alias Expert.Search.Indexer.Extractors.StructReference
-  alias Forge.Search.Subject
+  alias Expert.Search.Subject
 
   def index(source) do
     do_index(source, fn entry ->

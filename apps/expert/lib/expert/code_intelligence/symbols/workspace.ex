@@ -1,4 +1,4 @@
-defmodule Forge.CodeIntelligence.Symbols.Workspace do
+defmodule Expert.CodeIntelligence.Symbols.Workspace do
   alias Forge.Document
   alias Forge.Formats
   alias Forge.Search.Indexer.Entry

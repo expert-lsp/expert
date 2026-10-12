@@ -2,10 +2,10 @@ defmodule Expert.Provider.Handlers.WorkspaceSymbol do
   @behaviour Expert.Provider.Handler
 
   alias Expert.CodeIntelligence.Symbols
+  alias Expert.CodeIntelligence.Symbols.Workspace
   alias Expert.Configuration
   alias Expert.Configuration.WorkspaceSymbols
   alias Expert.Project.Store
-  alias Forge.CodeIntelligence.Symbols.Workspace
   alias Forge.Project
   alias GenLSP.Enumerations.SymbolKind
   alias GenLSP.Requests

@@ -3,11 +3,11 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
   alias Expert.Search.Indexer.Extractors.FunctionDefinition
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.Source.Reducer
+  alias Expert.Search.Subject
   alias Forge.Ast
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Subject
 
   require Logger
 

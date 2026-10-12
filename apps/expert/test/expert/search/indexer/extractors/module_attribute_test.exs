@@ -1,7 +1,7 @@
 defmodule Expert.Search.Indexer.Extractors.ModuleAttributeTest do
   use Expert.Test.ExtractorCase
 
-  alias Forge.Search.Subject
+  alias Expert.Search.Subject
 
   def index(source) do
     do_index(source, fn entry ->

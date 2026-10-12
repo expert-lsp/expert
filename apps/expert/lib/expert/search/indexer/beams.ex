@@ -4,11 +4,11 @@ defmodule Expert.Search.Indexer.Beams do
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
+  alias Expert.Search.Subject
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
-  alias Forge.Search.Subject
 
   @beam_index_concurrency 16
   @beam_index_chunk_bytes 128 * 1024

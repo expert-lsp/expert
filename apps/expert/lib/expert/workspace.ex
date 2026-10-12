@@ -1,4 +1,4 @@
-defmodule Forge.Workspace do
+defmodule Expert.Workspace do
   @moduledoc """
   Represents the editor's workspace, which may contain one or more root folders.
   """

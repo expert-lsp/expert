@@ -6,9 +6,9 @@ defmodule Expert.Document.LookupTest do
   alias Expert.Document.Context
   alias Expert.Document.Lookup
   alias Expert.Project.Store
+  alias Expert.Workspace
   alias Forge.Document
   alias Forge.Project
-  alias Forge.Workspace
 
   defp make_document(path) do
     %Document{

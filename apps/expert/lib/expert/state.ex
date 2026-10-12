@@ -54,12 +54,12 @@ defmodule Expert.State do
 
     folder_paths =
       Enum.map(normalized_folders, fn %Structures.WorkspaceFolder{uri: uri} ->
-        Forge.Workspace.folder_path_from_uri(uri)
+        Expert.Workspace.folder_path_from_uri(uri)
       end)
 
     folder_paths
-    |> Forge.Workspace.new()
-    |> Forge.Workspace.set_workspace()
+    |> Expert.Workspace.new()
+    |> Expert.Workspace.set_workspace()
 
     event.capabilities
     |> Configuration.new(client_name)
@@ -117,17 +117,18 @@ defmodule Expert.State do
           }
         }
       ) do
-    added_paths = Enum.map(added, fn %{uri: uri} -> Forge.Workspace.folder_path_from_uri(uri) end)
+    added_paths =
+      Enum.map(added, fn %{uri: uri} -> Expert.Workspace.folder_path_from_uri(uri) end)
 
     removed_paths =
-      Enum.map(removed, fn %{uri: uri} -> Forge.Workspace.folder_path_from_uri(uri) end)
+      Enum.map(removed, fn %{uri: uri} -> Expert.Workspace.folder_path_from_uri(uri) end)
 
-    workspace = Forge.Workspace.get_workspace() || Forge.Workspace.new([])
+    workspace = Expert.Workspace.get_workspace() || Expert.Workspace.new([])
 
     workspace
-    |> Forge.Workspace.add_folders(added_paths)
-    |> Forge.Workspace.remove_folders(removed_paths)
-    |> Forge.Workspace.set_workspace()
+    |> Expert.Workspace.add_folders(added_paths)
+    |> Expert.Workspace.remove_folders(removed_paths)
+    |> Expert.Workspace.set_workspace()
 
     added_projects =
       added
@@ -135,8 +136,8 @@ defmodule Expert.State do
       |> Enum.map(fn project -> Store.find_by_root_uri(project.root_uri) || project end)
 
     remaining_workspace_paths =
-      case Forge.Workspace.get_workspace() do
-        %Forge.Workspace{workspace_folders: workspace_folders} -> workspace_folders
+      case Expert.Workspace.get_workspace() do
+        %Expert.Workspace{workspace_folders: workspace_folders} -> workspace_folders
         _ -> []
       end
 
@@ -483,7 +484,7 @@ defmodule Expert.State do
         event.workspace_folders
 
       is_binary(event.root_uri) and event.root_uri != "" ->
-        path = Forge.Workspace.folder_path_from_uri(event.root_uri)
+        path = Expert.Workspace.folder_path_from_uri(event.root_uri)
         [%Structures.WorkspaceFolder{uri: event.root_uri, name: Path.basename(path)}]
 
       true ->

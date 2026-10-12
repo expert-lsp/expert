@@ -6,12 +6,12 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.Source.Reducer
+  alias Expert.Search.Subject
   alias Forge.Ast
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
-  alias Forge.Search.Subject
 
   require Logger
 

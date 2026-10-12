@@ -1,5 +1,5 @@
 defmodule Expert.Clustering do
-  alias Forge.Workspace
+  alias Expert.Workspace
 
   @spec start_net_kernel() :: {:ok, pid()} | {:error, term()}
   def start_net_kernel do
@@ -31,7 +31,7 @@ defmodule Expert.Clustering do
   def manager_node_name do
     case Workspace.get_workspace() do
       %Workspace{} = workspace ->
-        workspace_name = Forge.Workspace.name(workspace)
+        workspace_name = Expert.Workspace.name(workspace)
 
         sanitized = Forge.Node.sanitize(workspace_name)
 

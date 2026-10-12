@@ -12,11 +12,11 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Store
+  alias Expert.Search.Subject
   alias Forge.Ast.Analysis
   alias Forge.Document
   alias Forge.Document.Location
   alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Subject
   alias GenLSP.Requests.TextDocumentReferences
   alias GenLSP.Structures
 

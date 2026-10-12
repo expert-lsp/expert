@@ -55,7 +55,7 @@ defmodule ExpertTest do
   setup do
     # Clear any leftover configuration from previous tests
     :persistent_term.erase(Expert.Configuration)
-    Forge.Workspace.set_workspace(nil)
+    Expert.Workspace.set_workspace(nil)
 
     # window/logMessage is emitted by a Logger handler; keep :info enabled
     # so integration assertions can observe those notifications.
@@ -65,7 +65,7 @@ defmodule ExpertTest do
     :logger.update_handler_config(:default, :level, :none)
 
     on_exit(fn ->
-      Forge.Workspace.set_workspace(nil)
+      Expert.Workspace.set_workspace(nil)
       Logger.configure(level: :none)
       :logger.update_handler_config(:default, :level, :all)
     end)
@@ -553,8 +553,8 @@ defmodule ExpertTest do
         "capabilities" => %{"workspace" => %{"workspaceFolders" => %{"supported" => true}}}
       })
 
-      assert %Forge.Workspace{workspace_folders: workspace_folders} =
-               Forge.Workspace.get_workspace()
+      assert %Expert.Workspace{workspace_folders: workspace_folders} =
+               Expert.Workspace.get_workspace()
 
       assert Enum.sort(workspace_folders) ==
                Enum.sort([
@@ -581,7 +581,7 @@ defmodule ExpertTest do
 
       assert_result(1, _)
 
-      Forge.Workspace.set_workspace(nil)
+      Expert.Workspace.set_workspace(nil)
 
       assert :ok =
                notify(
@@ -602,8 +602,8 @@ defmodule ExpertTest do
 
       assert_project_alive?(secondary_project)
 
-      assert %Forge.Workspace{workspace_folders: workspace_folders} =
-               Forge.Workspace.get_workspace()
+      assert %Expert.Workspace{workspace_folders: workspace_folders} =
+               Expert.Workspace.get_workspace()
 
       assert workspace_folders == [Forge.Project.root_path(secondary_project)]
       assert [project] = Expert.Project.Store.projects()

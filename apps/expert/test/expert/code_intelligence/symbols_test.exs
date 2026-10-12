@@ -6,10 +6,10 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
   import Forge.Test.RangeSupport
 
   alias Expert.CodeIntelligence.Symbols
+  alias Expert.CodeIntelligence.Symbols.Document
   alias Expert.EngineApi
   alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Indexer.Source
-  alias Forge.CodeIntelligence.Symbols.Document
   alias Forge.ProcessCache
 
   setup do

@@ -16,7 +16,7 @@ defmodule Expert.ExpertTest do
 
   setup do
     :persistent_term.erase(Expert.Configuration)
-    Forge.Workspace.set_workspace(nil)
+    Expert.Workspace.set_workspace(nil)
     with_patched_transport()
 
     # These tests call `Expert.handle_info/2` directly (bypassing `Expert.Application`),
@@ -34,7 +34,7 @@ defmodule Expert.ExpertTest do
 
     on_exit(fn ->
       :persistent_term.erase(Expert.Configuration)
-      Forge.Workspace.set_workspace(nil)
+      Expert.Workspace.set_workspace(nil)
       Logger.configure(level: :none)
       :logger.update_handler_config(:default, :level, :all)
     end)
@@ -255,8 +255,8 @@ defmodule Expert.ExpertTest do
 
     assert {:ok, _response, _state} = State.initialize(State.new(), request)
 
-    assert %Forge.Workspace{workspace_folders: []} =
-             Forge.Workspace.get_workspace()
+    assert %Expert.Workspace{workspace_folders: []} =
+             Expert.Workspace.get_workspace()
   end
 
   test "foldingRange request is served before the engine is initialized" do

@@ -1,9 +1,9 @@
 defmodule Expert.Search.Indexer.Extractors.StructReference do
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Source.Reducer
+  alias Expert.Search.Subject
   alias Forge.Ast
   alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Subject
 
   require Logger
 

@@ -5,10 +5,10 @@ defmodule Expert.Search.Indexer.Extractors.ModuleAttribute do
 
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Source.Reducer
+  alias Expert.Search.Subject
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Subject
 
   # Finds module attribute usages
   def extract({:@, _, [{attr_name, _, nil}]}, %Reducer{} = reducer) do

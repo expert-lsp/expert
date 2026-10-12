@@ -1,10 +1,10 @@
 defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
   alias Expert.Search.Indexer.Analyzer
   alias Expert.Search.Indexer.Source.Reducer
+  alias Expert.Search.Subject
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Subject
 
   @function_definitions [:def, :defp, :defmacro, :defmacrop]
 

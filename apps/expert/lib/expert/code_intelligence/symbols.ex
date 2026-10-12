@@ -1,9 +1,9 @@
 defmodule Expert.CodeIntelligence.Symbols do
+  alias __MODULE__, as: Symbols
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Store
   alias Forge.Ast
-  alias Forge.CodeIntelligence.Symbols
   alias Forge.Document
   alias Forge.Document.Range
   alias Forge.ProcessCache

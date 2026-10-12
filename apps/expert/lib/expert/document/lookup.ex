@@ -192,8 +192,8 @@ defmodule Expert.Document.Lookup do
   end
 
   defp workspace_boundary_path(document_path) do
-    case Forge.Workspace.get_workspace() do
-      %Forge.Workspace{workspace_folders: workspace_folders} when workspace_folders != [] ->
+    case Expert.Workspace.get_workspace() do
+      %Expert.Workspace{workspace_folders: workspace_folders} when workspace_folders != [] ->
         document_path = Path.expand(document_path)
 
         workspace_folders

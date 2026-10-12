@@ -7,6 +7,7 @@ defmodule Expert.CodeIntelligence.References do
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Store
+  alias Expert.Search.Subject
   alias Forge.Ast
   alias Forge.Ast.Analysis
   alias Forge.Document
@@ -15,7 +16,6 @@ defmodule Expert.CodeIntelligence.References do
   alias Forge.Document.Range
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
-  alias Forge.Search.Subject
 
   def references(
         %Project{} = project,

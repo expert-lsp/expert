@@ -21,7 +21,7 @@ defmodule Expert.Provider.Handlers.DocumentSymbols do
     {:ok, symbols}
   end
 
-  def to_response(%Forge.CodeIntelligence.Symbols.Document{} = root, %Document{} = document) do
+  def to_response(%Symbols.Document{} = root, %Document{} = document) do
     children =
       case root.children do
         list when is_list(list) ->

@@ -2,7 +2,7 @@ defmodule Expert.ClusteringTest do
   use ExUnit.Case
 
   alias Expert.Clustering
-  alias Forge.Workspace
+  alias Expert.Workspace
 
   describe "manager_node_name/0" do
     setup do
