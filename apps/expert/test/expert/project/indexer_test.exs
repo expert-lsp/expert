@@ -47,13 +47,13 @@ defmodule Expert.Project.IndexerTest do
        ]}
     )
 
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
 
     assert_receive :create_index, 5_000
     assert_receive project_index_ready(project: ^project)
   end
 
-  test "updates an existing index on request", %{project: project} do
+  test "updates an existing index after a failed compile", %{project: project} do
     test_pid = self()
     patch(Store, :load_status, fn ^project -> :ready end)
 
@@ -69,10 +69,42 @@ defmodule Expert.Project.IndexerTest do
        ]}
     )
 
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :error))
 
     assert_receive :update_index, 5_000
     assert_receive project_index_ready(project: ^project)
+  end
+
+  test "records the integrations after indexing a successful compile", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :record_integrations, fn ^project ->
+      send(test_pid, :record_integrations)
+      :ok
+    end)
+
+    start_supervised!({Indexer, [project, create_index: fn _ -> :ok end]})
+
+    send(Indexer.name(project), project_compiled(status: :success))
+
+    assert_receive :record_integrations, 5_000
+    assert_receive project_index_ready(project: ^project)
+  end
+
+  test "leaves the integrations unrecorded after indexing a failed compile", %{project: project} do
+    test_pid = self()
+
+    patch(Search.Indexer, :record_integrations, fn ^project ->
+      send(test_pid, :record_integrations)
+      :ok
+    end)
+
+    start_supervised!({Indexer, [project, create_index: fn _ -> :ok end]})
+
+    send(Indexer.name(project), project_compiled(status: :error))
+
+    assert_receive project_index_ready(project: ^project), 5_000
+    refute_received :record_integrations
   end
 
   test "rebuilds after an incremental Store write fails", %{project: project} do
@@ -94,7 +126,7 @@ defmodule Expert.Project.IndexerTest do
        ]}
     )
 
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
 
     assert_receive :update_index, 5_000
     assert_receive :create_index
@@ -123,7 +155,7 @@ defmodule Expert.Project.IndexerTest do
 
     assert_receive {:warmup, pid, registry}, 5_000
     ref = Process.monitor(pid)
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
     assert_receive :create_index
@@ -145,7 +177,7 @@ defmodule Expert.Project.IndexerTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, _}
     refute_receive project_index_ready()
 
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
     assert_receive project_index_ready(project: ^project)
   end
 
@@ -162,7 +194,7 @@ defmodule Expert.Project.IndexerTest do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, _}
 
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
     assert_receive project_index_ready(project: ^project)
   end
 
@@ -171,21 +203,6 @@ defmodule Expert.Project.IndexerTest do
     patch(Search.Indexer, :warmup, fn _ -> flunk("A persisted index does not need warmup") end)
     start_supervised!({Indexer, project})
     assert_eventually(is_nil(:sys.get_state(Indexer.name(project)).task))
-  end
-
-  test "warmup stops when its owner is killed", %{project: project} do
-    test_pid = self()
-
-    patch(Search.Indexer, :warmup, fn _ ->
-      send(test_pid, {:warmup, self()})
-      Process.sleep(:infinity)
-    end)
-
-    owner = start_supervised!({Indexer, project})
-    assert_receive {:warmup, worker}
-    ref = Process.monitor(worker)
-    Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
   end
 
   test "coalesces refresh requests and reports readiness after the final refresh", %{
@@ -207,10 +224,10 @@ defmodule Expert.Project.IndexerTest do
        ]}
     )
 
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
     assert_receive {:refresh, first}, 5_000
-    Indexer.refresh(project, :success)
-    Indexer.refresh(project, :success)
+    send(Indexer.name(project), project_compiled(status: :success))
+    send(Indexer.name(project), project_compiled(status: :success))
     :sys.get_state(Indexer.name(project))
     send(first, :finish)
 

@@ -429,6 +429,30 @@ defmodule Expert.Search.IndexerTest do
                end)
     end
 
+    @tag :tmp_dir
+    test "warmup indexes without the Engine", %{project: project, tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, dep_file: source_path, module: module} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      patch(EngineApi, :analyze, fn _project, _document, _opts ->
+        flunk("Warmup must work without the Engine")
+      end)
+
+      paths = %Paths{
+        source_paths: [source_path],
+        beam_paths: [beam_path],
+        applications: %{Path.dirname(beam_path) => :source_dependency}
+      }
+
+      assert :ok = Indexer.warmup(project, paths: paths)
+
+      function_subject = Forge.Formats.mfa(module, :public_fun, 0)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == function_subject and entry.subtype == :definition
+             end)
+    end
+
     test "persists produced entries", %{project: project} do
       entry_stream = create_index(project)
       entries = Enum.to_list(entry_stream)

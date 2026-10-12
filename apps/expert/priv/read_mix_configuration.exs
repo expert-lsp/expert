@@ -5,10 +5,7 @@ if "--runtime-only" in System.argv() do
   erlang =
     case File.read(version_file) do
       {:ok, text} ->
-        case String.split(text, "\n", trim: true) do
-          [full] -> full
-          _ -> release
-        end
+        String.trim(text)
 
       {:error, _} ->
         release
@@ -17,7 +14,6 @@ if "--runtime-only" in System.argv() do
   {:ok, %{elixir: System.version(), erlang: erlang}}
 else
   {:ok, _} = Application.ensure_all_started(:mix)
-  Mix.env(:test)
 
   normalize_dependency = fn
     {app, requirement, opts} when is_list(opts) ->
