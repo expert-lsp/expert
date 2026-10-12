@@ -258,7 +258,6 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       tmp_dir: tmp_dir
     } do
-      test_pid = self()
       module = Module.concat(BeamDependencyIndexerTest, :CatalogImported)
 
       dep_source = """
@@ -297,15 +296,10 @@ defmodule Expert.Search.IndexerTest do
         applications: %{Path.dirname(beam_path) => :registry_dependency}
       }
 
-      patch(Source, :index, fn path, source, extractors, project ->
-        send(test_pid, {:registry_application, ModuleRegistry.application(project, module)})
-        real(Source).index(path, source, extractors, project)
-      end)
-
       assert :ok =
                Indexer.warmup(project, paths: paths)
 
-      assert_receive {:registry_application, :registry_dependency}
+      assert ModuleRegistry.application(project, module) == :registry_dependency
 
       imported_subjects = [
         Forge.Formats.mfa(module, :imported_function, 0),

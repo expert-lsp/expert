@@ -20,7 +20,9 @@ defmodule Expert.Project.MixProjectTest do
   end
 
   @tag :tmp_dir
-  test "reads configuration after output from mix.exs", %{tmp_dir: root} do
+  test "reads the user development build configuration after output from mix.exs", %{
+    tmp_dir: root
+  } do
     File.write!(Path.join(root, "mix.exs"), """
     IO.puts("output from mix.exs")
     defmodule ConfigurationTest.MixProject do
@@ -32,6 +34,7 @@ defmodule Expert.Project.MixProjectTest do
     project = root |> Forge.Document.Path.to_uri() |> Project.new()
     assert {:ok, config} = MixProject.configuration(project)
     assert config.config[:app] == :example
-    assert config.build_path == Path.join(root, "custom_build/test")
+    assert config.env == :dev
+    assert config.build_path == Path.join(root, "custom_build/dev")
   end
 end

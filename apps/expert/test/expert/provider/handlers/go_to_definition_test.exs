@@ -49,9 +49,12 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
       project_index_ready()
     ])
 
+    EngineApi.register_listener(project, Process.whereis(Indexer.name(project)), [
+      project_compiled()
+    ])
+
     EngineApi.schedule_compile(project, true)
     assert_receive project_compiled(), @project_compile_timeout
-    Indexer.refresh(project)
     assert_receive project_index_ready(project: ^project), @project_index_timeout
 
     {:ok, project: project}

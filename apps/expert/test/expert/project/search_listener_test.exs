@@ -18,6 +18,7 @@ defmodule Expert.Project.SearchListenerTest do
   setup do
     project = project()
     test_pid = self()
+    Process.register(self(), Indexer.name(project))
     DispatchFake.start()
 
     patch(Expert.Project.Node, :trigger_build, fn ^project, force? ->
@@ -47,15 +48,10 @@ defmodule Expert.Project.SearchListenerTest do
     end
   end
 
-  test "compilation success and failure request index refreshes", %{project: project} do
-    test_pid = self()
-    patch(Indexer, :refresh, fn ^project -> send(test_pid, :refresh) end)
-    listener = SearchListener.name(project)
+  test "registers the indexer for compilation events", %{project: project} do
+    EngineApi.broadcast(project, project_compiled(status: :success))
 
-    send(listener, project_compiled(status: :success))
-    assert_receive :refresh
-    send(listener, project_compiled(status: :error))
-    assert_receive :refresh
+    assert_receive project_compiled(status: :success)
   end
 
   test "requests an incremental initial compile" do

@@ -5,8 +5,11 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
+  alias Expert.Search.Indexer.Quoted
   alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
+  alias Forge.Ast
+  alias Forge.Document
   alias Forge.Project
 
   @entry_chunk_size 4_000
@@ -23,11 +26,8 @@ defmodule Expert.Search.Indexer do
     paths = Keyword.get_lazy(opts, :paths, fn -> Paths.from_disk(project) end)
 
     with :ok <- ManifestStore.invalidate(project),
-         :ok <- store_result(Store.replace(project, [])),
          {:ok, state} <-
-           paths
-           |> index_stream(project)
-           |> persist_stream(new_stream_state(), project) do
+           replace_store(paths, new_stream_state(), project, warmup_source_indexer(project)) do
       ManifestStore.commit(project, Manifest.new(manifest_entries(state)))
     end
   end
@@ -42,7 +42,7 @@ defmodule Expert.Search.Indexer do
   def document(%Project{} = project, uri) do
     with {:ok, document, analysis} <- Forge.Document.Store.fetch(uri, :analysis),
          {:ok, entries} <-
-           Expert.Search.Indexer.Quoted.index_with_cleanup(analysis, project) do
+           Quoted.index_with_cleanup(analysis, project) do
       {:ok, document.path, entries}
     end
   end
@@ -293,19 +293,29 @@ defmodule Expert.Search.Indexer do
     end
   end
 
+  defp warmup_source_indexer(project) do
+    fn path, source ->
+      path
+      |> Document.new(source, 1)
+      |> Ast.analyze()
+      |> Quoted.index(nil, project)
+    end
+  end
+
   defp stored_paths(path_to_ids) when is_map(path_to_ids) do
     path_to_ids
     |> Map.keys()
     |> MapSet.new()
   end
 
-  defp index_stream(%Paths{} = paths, project) do
+  defp index_stream(%Paths{} = paths, project, source_indexer) do
     index_stream(
       project,
       paths.source_paths,
       paths.beam_paths,
       paths.applications,
-      paths.source_paths
+      paths.source_paths,
+      source_indexer
     )
   end
 
@@ -314,7 +324,8 @@ defmodule Expert.Search.Indexer do
          source_paths,
          beam_paths,
          applications,
-         current_source_paths
+         current_source_paths,
+         source_indexer
        ) do
     beam_items =
       beam_paths
@@ -328,7 +339,7 @@ defmodule Expert.Search.Indexer do
       include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
 
     source_paths
-    |> Sources.stream(source_indexer(project))
+    |> Sources.stream(source_indexer)
     |> tag_stream(:source)
     |> Stream.concat(tag_stream(beam_items, :beam))
   end
@@ -358,9 +369,13 @@ defmodule Expert.Search.Indexer do
   end
 
   defp replace_store(%Paths{} = paths, state, project) do
+    replace_store(paths, state, project, source_indexer(project))
+  end
+
+  defp replace_store(%Paths{} = paths, state, project, source_indexer) do
     replacement = fn write_batch ->
       paths
-      |> index_stream(project)
+      |> index_stream(project, source_indexer)
       |> stream_into_store(state, write_batch)
     end
 

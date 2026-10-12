@@ -64,18 +64,16 @@ defmodule Expert.Project.Indexer do
     :"#{Project.unique_name(project)}::indexer_task_supervisor"
   end
 
-  def refresh(%Project{} = project), do: GenServer.cast(name(project), :refresh)
-
   @impl GenServer
   def init([project, opts]) do
-    Process.flag(:trap_exit, true)
-    {:ok, State.new(project, opts), {:continue, :warmup}}
+    state = State.new(project, opts)
+    Logger.info("Starting index warmup task")
+    {:ok, start_warmup(state)}
   end
 
-  @impl GenServer
-  def handle_continue(:warmup, %State{} = state) do
+  defp start_warmup(%State{} = state) do
     task =
-      Task.Supervisor.async(state.task_supervisor, fn ->
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
         with :ok <- Search.Store.enable(state.project),
              :empty <- Search.Store.load_status(state.project) do
           Search.Indexer.warmup(state.project)
@@ -85,20 +83,23 @@ defmodule Expert.Project.Indexer do
         end
       end)
 
-    {:noreply, %State{state | task: {:warmup, task}}}
+    %State{state | task: {:warmup, task}}
   end
 
   @impl GenServer
-  def handle_cast(:refresh, %State{task: {:warmup, task}} = state) do
+  def handle_info(project_compiled(status: status), %State{task: {:warmup, task}} = state)
+      when status in [:success, :successful, :error] do
     Task.shutdown(task, :brutal_kill)
     {:noreply, start_refresh(%State{state | task: nil})}
   end
 
-  def handle_cast(:refresh, %State{task: nil} = state) do
+  def handle_info(project_compiled(status: status), %State{task: nil} = state)
+      when status in [:success, :successful, :error] do
     {:noreply, start_refresh(state)}
   end
 
-  def handle_cast(:refresh, %State{} = state) do
+  def handle_info(project_compiled(status: status), %State{} = state)
+      when status in [:success, :successful, :error] do
     {:noreply, %State{state | pending?: true}}
   end
 
@@ -117,15 +118,9 @@ defmodule Expert.Project.Indexer do
     {:noreply, finish_task(state, {:error, reason})}
   end
 
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
-
-  @impl GenServer
-  def terminate(_reason, %State{task: {_kind, task}}), do: Task.shutdown(task, :brutal_kill)
-  def terminate(_reason, _state), do: :ok
-
   defp start_refresh(%State{} = state) do
     task =
-      Task.Supervisor.async(state.task_supervisor, fn ->
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
         with :ok <- Search.Store.enable(state.project) do
           case Search.Store.load_status(state.project) do
             :empty -> state.create_index.(state.project)
