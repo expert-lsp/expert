@@ -13,6 +13,34 @@ defmodule Expert.Search.Indexer.Beams do
   @beam_index_concurrency 16
   @beam_index_chunk_bytes 128 * 1024
 
+  def register(paths, opts \\ []) when is_list(paths) do
+    if project = opts[:project] do
+      applications = Keyword.get(opts, :applications, %{})
+
+      paths
+      |> Task.async_stream(
+        fn path ->
+          with {:ok, beam} <- File.read(path),
+               {:ok, {module, chunks}} <- :beam_lib.chunks(beam, [:exports]) do
+            ModuleRegistry.put(
+              project,
+              module,
+              path,
+              Map.get(applications, Path.dirname(path)),
+              chunks[:exports] || []
+            )
+          end
+        end,
+        max_concurrency: @beam_index_concurrency,
+        ordered: false,
+        timeout: :infinity
+      )
+      |> Stream.run()
+    else
+      :ok
+    end
+  end
+
   def stream(paths, opts \\ []) when is_list(paths) do
     paths
     |> result_chunks(opts)

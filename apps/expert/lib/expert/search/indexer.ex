@@ -286,37 +286,17 @@ defmodule Expert.Search.Indexer do
   end
 
   defp index_stream(%Paths{} = paths, project) do
-    index_stream(
-      project,
-      paths.source_paths,
-      paths.beam_paths,
-      paths.applications,
-      paths.source_paths
-    )
-  end
+    :ok = Beams.register(paths.beam_paths, project: project, applications: paths.applications)
 
-  defp index_stream(
-         project,
-         source_paths,
-         beam_paths,
-         applications,
-         current_source_paths
-       ) do
-    beam_items =
-      beam_paths
-      |> Beams.stream(project: project, applications: applications)
-      |> Enum.to_list()
+    beam_stream =
+      paths.beam_paths
+      |> Beams.stream(project: project, applications: paths.applications)
+      |> tag_stream(:beam)
 
-    beam_manifest_entries =
-      Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
-
-    source_paths =
-      include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
-
-    source_paths
+    paths.source_paths
     |> Sources.stream(source_indexer(project))
     |> tag_stream(:source)
-    |> Stream.concat(tag_stream(beam_items, :beam))
+    |> Stream.concat(beam_stream)
   end
 
   defp include_beam_sources(source_paths, current_source_paths, manifest_entries) do
