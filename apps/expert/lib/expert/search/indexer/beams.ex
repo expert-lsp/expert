@@ -16,10 +16,7 @@ defmodule Expert.Search.Indexer.Beams do
   def stream(paths, opts \\ []) when is_list(paths) do
     paths
     |> result_chunks(opts)
-    |> Stream.flat_map(fn results ->
-      {entries, manifest_entries} = entries_and_manifest_entries(results, opts)
-      stream_items(entries, manifest_entries)
-    end)
+    |> Stream.flat_map(& &1)
   end
 
   defp result_chunks(paths, opts) do
@@ -38,11 +35,10 @@ defmodule Expert.Search.Indexer.Beams do
       |> Stream.transform(
         fn -> start_progress("Indexing dependencies metadata") end,
         fn task_result, progress ->
-          {chunk_bytes, results, modules} = task_result!(task_result)
+          {chunk_bytes, items, modules} = task_result!(task_result)
           register_modules(opts[:project], modules)
 
-          {[results],
-           report_progress(progress, chunk_bytes, total_bytes, "Indexing dependencies")}
+          {[items], report_progress(progress, chunk_bytes, total_bytes, "Indexing dependencies")}
         end,
         &complete_progress/1
       )
@@ -121,7 +117,14 @@ defmodule Expert.Search.Indexer.Beams do
       |> Enum.map(&metadata_from_beam(&1, opts))
       |> Enum.unzip()
 
-    {chunk_bytes, List.flatten(results), Enum.reject(modules, &is_nil/1)}
+    {entries, manifest_entries} =
+      results
+      |> List.flatten()
+      |> entries_and_manifest_entries(opts)
+
+    items = stream_items(entries, manifest_entries)
+
+    {chunk_bytes, items, Enum.reject(modules, &is_nil/1)}
   end
 
   defp register_modules(nil, _modules), do: :ok
