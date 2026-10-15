@@ -981,6 +981,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp prefix_constraint(:_), do: {[], []}
 
+  # Range queries use the B-tree index directly and avoid escaping wildcards in LIKE.
   defp prefix_constraint(prefix) do
     prefix_key = subject_key(prefix)
 
