@@ -20,8 +20,13 @@ defmodule Expert.Application do
 
     argv = Burrito.Util.Args.argv()
 
-    # Handle engine subcommand first (before starting the LSP server)
+    # Handle engine and doctor subcommands first (before starting the LSP server)
     case argv do
+      ["doctor" | doctor_args] ->
+        doctor_args
+        |> Expert.Doctor.run()
+        |> System.halt()
+
       ["engine" | engine_args] ->
         engine_args
         |> Expert.Engine.run()
@@ -56,7 +61,7 @@ defmodule Expert.Application do
     Source code: https://github.com/expert-lsp/expert
 
     expert [flags]
-    expert engine <subcommand> [options]
+    expert <subcommand> [options]
 
     #{IO.ANSI.bright()}FLAGS#{IO.ANSI.reset()}
 
@@ -67,6 +72,7 @@ defmodule Expert.Application do
 
     #{IO.ANSI.bright()}SUBCOMMANDS#{IO.ANSI.reset()}
 
+      doctor              Diagnose and inspect environment & system health
       engine              Manage engine builds (use 'expert engine --help' for details)
     """
 

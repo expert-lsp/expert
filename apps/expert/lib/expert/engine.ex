@@ -94,6 +94,10 @@ defmodule Expert.Engine do
     end
   end
 
+  @doc "Returns all cached engine build directories."
+  @spec cached_engine_dirs() :: [String.t()]
+  def cached_engine_dirs, do: get_engine_dirs()
+
   @spec get_engine_dirs() :: [String.t()]
   defp get_engine_dirs do
     base = Forge.Path.expert_cache_dir()
