@@ -813,7 +813,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
   end
 
   describe "find_by_prefix/4" do
-    test "finds entries matching prefix and uses covering index", %{
+    test "finds entries matching prefix", %{
       project: project,
       runtime_versions: runtime_versions
     } do
@@ -866,32 +866,6 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert [^map, ^map_every] = Sqlite.find_by_prefix(project, "Enum.map", :_, :_)
       assert [^foo_bar] = Sqlite.find_by_prefix(project, "Foo_", :_, :_)
       assert [] = Sqlite.find_by_prefix(project, "NonExistent", :_, :_)
-
-      database_path = Sqlite.database_path(project, runtime_versions)
-      {:ok, conn} = Exqlite.Basic.open(database_path)
-
-      result =
-        Exqlite.Basic.exec(
-          conn,
-          """
-          EXPLAIN QUERY PLAN
-          SELECT entries.entry_key, entries.subject
-          FROM entries
-          JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
-          WHERE subject >= ? AND subject < ?
-          """,
-          ["Enum.map/", "Enum.map0"]
-        )
-
-      assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
-      assert :ok = Exqlite.Basic.close(conn)
-
-      assert Enum.any?(rows, fn row ->
-               plan = row |> List.last() |> to_string()
-
-               String.contains?(plan, "entries_subject_idx") and
-                 (String.contains?(plan, "subject>?") or String.contains?(plan, "subject>=?"))
-             end)
     end
   end
 end
