@@ -357,7 +357,7 @@ let
 
       hex_core =
         let
-          version = "0.15.0";
+          version = "0.20.1";
           drv = buildRebar3 {
             inherit version;
             name = "hex_core";
@@ -365,7 +365,7 @@ let
             src = fetchHex {
               inherit version;
               pkg = "hex_core";
-              sha256 = "c2093764c7af8ef0818c104fa141eba431e7be93f8374638c45c7037b26a52f8";
+              sha256 = "d74aef5a0f8718e408ef8590df4bf8a7225403b1e134360a4e7dd421e0a2d7b4";
             };
           };
         in
@@ -441,7 +441,7 @@ let
 
       mint =
         let
-          version = "1.9.3";
+          version = "1.10.2";
           drv = buildMix {
             inherit version;
             name = "mint";
@@ -450,7 +450,7 @@ let
             src = fetchHex {
               inherit version;
               pkg = "mint";
-              sha256 = "5f7c9342480c069dbbc4eeac3490303c9e01870ff01a7f1d29b6107054fc1e74";
+              sha256 = "3171931320e7abc6164093aa49e3b5f20dcd079b6dce4be23947dd1e42dbb68b";
             };
 
             beamDeps = [
@@ -595,7 +595,7 @@ let
 
       spitfire =
         let
-          version = "0.4.2";
+          version = "0.4.3";
           drv = buildMix {
             inherit version;
             name = "spitfire";
@@ -604,7 +604,7 @@ let
             src = fetchHex {
               inherit version;
               pkg = "spitfire";
-              sha256 = "9bbbbffe93e6f88ccf193487ef56b83c2646a6dc3875bb0975d4654bfe96c5bb";
+              sha256 = "4f771bbdf00fe6eda6e2a7e488c42ead48142fea697349510a41fabb41376632";
             };
           };
         in

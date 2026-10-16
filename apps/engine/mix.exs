@@ -56,7 +56,7 @@ defmodule Engine.MixProject do
       {:patch, "~> 0.15", only: [:dev, :test], runtime: false},
       {:quokka, "~> 2.12", only: [:dev, :test], runtime: false},
       {:path_glob, "~> 0.2"},
-      {:phoenix_live_view, "~> 1.0", only: [:test], runtime: false},
+      {:phoenix_live_view, "~> 1.0.19", only: [:test], runtime: false},
       {:sourceror, "~> 1.12.3"},
       {:stream_data, "~> 1.1", only: [:test], runtime: false},
       # Offline engine builds cannot depend on a local Rebar archive, so we

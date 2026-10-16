@@ -126,7 +126,7 @@ defmodule Expert.MixProject do
       {:patch, "~> 0.15", runtime: false, only: [:dev, :test]},
       {:quokka, "~> 2.12", only: [:dev, :test], runtime: false},
       {:path_glob, "~> 0.2"},
-      {:phoenix_live_view, "~> 1.0", only: [:test], runtime: false},
+      {:phoenix_live_view, "~> 1.1.33", only: [:test], runtime: false},
       {:schematic, "~> 0.2"},
       {:sourceror, "~> 1.12.3"},
       {:telemetry, "~> 1.3", manager: :mix, optional: false, override: true}
