@@ -811,4 +811,61 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert [] = Sqlite.find_by_paths(project, paths, :module, :definition)
     end
   end
+
+  describe "find_by_prefix/4" do
+    test "finds entries matching prefix", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      map = %Entry{
+        id: 1,
+        path: "/lib/enum.ex",
+        subject: "Enum.map/2",
+        type: {:function, :usage},
+        subtype: :reference,
+        block_id: :root
+      }
+
+      map_every = %Entry{
+        id: 2,
+        path: "/lib/enum.ex",
+        subject: "Enum.map_every/3",
+        type: {:function, :usage},
+        subtype: :reference,
+        block_id: :root
+      }
+
+      foo_bar = %Entry{
+        id: 3,
+        path: "/lib/foo.ex",
+        subject: "Foo_bar/1",
+        type: {:function, :usage},
+        subtype: :reference,
+        block_id: :root
+      }
+
+      foo_xbar = %Entry{
+        id: 4,
+        path: "/lib/foo.ex",
+        subject: "FooXbar/1",
+        type: {:function, :usage},
+        subtype: :reference,
+        block_id: :root
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [map, map_every, foo_bar, foo_xbar])
+
+      assert [^map] = Sqlite.find_by_prefix(project, "Enum.map/", :_, :_)
+      assert [^map, ^map_every] = Sqlite.find_by_prefix(project, "Enum.map", :_, :_)
+      assert [^foo_bar] = Sqlite.find_by_prefix(project, "Foo_", :_, :_)
+      assert [] = Sqlite.find_by_prefix(project, "NonExistent", :_, :_)
+    end
+  end
 end

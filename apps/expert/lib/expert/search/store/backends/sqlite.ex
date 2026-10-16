@@ -981,9 +981,33 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp prefix_constraint(:_), do: {[], []}
 
+  # Range queries use the B-tree index directly and avoid escaping wildcards in LIKE.
   defp prefix_constraint(prefix) do
-    {["subject LIKE ? ESCAPE '\\'"], [like_prefix(subject_key(prefix))]}
+    prefix_key = subject_key(prefix)
+
+    case next_prefix(prefix_key) do
+      {:ok, next_key} ->
+        {["subject >= ? AND subject < ?"], [prefix_key, next_key]}
+
+      :overflow ->
+        {["subject >= ?"], [prefix_key]}
+    end
   end
+
+  defp next_prefix(binary) when is_binary(binary) do
+    binary
+    |> :erlang.binary_to_list()
+    |> Enum.reverse()
+    |> increment_bytes()
+  end
+
+  defp increment_bytes([255 | rest]), do: increment_bytes(rest)
+
+  defp increment_bytes([b | rest]) do
+    {:ok, :erlang.list_to_binary(Enum.reverse([b + 1 | rest]))}
+  end
+
+  defp increment_bytes([]), do: :overflow
 
   defp add_type_constraint(clauses, args, :_), do: {clauses, args}
 
@@ -1186,14 +1210,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         _ -> {:cont, failure}
       end
     end)
-  end
-
-  defp like_prefix(prefix) do
-    prefix
-    |> String.replace("\\", "\\\\")
-    |> String.replace("%", "\\%")
-    |> String.replace("_", "\\_")
-    |> Kernel.<>("%")
   end
 
   defp subject_key(:_), do: :_
