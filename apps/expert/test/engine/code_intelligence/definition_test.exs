@@ -85,6 +85,11 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
     start_supervised!({Indexer, project})
 
     EngineApi.register_listener(project, self(), [:all])
+
+    EngineApi.register_listener(project, Process.whereis(Indexer.name(project)), [
+      project_compiled()
+    ])
+
     EngineApi.schedule_compile(project, true)
 
     elixir_src = EngineApi.call(project, Engine.CodeIntelligence.ElixirSource, :detect, [])

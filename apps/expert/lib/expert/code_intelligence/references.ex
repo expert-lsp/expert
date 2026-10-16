@@ -21,7 +21,8 @@ defmodule Expert.CodeIntelligence.References do
         %Project{} = project,
         %Analysis{} = analysis,
         %Position{} = position,
-        include_definitions?
+        include_definitions?,
+        engine_ready? \\ true
       ) do
     case variable_at(analysis, position) do
       {:ok, name} ->
@@ -34,8 +35,11 @@ defmodule Expert.CodeIntelligence.References do
           [_ | _] = references ->
             references
 
-          [] ->
+          [] when engine_ready? ->
             engine_references(project, analysis, position, include_definitions?)
+
+          [] ->
+            []
         end
     end
   end

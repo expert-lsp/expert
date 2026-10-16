@@ -42,6 +42,11 @@ defmodule Expert.Provider.Handlers.CodeActionTest do
     Expert.Configuration.new() |> Expert.Configuration.set()
 
     EngineApi.register_listener(project, self(), [project_compiled(), project_index_ready()])
+
+    EngineApi.register_listener(project, Process.whereis(Indexer.name(project)), [
+      project_compiled()
+    ])
+
     EngineApi.schedule_compile(project, true)
 
     assert_receive project_compiled(), @project_ready_timeout

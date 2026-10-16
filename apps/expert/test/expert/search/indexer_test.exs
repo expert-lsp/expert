@@ -258,7 +258,6 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       tmp_dir: tmp_dir
     } do
-      test_pid = self()
       module = Module.concat(BeamDependencyIndexerTest, :CatalogImported)
 
       dep_source = """
@@ -297,15 +296,10 @@ defmodule Expert.Search.IndexerTest do
         applications: %{Path.dirname(beam_path) => :registry_dependency}
       }
 
-      patch(Source, :index, fn path, source, extractors, project ->
-        send(test_pid, {:registry_application, ModuleRegistry.application(project, module)})
-        real(Source).index(path, source, extractors, project)
-      end)
-
       assert :ok =
-               Indexer.create_index(project, paths: paths)
+               Indexer.warmup(project, paths: paths)
 
-      assert_receive {:registry_application, :registry_dependency}
+      assert ModuleRegistry.application(project, module) == :registry_dependency
 
       imported_subjects = [
         Forge.Formats.mfa(module, :imported_function, 0),
@@ -334,7 +328,7 @@ defmodule Expert.Search.IndexerTest do
       }
 
       assert :ok =
-               Indexer.create_index(project, paths: paths)
+               Indexer.warmup(project, paths: paths)
 
       function_subject = Forge.Formats.mfa(module, :public_fun, 0)
 
@@ -759,6 +753,38 @@ defmodule Expert.Search.IndexerTest do
              end)
 
       File.touch!(beam_path, {{2101, 1, 1}, {0, 0, 0}})
+      update_index(project)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == private_subject and entry.subtype == :definition
+             end)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == private_subject and entry.subtype == :reference
+             end)
+    end
+
+    @tag :tmp_dir
+    test "retains source entries when compilation creates a project beam", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, dep_file: source_path, module: module, project: project} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      start_registry(project)
+
+      assert :ok =
+               Indexer.warmup(project,
+                 paths: %Paths{source_paths: [source_path], beam_paths: []}
+               )
+
+      patch(Paths, :for_project, fn ^project ->
+        %Paths{
+          source_paths: [source_path],
+          beam_paths: [beam_path],
+          applications: %{Path.dirname(beam_path) => :beam_dep}
+        }
+      end)
+
+      private_subject = Forge.Formats.mfa(module, :private_fun, 0)
       update_index(project)
 
       assert Enum.any?(FakeBackend.entries(), fn entry ->

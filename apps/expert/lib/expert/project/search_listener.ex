@@ -4,6 +4,8 @@ defmodule Expert.Project.SearchListener do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
+  alias Expert.Project.Indexer
+  alias Expert.Project.Node
   alias Expert.Protocol.Id
   alias Forge.Formats
   alias Forge.Project
@@ -21,13 +23,22 @@ defmodule Expert.Project.SearchListener do
 
   @impl GenServer
   def init([%Project{} = project]) do
+    indexer = Process.whereis(Indexer.name(project))
+    EngineApi.register_listener(project, indexer, [project_compiled()])
+
     EngineApi.register_listener(project, self(), [
       project_reindex_requested(),
       project_reindexed(),
       search_store_loading()
     ])
 
-    {:ok, project}
+    {:ok, project, {:continue, :compile}}
+  end
+
+  @impl GenServer
+  def handle_continue(:compile, project) do
+    Node.trigger_build(project, false)
+    {:noreply, project}
   end
 
   @impl GenServer
