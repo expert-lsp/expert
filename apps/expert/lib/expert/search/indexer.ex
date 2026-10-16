@@ -1,5 +1,7 @@
 defmodule Expert.Search.Indexer do
   alias Expert.EngineApi
+  alias Expert.Integrations
+  alias Expert.Integrations.Cache
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ManifestStore
@@ -13,16 +15,26 @@ defmodule Expert.Search.Indexer do
 
   def create_index(%Project{} = project, opts \\ []) when is_list(opts) do
     with :ok <- ManifestStore.invalidate(project),
-         {:ok, manifest} <- build_index(project, opts) do
-      ManifestStore.commit(project, manifest)
+         {:ok, manifest} <- build_index(project, opts),
+         :ok <- ManifestStore.commit(project, manifest) do
+      Cache.clear(project)
     end
   end
 
   def update_index(%Project{} = project, opts \\ []) when is_list(opts) do
     with path_to_ids when is_map(path_to_ids) <- Store.path_to_ids(project),
-         {:ok, manifest} <- update_index(project, path_to_ids, opts) do
-      ManifestStore.commit(project, manifest)
+         {:ok, manifest} <- update_index(project, path_to_ids, opts),
+         :ok <- ManifestStore.commit(project, manifest) do
+      Cache.clear(project)
     end
+  end
+
+  def integrations_changed?(%Project{} = project) do
+    ManifestStore.integrations_changed?(project, Integrations.indexer_module_names())
+  end
+
+  def record_integrations(%Project{} = project) do
+    ManifestStore.record_integrations(project, Integrations.indexer_module_names())
   end
 
   def document(%Project{} = project, uri) do
@@ -57,8 +69,15 @@ defmodule Expert.Search.Indexer do
     try do
       case ManifestStore.load(project) do
         {:ok, %Manifest{} = manifest} ->
+          indexer_module_names = Integrations.indexer_module_names()
+
+          integrations_changed? =
+            ManifestStore.integrations_changed?(project, manifest, indexer_module_names)
+
           with :ok <- ManifestStore.invalidate(project) do
-            refresh_index(project, manifest, path_to_ids, opts)
+            if integrations_changed?,
+              do: replace_index(project, path_to_ids, opts),
+              else: refresh_index(project, manifest, path_to_ids, opts)
           end
 
         :missing ->
