@@ -1,10 +1,10 @@
 defmodule Expert.Search.Indexer.Analyzer do
-  alias Expert.Search.Indexer.Analysis.Aliases
   alias Expert.Search.Indexer.Analysis.Imports
   alias Expert.Search.Indexer.Analysis.Requires
   alias Expert.Search.Indexer.Analysis.Uses
   alias Forge.Ast
   alias Forge.Ast.Analysis
+  alias Forge.Ast.Analysis.Aliases
   alias Forge.Ast.Analysis.Require
   alias Forge.Ast.Analysis.Use
   alias Forge.Document.Position
@@ -14,6 +14,10 @@ defmodule Expert.Search.Indexer.Analyzer do
   defdelegate aliases_at(analysis, position), to: Aliases, as: :at
   defdelegate imports_at(analysis, position), to: Imports, as: :at
   defdelegate import_module_for(analysis, position, fun, arity), to: Imports, as: :module_for
+
+  defdelegate import_module_for(analysis, position, fun, arity, module_exports),
+    to: Imports,
+    as: :module_for
 
   def imports_at(%Analysis{} = analysis, %Position{} = position, module_exports)
       when is_function(module_exports, 1) do

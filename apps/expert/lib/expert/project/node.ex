@@ -7,6 +7,7 @@ defmodule Expert.Project.Node do
 
   alias Expert.EngineApi
   alias Expert.EngineNode
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Progress
   alias Forge.Project
 
@@ -60,6 +61,9 @@ defmodule Expert.Project.Node do
 
     case result do
       {:ok, state} ->
+        # Trap exits so that terminate/2 runs on shutdown and unloads the bundled
+        # metadata.
+        Process.flag(:trap_exit, true)
         {:ok, state}
 
       {:error, {:bootstrap, reason}} ->
@@ -96,11 +100,17 @@ defmodule Expert.Project.Node do
     end
   end
 
+  @impl GenServer
+  def terminate(_reason, %State{project: project}) do
+    SemanticMetadata.unload_bundled(project)
+  end
+
   # private api
 
   defp start_node(%Project{} = project, token) do
     with {:ok, node, node_pid} <- EngineNode.start(project, token) do
       Node.monitor(node, true)
+      SemanticMetadata.load_bundled(project)
       {:ok, State.new(project, node, node_pid)}
     end
   end

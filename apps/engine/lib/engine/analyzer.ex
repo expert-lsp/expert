@@ -1,9 +1,9 @@
 defmodule Engine.Analyzer do
-  alias Engine.Analyzer.Aliases
   alias Engine.Analyzer.Imports
   alias Engine.Analyzer.Uses
   alias Forge.Ast
   alias Forge.Ast.Analysis
+  alias Forge.Ast.Analysis.Aliases
   alias Forge.Ast.Analysis.Use
   alias Forge.Document.Position
 

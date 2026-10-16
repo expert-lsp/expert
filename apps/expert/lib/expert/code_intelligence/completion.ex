@@ -1,17 +1,24 @@
 defmodule Expert.CodeIntelligence.Completion do
+  alias Expert.CodeIntelligence.BeamDocs
   alias Expert.CodeIntelligence.Completion.Builder
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Expert.CodeIntelligence.Hex
   alias Expert.Configuration
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
+  alias Expert.Integrations.SemanticMetadata.Delegation
   alias Expert.Project.Intelligence
+  alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
+  alias Forge.Completion.Candidate.ArgumentNames
   alias Forge.Document.Changes
   alias Forge.Document.Edit
   alias Forge.Document.Position
+  alias Forge.Formats
   alias Forge.Project
   alias GenLSP.Enumerations.CompletionTriggerKind
   alias GenLSP.Structures.CompletionContext
@@ -34,25 +41,32 @@ defmodule Expert.CodeIntelligence.Completion do
         %Position{} = position,
         %CompletionContext{} = context
       ) do
+    complete(project, analysis, position, context, false)
+  end
+
+  defp complete(project, analysis, position, context, delegated?) do
     case Env.new(project, analysis, position) do
       {:ok, env} ->
-        hex_context =
-          if Hex.project_file?(project, analysis.document) do
-            case Hex.Context.detect(analysis, position) do
-              {:ok, ctx} -> ctx
-              :error -> nil
-            end
-          end
+        case SemanticMetadata.complete(env) do
+          %Result{mode: :delegate} when delegated? ->
+            complete_regular(
+              project,
+              analysis,
+              position,
+              context,
+              %Result{env: env}
+            )
 
-        hex_items = hex_items_for_context(hex_context, project, env)
-        {regular_items, contextual_incomplete?} = completions(project, env, context)
-        all = hex_items ++ regular_items
-        log_candidates(all)
+          %Result{mode: :delegate, delegate: %{source: delegated_source}} ->
+            {delegated_analysis, delegated_position} =
+              Delegation.analyze(analysis, delegated_source, position)
 
-        if not is_nil(hex_context) or contextual_incomplete? do
-          %CompletionList{items: all, is_incomplete: true}
-        else
-          maybe_to_completion_list(all)
+            project
+            |> complete(delegated_analysis, delegated_position, context, true)
+            |> to_original_document(delegated_analysis.document, analysis.document)
+
+          integration_result ->
+            complete_regular(project, analysis, position, context, integration_result)
         end
 
       {:error, _} = error ->
@@ -60,6 +74,64 @@ defmodule Expert.CodeIntelligence.Completion do
         maybe_to_completion_list()
     end
   end
+
+  defp complete_regular(
+         project,
+         analysis,
+         position,
+         context,
+         %Result{env: %Env{} = env} = integration_result
+       ) do
+    hex_context =
+      if Hex.project_file?(project, analysis.document) do
+        case Hex.Context.detect(analysis, position) do
+          {:ok, ctx} -> ctx
+          :error -> nil
+        end
+      end
+
+    hex_items = hex_items_for_context(hex_context, project, env)
+
+    {regular_items, contextual_incomplete?} =
+      completions(project, env, context, integration_result)
+
+    all = hex_items ++ regular_items
+    log_candidates(all)
+
+    if not is_nil(hex_context) or contextual_incomplete? do
+      %CompletionList{items: all, is_incomplete: true}
+    else
+      maybe_to_completion_list(all)
+    end
+  end
+
+  defp to_original_document(%CompletionList{items: items} = list, delegated, document),
+    do: %CompletionList{list | items: to_original_document(items, delegated, document)}
+
+  defp to_original_document(items, delegated, document) when is_list(items),
+    do: Enum.map(items, &item_to_original_document(&1, delegated, document))
+
+  defp item_to_original_document(
+         %CompletionItem{text_edit: %Changes{} = changes} = item,
+         delegated,
+         document
+       ) do
+    edits =
+      case changes.edits do
+        edits when is_list(edits) ->
+          Enum.map(edits, &edit_to_original_document(&1, delegated, document))
+
+        edit ->
+          edit_to_original_document(edit, delegated, document)
+      end
+
+    %CompletionItem{item | text_edit: Changes.new(document, edits)}
+  end
+
+  defp item_to_original_document(item, _delegated, _document), do: item
+
+  defp edit_to_original_document(%Edit{range: range} = edit, delegated, document),
+    do: %Edit{edit | range: Delegation.to_document_range(range, delegated, document)}
 
   defp hex_items_for_context(nil, _project, _env), do: []
 
@@ -82,50 +154,41 @@ defmodule Expert.CodeIntelligence.Completion do
     Logger.info([log_iolist, "]"])
   end
 
-  defp completions(%Project{} = project, %Env{} = env, %CompletionContext{} = context) do
-    case Integrations.complete(env) do
-      {:override, candidates, incomplete?, _transforms} ->
+  defp completions(project, env, context, integration_result) do
+    case integration_result do
+      %Result{mode: :override, candidates: candidates, incomplete?: incomplete?} ->
         {translate_contextual_candidates(candidates, env), incomplete?}
 
-      {:augment, candidates, incomplete?, transforms} ->
-        contextual_items = translate_contextual_candidates(candidates, env)
-        ordinary_items = project |> ordinary_completions(env, context) |> transform(transforms)
-        augment(contextual_items, ordinary_items, incomplete?)
+      %Result{mode: :augment, candidates: candidates, incomplete?: incomplete?} ->
+        candidates
+        |> translate_contextual_candidates(env)
+        |> augment(ordinary_completions(project, env, context, integration_result), incomplete?)
 
-      :ignore ->
-        {ordinary_completions(project, env, context), false}
+      %Result{mode: :ignore} ->
+        {ordinary_completions(project, env, context, integration_result), false}
     end
   end
 
   defp translate_contextual_candidates(candidates, env) do
-    Enum.flat_map(candidates, fn {candidate, transforms} ->
+    candidates
+    |> Enum.flat_map(fn candidate ->
       case Translatable.translate(candidate, Builder, env) do
         :skip -> []
-        items -> items |> List.wrap() |> transform(transforms)
+        items -> List.wrap(items)
       end
     end)
+    |> Enum.uniq_by(&{&1.label, &1.kind})
   end
-
-  defp transform(items, transforms) do
-    Enum.reduce(transforms, items, fn
-      :wrap_list, items -> Enum.map(items, &wrap_list_item/1)
-    end)
-  end
-
-  defp wrap_list_item(
-         %CompletionItem{text_edit: %Changes{edits: %Edit{text: text} = edit} = changes} = item
-       ) do
-    %CompletionItem{item | text_edit: %Changes{changes | edits: %Edit{edit | text: "[#{text}]"}}}
-  end
-
-  defp wrap_list_item(item), do: item
 
   defp augment(items, ordinary_items, incomplete?) do
     items = Enum.map(items, &Builder.set_sort_scope(&1, "000"))
+    labels = MapSet.new(items, & &1.label)
+    ordinary_items = Enum.reject(ordinary_items, &MapSet.member?(labels, &1.label))
+
     {Enum.uniq_by(items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
   end
 
-  defp ordinary_completions(project, env, context) do
+  defp ordinary_completions(project, env, context, integration_result) do
     prefix_tokens = Env.prefix_tokens(env, 1)
 
     cond do
@@ -149,11 +212,93 @@ defmodule Expert.CodeIntelligence.Completion do
         |> Enum.map(&Translatable.translate(&1, Builder, env))
 
       true ->
-        project
-        |> EngineApi.complete(env)
-        |> to_completion_items(project, env, context)
+        candidates =
+          project |> EngineApi.complete(env) |> without_plugin_candidates(integration_result)
+
+        candidates = candidates ++ indexed_candidates(project, env, candidates)
+        to_completion_items(candidates, project, env, context)
     end
   end
+
+  # ElixirSense has plugins for some libraries, such as Phoenix and Ecto, and
+  # their suggestions come back as generic candidates. Where semantic metadata
+  # selects a scope, that scope describes the library instead, so this drops
+  # them.
+  defp without_plugin_candidates(candidates, %Result{mode: :ignore}), do: candidates
+
+  defp without_plugin_candidates(candidates, %Result{}),
+    do: Enum.reject(candidates, &match?(%Candidate.Generic{}, &1))
+
+  defp indexed_candidates(project, env, candidates) do
+    case Code.Fragment.cursor_context(env.prefix) do
+      :expr ->
+        imported_candidates(project, env, "", candidates)
+
+      {context, name} when context in [:local_or_var, :local_call] ->
+        imported_candidates(project, env, to_string(name), candidates)
+
+      _context ->
+        []
+    end
+  end
+
+  defp imported_candidates(project, env, prefix, candidates) do
+    exports = &ModuleRegistry.module_exports(project, &1)
+
+    analysis =
+      case Analysis.cursor_env_at(env.analysis, env.position) do
+        nil ->
+          cursor_env = EngineApi.cursor_env(project, env.document, env.position)
+          %{env.analysis | cursor_env: cursor_env}
+
+        _cursor_env ->
+          env.analysis
+      end
+
+    listed =
+      for %struct{name: name, origin: origin, arity: arity} <- candidates,
+          struct in [Candidate.Function, Candidate.Macro],
+          into: MapSet.new(),
+          do: {origin, name, arity}
+
+    imports =
+      for {module, name, arity} = mfa <- Analyzer.imports_at(analysis, env.position, exports),
+          label = Atom.to_string(name),
+          String.starts_with?(label, prefix),
+          not MapSet.member?(listed, {Formats.module(module), label, arity}),
+          uniq: true,
+          do: mfa
+
+    for {module, mfas} <- Enum.group_by(imports, &elem(&1, 0)),
+        ModuleRegistry.beam_path(project, module) != nil,
+        docs = BeamDocs.fetch(project, module),
+        application = ModuleRegistry.application(project, module),
+        {_module, name, arity} <- mfas,
+        do: imported_candidate(module, name, arity, docs, application)
+  end
+
+  defp imported_candidate(module, name, arity, docs, application) do
+    {candidate_module, kind} =
+      if Map.has_key?(docs, {:macro, name, arity}),
+        do: {Candidate.Macro, :macro},
+        else: {Candidate.Function, :function}
+
+    {signatures, documentation, metadata} = Map.get(docs, {kind, name, arity}, {[], %{}, %{}})
+
+    candidate_module.new(%{
+      args_list: ArgumentNames.from_signatures(signatures, arity),
+      arity: arity,
+      metadata: Map.put(metadata, :app, application),
+      name: Atom.to_string(name),
+      origin: Formats.module(module),
+      summary: summary(documentation),
+      type: kind,
+      visibility: :public
+    })
+  end
+
+  defp summary(%{"en" => summary}), do: summary
+  defp summary(_documentation), do: ""
 
   defp should_emit_completions?(%Env{} = env) do
     if inside_comment?(env) or inside_string?(env) do
@@ -444,6 +589,8 @@ defmodule Expert.CodeIntelligence.Completion do
         false
     end
   end
+
+  defp typespec_or_type_candidate?(%Candidate.Generic{kind: :type_parameter}, _env), do: true
 
   defp typespec_or_type_candidate?(_, _) do
     false

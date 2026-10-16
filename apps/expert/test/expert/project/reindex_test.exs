@@ -149,6 +149,24 @@ defmodule Expert.Project.ReindexTest do
 
       refute_called(Indexer.record_integrations(project))
     end
+
+    @tag reindex_fun: :default
+    test "broadcasts the error when recording integrations fails", %{project: project} do
+      patch(Indexer, :create_index, fn ^project -> :ok end)
+      patch(Indexer, :record_integrations, fn ^project -> {:error, :write_failed} end)
+
+      test_pid = self()
+
+      patch(EngineApi, :broadcast, fn ^project, message ->
+        send(test_pid, {:broadcast, message})
+        :ok
+      end)
+
+      assert :ok = Reindex.perform(project)
+
+      assert_receive {:broadcast,
+                      project_reindexed(project: ^project, status: {:error, :write_failed})}
+    end
   end
 
   defp start_reindex!(project, opts) do

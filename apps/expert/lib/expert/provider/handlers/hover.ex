@@ -4,12 +4,11 @@ defmodule Expert.Provider.Handlers.Hover do
   alias Expert.CodeIntelligence.Hex
   alias Expert.Document.Context
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Entity
   alias Expert.Provider.Markdown
   alias Expert.Search.Store
   alias Forge.Ast
-  alias Forge.Ast.Analysis
-  alias Forge.Ast.Env
   alias Forge.CodeIntelligence.Docs
   alias Forge.Document
   alias Forge.Document.Position
@@ -29,9 +28,9 @@ defmodule Expert.Provider.Handlers.Hover do
       with {:ok, _document, %Ast.Analysis{} = analysis} <-
              Document.Store.fetch(document.uri, :analysis),
            nil <- hex_hover(document, analysis, params.position, project) do
-        integration_hovers = integration_hovers(project, analysis, params.position)
-        generic_hover = generic_hover(project, document, analysis, params.position)
-        combine_hovers(integration_hovers, generic_hover)
+        cursor = SemanticMetadata.cursor(project, analysis, params.position)
+        generic_hover = generic_hover(project, document, analysis, params.position, cursor)
+        combine_hovers(SemanticMetadata.hover(cursor), generic_hover)
       else
         %Structures.Hover{} = hover ->
           hover
@@ -43,15 +42,8 @@ defmodule Expert.Provider.Handlers.Hover do
     {:ok, maybe_hover}
   end
 
-  defp integration_hovers(project, analysis, position) do
-    case Env.new(project, analysis, position) do
-      {:ok, env} -> Integrations.hover(env)
-      _ -> []
-    end
-  end
-
-  defp generic_hover(project, document, analysis, position) do
-    with {:ok, entity, range} <- resolve_entity(project, analysis, position),
+  defp generic_hover(project, document, analysis, position, cursor) do
+    with {:ok, entity, range} <- Entity.resolve(project, analysis, position, cursor),
          {:ok, markdown} <- hover_content(entity, project) do
       {:ok, markdown, range}
     else
@@ -64,7 +56,7 @@ defmodule Expert.Provider.Handlers.Hover do
   defp combine_hovers(integration_hovers, generic_hover) do
     hovers =
       integration_hovers
-      |> prepend_hover(generic_hover)
+      |> append_hover(generic_hover)
       |> Enum.uniq_by(&elem(&1, 0))
 
     case hovers do
@@ -83,8 +75,8 @@ defmodule Expert.Provider.Handlers.Hover do
     end
   end
 
-  defp prepend_hover(hovers, {:ok, markdown, range}), do: [{markdown, range} | hovers]
-  defp prepend_hover(hovers, nil), do: hovers
+  defp append_hover(hovers, {:ok, markdown, range}), do: hovers ++ [{markdown, range}]
+  defp append_hover(hovers, nil), do: hovers
 
   defp hex_hover(%Document{} = document, analysis, %Position{} = position, project) do
     with true <- Hex.project_file?(project, document),
@@ -93,10 +85,6 @@ defmodule Expert.Provider.Handlers.Hover do
     else
       _ -> nil
     end
-  end
-
-  defp resolve_entity(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
-    EngineApi.resolve_entity(project, analysis, position)
   end
 
   defp elixir_sense_hover(project, document, position) do

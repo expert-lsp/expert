@@ -65,6 +65,11 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
       :ets.delete(table, {:module, module})
     end
 
+    # An index run registers only the modules of the BEAM files it reads, and it
+    # skips unchanged files when it loads a stored index. Each BEAM file is
+    # named after its module, so `beam_path/2` falls back to these paths.
+    :ets.insert(table, Enum.map(beam_paths, &{{:beam, Path.basename(&1, ".beam")}, &1}))
+
     {:reply, :ok, table}
   end
 
@@ -125,9 +130,17 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def beam_path(nil, _module), do: nil
 
   def beam_path(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
-      [{{:module, ^module}, %{beam_path: beam_path}}] -> beam_path
-      [] -> nil
+    table = name(project)
+
+    case :ets.lookup(table, {:module, module}) do
+      [{{:module, ^module}, %{beam_path: beam_path}}] ->
+        beam_path
+
+      [] ->
+        case :ets.lookup(table, {:beam, Atom.to_string(module)}) do
+          [{_key, beam_path}] -> beam_path
+          [] -> nil
+        end
     end
   end
 

@@ -16,8 +16,6 @@ defmodule Engine.CodeIntelligence.Hover do
   end
 
   defp elixir_sense_hover(%Analysis{} = analysis, %Position{} = position) do
-    analysis = Engine.CodeIntelligence.Heex.maybe_normalize(analysis, position)
-
     analysis.document
     |> Document.to_string()
     |> ElixirSense.docs(position.line, position.character)

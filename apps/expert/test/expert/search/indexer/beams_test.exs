@@ -150,7 +150,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert start_pos.context_line != nil
     end
 
-    test "indexes integration entries locally", %{tmp_dir: tmp_dir} do
+    test "indexes integration entries locally under the owner application", %{tmp_dir: tmp_dir} do
       module = unique_module("Integration")
       project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
 
@@ -160,18 +160,22 @@ defmodule Expert.Search.Indexer.BeamsTest do
           rewrite_source?: false
         )
 
-      integration_entry = Entry.integration(source_path, "test", :metadata, module, %{})
+      integration_entry = Entry.integration(source_path, "test", :metadata, inspect(module), %{})
 
       patch(Integrations, :index_beam, fn ^project, binary, %{module: ^module}, ^source_path ->
         assert is_binary(binary)
         [integration_entry]
       end)
 
-      patch(ModuleRegistry, :put, fn ^project, ^module, ^beam_path, nil, _exports -> :ok end)
+      patch(ModuleRegistry, :put, fn ^project, ^module, ^beam_path, :owner, _exports -> :ok end)
 
-      {entries, _manifest_entries} = index_beams([beam_path], project: project)
+      {entries, _manifest_entries} =
+        index_beams([beam_path],
+          project: project,
+          applications: %{Path.dirname(beam_path) => :owner}
+        )
 
-      assert integration_entry in entries
+      assert %{integration_entry | application: :owner} in entries
     end
 
     test "synthesizes contextual ranges for macro-generated definitions from beam metadata", %{
@@ -486,6 +490,77 @@ defmodule Expert.Search.Indexer.BeamsTest do
              )
     end
 
+    test "points a struct definition at the defstruct line", %{tmp_dir: tmp_dir} do
+      module = unique_module("Struct")
+
+      source = """
+      defmodule #{inspect(module)} do
+        @moduledoc false
+
+        defstruct [:name]
+      end
+      """
+
+      %{entries: entries} =
+        index_source!(tmp_dir, source, expected_modules: [module], rewrite_source?: false)
+
+      range = definition_range(entries, module, :struct)
+      assert range.start.line == 4
+      assert extract(source, range) == "defstruct [:name]"
+    end
+
+    test "points a struct that a macro declares at the macro call", %{tmp_dir: tmp_dir} do
+      macros = unique_module("Schema")
+      module = unique_module("User")
+      child = Module.concat(module, Settings)
+
+      source = """
+      defmodule #{inspect(macros)} do
+        defmacro schema(_source, do: _block) do
+          quote do
+            defstruct [:id]
+          end
+        end
+
+        defmacro embeds_one(_name, name, do: _block) do
+          quote do
+            defmodule unquote(name) do
+              defstruct [:value]
+            end
+          end
+        end
+      end
+
+      defmodule #{inspect(module)} do
+        require #{inspect(macros)}
+
+        #{inspect(macros)}.schema "users" do
+          :fields
+        end
+
+        #{inspect(macros)}.embeds_one :settings, Settings do
+          :fields
+        end
+      end
+      """
+
+      %{entries: entries} =
+        index_source!(tmp_dir, source,
+          expected_modules: [macros, module, child],
+          rewrite_source?: false
+        )
+
+      schema = definition_range(entries, module, :struct)
+      assert schema.start.line == 20
+      assert extract(source, schema) == "#{inspect(macros)}.schema \"users\" do"
+
+      for type <- [:struct, :module] do
+        settings = definition_range(entries, child, type)
+        assert settings.start.line == 24
+        assert extract(source, settings) == "Settings"
+      end
+    end
+
     test "indexes protocols and implementations from beam metadata", %{tmp_dir: tmp_dir} do
       protocol = unique_module("Protocol")
       implementation = Module.concat(protocol, Atom)
@@ -684,6 +759,16 @@ defmodule Expert.Search.Indexer.BeamsTest do
       ebin_path: ebin_path,
       source_path: source_path
     }
+  end
+
+  defp definition_range(entries, module, type) do
+    %Entry{range: range} =
+      Enum.find(
+        entries,
+        &(&1.subject == module and &1.type == type and &1.subtype == :definition)
+      )
+
+    range
   end
 
   defp unique_module(prefix) do

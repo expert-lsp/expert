@@ -17,6 +17,14 @@ defmodule Expert.EngineApi do
     |> :erpc.call(m, f, a)
   end
 
+  def call_handlers(%Project{} = project, handlers, arguments) do
+    call(project, Engine, :call_handlers, [handlers, arguments])
+  end
+
+  def bundled_metadata(%Project{} = project) do
+    call(project, Engine, :bundled_metadata)
+  end
+
   def schedule_compile(%Project{} = project, force?) do
     call(project, Engine, :schedule_compile, [force?])
   end
@@ -31,6 +39,10 @@ defmodule Expert.EngineApi do
 
   def analyze(%Project{} = project, %Document{} = document, opts \\ []) do
     call(project, Ast, :analyze, [document, opts])
+  end
+
+  def cursor_env(%Project{} = project, %Document{} = document, %Position{} = position) do
+    call(project, Analysis, :cursor_env, [document, position])
   end
 
   def expand_alias(
@@ -106,6 +118,15 @@ defmodule Expert.EngineApi do
     call(project, Engine, :definition, [document, position])
   end
 
+  def entity_definition(
+        %Project{} = project,
+        %Analysis{} = analysis,
+        %Position{} = position,
+        entity
+      ) do
+    call(project, Engine, :entity_definition, [analysis, position, entity])
+  end
+
   def implementation(%Project{} = project, %Document{} = document, %Position{} = position) do
     call(project, Engine, :implementation, [document, position])
   end
@@ -126,10 +147,6 @@ defmodule Expert.EngineApi do
   def modules_with_prefix(%Project{} = project, prefix, predicate)
       when is_binary(prefix) or is_atom(prefix) do
     call(project, Engine, :modules_with_prefix, [prefix, predicate])
-  end
-
-  def module_from_string(%Project{} = project, module_name) when is_binary(module_name) do
-    call(project, Engine.Modules, :from_string, [module_name])
   end
 
   @spec docs(Project.t(), module()) :: {:ok, CodeIntelligence.Docs.t()} | {:error, any()}

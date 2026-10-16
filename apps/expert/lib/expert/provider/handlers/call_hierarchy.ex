@@ -46,7 +46,7 @@ defmodule Expert.Provider.Handlers.CallHierarchy do
     with {:ok, _document, %Ast.Analysis{} = analysis} <-
            Document.Store.fetch(document.uri, :analysis),
          {:ok, {:call, module, function, arity}, _range} <-
-           Expert.EngineApi.resolve_entity(project, analysis, params.position) do
+           Expert.Integrations.SemanticMetadata.Entity.resolve(project, analysis, params.position) do
       mfa = Formats.mfa(module, function, arity)
 
       case Expert.Search.Store.exact(project, mfa, subtype: :definition) do

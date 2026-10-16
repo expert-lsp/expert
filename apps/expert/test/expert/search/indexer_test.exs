@@ -6,7 +6,6 @@ defmodule Expert.Search.IndexerTest do
 
   alias Expert.EngineApi
   alias Expert.Integrations
-  alias Expert.Integrations.Cache
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.Manifest
@@ -81,7 +80,6 @@ defmodule Expert.Search.IndexerTest do
     project = project()
     start_supervised!({Expert.Project.Store, []})
     start_supervised!({ModuleRegistry, project})
-    start_supervised!({Cache, project})
     start_supervised!(Engine.ApplicationCache)
 
     patch(Engine.Api.Proxy, :broadcast, fn _ -> :ok end)
@@ -101,8 +99,8 @@ defmodule Expert.Search.IndexerTest do
       Forge.Ast.analyze(document, opts)
     end)
 
-    patch(Integrations, :indexer_module_names, fn ->
-      ["Expert.Integrations.Spark.Indexer"]
+    patch(Integrations, :indexer_versions, fn ->
+      [{"Expert.Integrations.Spark.Indexer", 1}]
     end)
 
     patch(Integrations, :index_beam, fn _project, _binary, _metadata, _source_path -> [] end)
@@ -188,7 +186,6 @@ defmodule Expert.Search.IndexerTest do
 
   defp start_registry(project) do
     start_supervised!({ModuleRegistry, project})
-    start_supervised!({Cache, project})
     Expert.Project.Store.add_projects([project])
     Expert.Project.Store.transition(project, :ready)
   end
@@ -251,12 +248,6 @@ defmodule Expert.Search.IndexerTest do
   end
 
   describe "create_index/1" do
-    test "clears the integration cache after a successful index", %{project: project} do
-      assert :old = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :old end)
-      assert :ok = Indexer.create_index(project, paths: %Paths{})
-      assert :new = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :new end)
-    end
-
     test "clears Engine application metadata before and after indexing", %{project: project} do
       test_pid = self()
 
@@ -448,8 +439,16 @@ defmodule Expert.Search.IndexerTest do
       assert Enum.all?(entries, fn entry -> Path.extname(entry.path) in [".ex", ".exs"] end)
     end
 
-    test "indexes bare projects without treating root/deps as a dependency directory" do
-      bare_root = native_join([fixtures_path(), "scratch"])
+    @tag :tmp_dir
+    test "indexes bare projects without treating root/deps as a dependency directory", %{
+      tmp_dir: tmp_dir
+    } do
+      bare_root = native_join([tmp_dir, "scratch"])
+      File.mkdir_p!(bare_root)
+
+      source = native_join([fixtures_path(), "scratch", "bare_file.ex"])
+      File.cp!(source, native_join([bare_root, "bare_file.ex"]))
+
       bare_project = bare_root |> Forge.Document.Path.to_uri() |> Project.bare()
 
       patch(Engine, :get_project, fn -> bare_project end)
@@ -833,30 +832,6 @@ defmodule Expert.Search.IndexerTest do
   end
 
   describe "update_index/1 persistence" do
-    test "keeps the old cache until a successful update commits", %{project: project} do
-      assert :old = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :old end)
-
-      patch(Store, :apply_index_update, fn ^project, entries, paths_to_clear ->
-        assert :old =
-                 Cache.fetch(project, __MODULE__, :lifecycle, fn -> :missing end)
-
-        FakeBackend.apply_index_update(entries, paths_to_clear)
-      end)
-
-      assert :ok = Indexer.update_index(project, paths: %Paths{})
-      assert :new = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :new end)
-    end
-
-    test "keeps the old cache when an update commit fails", %{project: project} do
-      assert :old = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :old end)
-      patch(ManifestStore, :commit, fn ^project, _manifest -> {:error, :commit_failed} end)
-
-      assert {:error, :commit_failed} = Indexer.update_index(project, paths: %Paths{})
-
-      assert :old =
-               Cache.fetch(project, __MODULE__, :lifecycle, fn -> :missing end)
-    end
-
     @tag :tmp_dir
     test "streams entries in bounded chunks during refresh", %{project: project, tmp_dir: tmp_dir} do
       path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
@@ -928,49 +903,7 @@ defmodule Expert.Search.IndexerTest do
 
   describe "update_index/1 with dependency beams" do
     test "reindexes beam siblings sharing source" do
-      tmp_dir = Path.join(System.tmp_dir!(), "indexer-#{unique_id()}")
-
-      on_exit(fn -> File.rm_rf!(tmp_dir) end)
-
-      parent = Module.concat(BeamDependencyIndexerTest, :SiblingParent)
-      child = Module.concat(parent, :Child)
-
-      dep_source = """
-      defmodule #{inspect(parent)} do
-        def parent_fun, do: :ok
-
-        defmodule Child do
-          def child_fun, do: :ok
-        end
-      end
-      """
-
-      %{beam_paths: beam_paths, project: project} =
-        with_beam_dependency(tmp_dir,
-          module: parent,
-          modules: [parent, child],
-          expected_modules: [parent, child],
-          rewrite_source?: false,
-          dep_source: dep_source
-        )
-
-      start_registry(project)
-
-      parent_beam_path =
-        Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(parent) <> ".beam"))
-
-      child_beam_path =
-        Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(child) <> ".beam"))
-
-      assert is_binary(parent_beam_path)
-      assert is_binary(child_beam_path)
-
-      {parent_entries, parent_manifest_entries} = index_beams([parent_beam_path])
-      FakeBackend.set_entries(parent_entries)
-      assert :ok = ManifestStore.commit(project, Manifest.new(parent_manifest_entries))
-
-      assert {updated_entries, _cleared_paths} = update_index(project)
-      updated_entries = Enum.to_list(updated_entries)
+      {updated_entries, parent, child} = update_sibling_index(:SiblingParent, "")
 
       assert Enum.any?(updated_entries, &(&1.subject == parent and &1.subtype == :definition))
       assert Enum.any?(updated_entries, &(&1.subject == child and &1.subtype == :definition))
@@ -980,6 +913,74 @@ defmodule Expert.Search.IndexerTest do
                &(&1.subject == child and &1.subtype == :definition)
              )
     end
+
+    test "keeps the semantic metadata of a beam that shares its source with siblings" do
+      restore(Integrations, :index_beam)
+
+      {updated_entries, parent, _child} =
+        update_sibling_index(:MetadataParent, """
+        Module.register_attribute(__MODULE__, :elixir_semantic_metadata,
+          accumulate: true,
+          persist: true
+        )
+
+        @elixir_semantic_metadata {
+          :elixir_semantic_metadata_v1,
+          %{
+            contexts: [%{mfa: {__MODULE__, :configure, 1}, block: :do, scope: :root}],
+            scopes: %{root: %{entries: [%{kind: :function, mfa: {__MODULE__, :value, 0}}]}}
+          }
+        }
+        """)
+
+      assert Enum.any?(
+               updated_entries,
+               &match?(
+                 %Entry{metadata: %{payload: %{contexts: [%{mfa: {^parent, :configure, 1}}]}}},
+                 &1
+               )
+             )
+    end
+  end
+
+  defp update_sibling_index(name, body) do
+    tmp_dir = Path.join(System.tmp_dir!(), "indexer-#{unique_id()}")
+    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+    parent = Module.concat(BeamDependencyIndexerTest, name)
+    child = Module.concat(parent, :Child)
+
+    dep_source = """
+    defmodule #{inspect(parent)} do
+      #{body}
+      def parent_fun, do: :ok
+
+      defmodule Child do
+        def child_fun, do: :ok
+      end
+    end
+    """
+
+    %{beam_paths: beam_paths, project: project} =
+      with_beam_dependency(tmp_dir,
+        module: parent,
+        modules: [parent, child],
+        expected_modules: [parent, child],
+        rewrite_source?: false,
+        dep_source: dep_source
+      )
+
+    start_registry(project)
+
+    parent_beam_path =
+      Enum.find(beam_paths, &String.ends_with?(&1, Atom.to_string(parent) <> ".beam"))
+
+    {parent_entries, parent_manifest_entries} = index_beams([parent_beam_path])
+    FakeBackend.set_entries(parent_entries)
+    assert :ok = ManifestStore.commit(project, Manifest.new(parent_manifest_entries))
+
+    assert {updated_entries, _cleared_paths} = update_index(project)
+    {Enum.to_list(updated_entries), parent, child}
   end
 
   @ephemeral_file_name "ephemeral.ex"
@@ -1130,7 +1131,7 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       entries: previous_entries
     } do
-      patch(Integrations, :indexer_module_names, fn -> ["New.Indexer"] end)
+      patch(Integrations, :indexer_versions, fn -> [{"New.Indexer", 1}] end)
 
       assert {entries, _paths_to_clear} = update_index(project)
 
@@ -1530,8 +1531,8 @@ defmodule Expert.Search.IndexerTest do
   end
 
   test "integration state uses the local indexer registry", %{project: project} do
-    names = ["Custom.Indexer"]
-    patch(Integrations, :indexer_module_names, fn -> names end)
+    versions = [{"Custom.Indexer", 1}]
+    patch(Integrations, :indexer_versions, fn -> versions end)
 
     assert :ok = ManifestStore.commit(project, Manifest.new([]))
     assert :ok = Indexer.record_integrations(project)
