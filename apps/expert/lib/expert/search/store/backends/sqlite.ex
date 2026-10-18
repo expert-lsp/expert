@@ -1311,7 +1311,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp delete_entries_for_paths(%State{}, []), do: {:ok, []}
 
+  # Each path is a bound variable, so many paths are cleared a chunk at a time.
   defp delete_entries_for_paths(%State{} = state, paths) do
+    paths
+    |> Enum.chunk_every(@sqlite_variable_limit)
+    |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, deleted_ids} ->
+      case delete_entries_for_path_chunk(state, chunk) do
+        {:ok, chunk_ids} -> {:cont, {:ok, chunk_ids ++ deleted_ids}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp delete_entries_for_path_chunk(%State{} = state, paths) do
     with {:ok, rows} <-
            query(
              state,
@@ -1392,7 +1404,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp delete_structures_for_paths(%State{}, []), do: :ok
 
   defp delete_structures_for_paths(%State{} = state, paths) do
-    exec(state, "DELETE FROM structures WHERE path IN (#{placeholders(paths)})", paths)
+    paths
+    |> Enum.chunk_every(@sqlite_variable_limit)
+    |> Enum.reduce_while(:ok, fn chunk, :ok ->
+      case exec(state, "DELETE FROM structures WHERE path IN (#{placeholders(chunk)})", chunk) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp query_entries(%State{} = state, where, args) do

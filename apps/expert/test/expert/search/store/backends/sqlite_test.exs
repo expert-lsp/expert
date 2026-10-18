@@ -685,6 +685,35 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert [^new_entry] = Sqlite.find_by_subject(project, Replaced.New, :_, :_)
     end
 
+    test "clears more files than SQLite binds at once", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      paths = for index <- 1..40_000, do: "/many/file_#{index}.ex"
+
+      entries =
+        for {path, id} <- Enum.with_index(paths, 1) do
+          %Entry{id: id, subject: "Many.function_#{id}/0", path: path, type: {:function, :public}, subtype: :definition, block_id: :root}
+        end
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      update = fn write_batch ->
+        with :ok <- write_batch.([]), do: {:ok, :updated}
+      end
+
+      assert {:ok, deleted_ids, :updated} = Sqlite.apply_index_update(project, update, paths)
+      assert Enum.sort(deleted_ids) == Enum.to_list(1..40_000)
+      assert Sqlite.path_to_ids(project) == %{}
+    end
+
     test "chunks blob deletes that exceed SQLite's variable limit", %{
       project: project,
       runtime_versions: runtime_versions
