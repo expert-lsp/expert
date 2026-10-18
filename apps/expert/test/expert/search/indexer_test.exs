@@ -1114,7 +1114,7 @@ defmodule Expert.Search.IndexerTest do
 
     test "the ephemeral file is listed in the updated index", %{project: project} do
       assert {entries, _cleared_paths} = update_index(project)
-      assert [_structure, updated_entry] = entries
+      assert [updated_entry] = entries
 
       assert Path.basename(updated_entry.path) == @ephemeral_file_name
       assert updated_entry.subject == Ephemeral
@@ -1122,7 +1122,7 @@ defmodule Expert.Search.IndexerTest do
 
     test "writes returned entries into the backend", %{project: project} do
       assert {entries, _cleared_paths} = update_index(project)
-      assert [_structure, updated_entry] = entries
+      assert [updated_entry] = entries
 
       assert Enum.any?(FakeBackend.entries(), &(&1.subject == updated_entry.subject))
     end
@@ -1134,7 +1134,7 @@ defmodule Expert.Search.IndexerTest do
       FakeBackend.set_entries(Enum.reject(FakeBackend.entries(), &(&1.path == file_path)))
 
       assert {entries, _cleared_paths} = update_index(project)
-      assert [_structure, updated_entry] = entries
+      assert [updated_entry] = entries
 
       assert updated_entry.path == file_path
       assert updated_entry.subject == Ephemeral
@@ -1184,7 +1184,7 @@ defmodule Expert.Search.IndexerTest do
       File.touch!(file_path, {{2100, 1, 1}, {0, 0, 0}})
 
       assert {entries, _cleared_paths} = update_index(project)
-      assert [_structure, entry] = entries
+      assert [entry] = entries
 
       assert entry.path == file_path
       assert entry.subject == Brand.Spanking.New

@@ -241,24 +241,6 @@ defmodule Expert.Search.Store.State do
     end
   end
 
-  def siblings(%__MODULE__{loaded?: false}, _entry), do: {:error, :loading}
-
-  def siblings(%__MODULE__{} = state, entry) do
-    case state.backend.siblings(state.project, entry) do
-      l when is_list(l) -> {:ok, l}
-      error -> error
-    end
-  end
-
-  def parent(%__MODULE__{loaded?: false}, _entry), do: {:error, :loading}
-
-  def parent(%__MODULE__{} = state, entry) do
-    case state.backend.parent(state.project, entry) do
-      %Entry{} = entry -> {:ok, entry}
-      error -> error
-    end
-  end
-
   def buffer_updates(%__MODULE__{} = state, path, entries) do
     %__MODULE__{state | update_buffer: Map.put(state.update_buffer, path, entries)}
   end

@@ -15,7 +15,6 @@ defmodule Expert.Search.Store.Backend do
   @type subject_query :: Entry.subject() | wildcard()
   @type type_query :: Entry.entry_type() | wildcard()
   @type subtype_query :: Entry.entry_subtype() | wildcard()
-  @type block_structure :: %{Entry.block_id() => block_structure()} | %{}
   @type replacement(result) ::
           (([Entry.t()] -> :ok | {:error, term()}) ->
              {:ok, result} | {:error, term()})
@@ -32,8 +31,6 @@ defmodule Expert.Search.Store.Backend do
   @callback delete_by_path(Project.t(), Path.t()) :: {:ok, [Entry.entry_id()]} | {:error, any()}
   @callback apply_index_update(Project.t(), [Entry.t()] | replacement(term()), [Path.t()]) ::
               {:ok, [Entry.entry_id()]} | {:ok, [Entry.entry_id()], term()} | {:error, any()}
-  @callback structure_for_path(Project.t(), Path.t()) ::
-              {:ok, block_structure()} | :error | {:error, any()}
   @callback find_by_subject(Project.t(), subject_query(), type_query(), subtype_query()) ::
               [
                 Entry.t()
@@ -55,9 +52,6 @@ defmodule Expert.Search.Store.Backend do
               | {:error, any()}
   @callback find_by_paths(Project.t(), [Path.t()], type_query(), subtype_query()) ::
               [Entry.t()] | {:error, any()}
-  @callback siblings(Project.t(), Entry.t()) ::
-              [Entry.t()] | :error | {:ok, [Entry.t()]} | {:error, any()}
-  @callback parent(Project.t(), Entry.t()) :: {:ok, Entry.t()} | :error | {:error, any()}
 
   @callback encode_entries([Entry.t()]) :: [{:encoded, Entry.t(), term()}]
 
