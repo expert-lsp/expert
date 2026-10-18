@@ -93,6 +93,17 @@ defmodule Engine.Build.StateTest do
       assert Code.get_compiler_option(:parser_options) == [columns: true]
     end
 
+    if Elixir.Features.interpreted_module_definition?() do
+      test "interprets module definitions" do
+        compiler_options = Code.compiler_options()
+        on_exit(fn -> Code.compiler_options(compiler_options) end)
+
+        State.set_compiler_options()
+
+        assert Code.get_compiler_option(:module_definition) == :interpreted
+      end
+    end
+
     test "forces Mix to recompile during a forced project build" do
       assert "--force" in State.mix_compile_opts(true)
       refute "--force" in State.mix_compile_opts(false)
@@ -213,6 +224,19 @@ defmodule Engine.Build.StateTest do
       assert Engine.Build.Project.compile(state.project, true, false) == :ok
 
       refute_called(Engine.Mix.in_project(_, _))
+    end
+
+    test "purges the temporary modules a document compile leaves", %{state: state} do
+      compiler_options = Code.compiler_options()
+      on_exit(fn -> Code.compiler_options(compiler_options) end)
+
+      # temporary modules only exist when module bodies are compiled
+      if Elixir.Features.interpreted_module_definition?(),
+        do: Code.put_compiler_option(:module_definition, :compiled)
+
+      State.compile_file(state, document(state, "defmodule Testing.Purged do\nend\n"))
+
+      assert Code.purge_compiler_modules() == {:ok, 0}
     end
   end
 

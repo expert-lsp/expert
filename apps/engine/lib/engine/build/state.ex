@@ -171,6 +171,11 @@ defmodule Engine.Build.State do
 
       Engine.broadcast(compile_message)
       Engine.broadcast(diagnostics_message)
+
+      # Compiling a project loads a temporary module for each module it
+      # defines. Since Elixir 1.17 they stay until purged, so every build adds
+      # more, until the VM can't load any more modules.
+      Code.purge_compiler_modules()
     end)
 
     %__MODULE__{state | initial_compile?: false}
@@ -184,6 +189,7 @@ defmodule Engine.Build.State do
       Engine.broadcast(file_compile_requested(uri: document.uri))
 
       {elapsed_us, result} = :timer.tc(fn -> compile_document(project, document) end)
+      Code.purge_compiler_modules()
 
       elapsed_ms = to_ms(elapsed_us)
 
@@ -238,12 +244,22 @@ defmodule Engine.Build.State do
   end
 
   def set_compiler_options do
-    Code.compiler_options(
-      parser_options: parser_options(),
-      tracers: [Engine.Compilation.Tracer]
-    )
-
+    Code.compiler_options(compiler_options())
     :ok
+  end
+
+  defp compiler_options do
+    options = [parser_options: parser_options(), tracers: [Engine.Compilation.Tracer]]
+
+    # The VM can load at most 65,536 modules, and compiling a project loads a
+    # temporary module for each module it defines, so a large project can run
+    # out before it finishes. Interpreting module bodies avoids the temporary
+    # modules, and the compiled output is the same.
+    if Features.interpreted_module_definition?() do
+      Keyword.put(options, :module_definition, :interpreted)
+    else
+      options
+    end
   end
 
   def mix_compile_opts(force?) do
