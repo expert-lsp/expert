@@ -82,9 +82,10 @@ defmodule Expert.Project.Indexer do
   end
 
   @impl GenServer
+  # An empty index, including one reset by a schema change, is rebuilt in full
+  # after the build by `run_index/3`, so it doesn't need a forced build.
   def handle_continue(:maybe_initial_compile, %State{initial_compile?: true} = state) do
-    force? = Search.Store.load_status(state.project) not in [:stale, :ready]
-    Node.trigger_build(state.project, force?)
+    Node.trigger_build(state.project, false)
     {:noreply, state}
   end
 
