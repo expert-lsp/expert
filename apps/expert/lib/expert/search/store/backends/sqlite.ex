@@ -770,8 +770,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp configure_database(%State{} = state) do
+    # SQLite can sort large indexes in parallel after the source workers finish.
+    # Bound the extra sort workers to leave room for the connection's own thread.
+    sort_workers = min(max(System.schedulers_online() - 1, 0), 4)
+
     with :ok <- exec(state, "PRAGMA busy_timeout = #{@busy_timeout_ms}"),
-         :ok <- exec(state, "PRAGMA synchronous = NORMAL") do
+         :ok <- exec(state, "PRAGMA synchronous = NORMAL"),
+         :ok <- exec(state, "PRAGMA threads = #{sort_workers}") do
       exec(state, "PRAGMA case_sensitive_like = ON")
     end
   end
