@@ -1320,7 +1320,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp blob(term), do: {:blob, encode_term(term)}
 
-  defp encode_term(term), do: :erlang.term_to_binary(term, [:compressed])
+  # Stored terms are a few hundred bytes at most, where setting up compression
+  # costs far more than it saves.
+  defp encode_term(term), do: :erlang.term_to_binary(term)
   defp decode_term(binary), do: :erlang.binary_to_term(binary)
 
   defp same_block_type?(left_entry, right_entry),
