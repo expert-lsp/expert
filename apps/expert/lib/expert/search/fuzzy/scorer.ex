@@ -21,7 +21,6 @@ defmodule Expert.Search.Fuzzy.Scorer do
   @tail_match_boost 55
   @consecutive_character_bonus 15
   @mismatched_character_penalty 5
-  @initial_period_positions MapSet.new([-1])
 
   @spec preprocess(subject()) :: preprocessed()
   def preprocess(subject) when is_binary(subject) do
@@ -200,16 +199,16 @@ defmodule Expert.Search.Fuzzy.Scorer do
 
   defp period_positions(subject, graphemes) do
     if :binary.match(subject, ".") == :nomatch do
-      @initial_period_positions
+      MapSet.new([-1])
     else
-      find_period_positions(graphemes, 0, @initial_period_positions)
+      MapSet.new(find_period_positions(graphemes, 0, [-1]))
     end
   end
 
   defp find_period_positions([], _idx, acc), do: acc
 
   defp find_period_positions(["." | rest], idx, acc) do
-    find_period_positions(rest, idx + 1, MapSet.put(acc, idx))
+    find_period_positions(rest, idx + 1, [idx | acc])
   end
 
   defp find_period_positions([_ | rest], idx, acc) do
