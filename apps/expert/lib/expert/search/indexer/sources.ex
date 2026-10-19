@@ -9,17 +9,17 @@ defmodule Expert.Search.Indexer.Sources do
         paths,
         source_indexer \\ &Source.index/2,
         encode \\ &Function.identity/1,
-        sizes \\ %{}
+        stats \\ %{}
       )
       when is_list(paths) do
-    {sized_paths, total_bytes} = stat_paths(paths, sizes)
+    {sized_paths, total_bytes} = stat_paths(paths, stats)
 
     if sized_paths == [] do
       Stream.concat([])
     else
       sized_paths
       |> Task.async_stream(
-        fn {path, size} -> {size, index_path(path, source_indexer, encode)} end,
+        fn {path, size, stat} -> {size, index_path(path, stat, source_indexer, encode)} end,
         ordered: false,
         timeout: :infinity
       )
@@ -34,16 +34,19 @@ defmodule Expert.Search.Indexer.Sources do
     end
   end
 
-  defp index_path(path, source_indexer, encode) do
+  defp index_path(path, stat, source_indexer, encode) do
     with {:ok, contents} <- File.read(path),
          {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
          true <- has_search_entries?(entries),
-         {:ok, manifest_entry} <- Manifest.Entry.source(path) do
+         {:ok, manifest_entry} <- manifest_entry(path, stat) do
       [{encode.(entries), manifest_entry}]
     else
       _ -> []
     end
   end
+
+  defp manifest_entry(path, nil), do: Manifest.Entry.source(path)
+  defp manifest_entry(path, %File.Stat{} = stat), do: Manifest.Entry.source(path, stat)
 
   defp has_search_entries?(entries) do
     Enum.any?(entries, fn entry -> entry.subtype != :block_structure end)
@@ -55,16 +58,16 @@ defmodule Expert.Search.Indexer.Sources do
     [{entry, [manifest_entry]} | Enum.map(entries, &{&1, []})]
   end
 
-  defp stat_paths(paths, sizes) do
+  defp stat_paths(paths, stats) do
     sized_paths =
       Enum.map(paths, fn path ->
-        case sizes do
-          %{^path => size} -> {path, size}
-          %{} -> {path, file_size(path)}
+        case stats do
+          %{^path => %File.Stat{size: size} = stat} -> {path, size, stat}
+          %{} -> {path, file_size(path), nil}
         end
       end)
 
-    total_bytes = sized_paths |> Enum.map(fn {_path, size} -> size end) |> Enum.sum()
+    total_bytes = sized_paths |> Enum.map(fn {_path, size, _stat} -> size end) |> Enum.sum()
 
     {sized_paths, total_bytes}
   end

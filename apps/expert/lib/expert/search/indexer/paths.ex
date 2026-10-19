@@ -4,14 +4,14 @@ defmodule Expert.Search.Indexer.Paths do
   alias Forge.Project
 
   defstruct source_paths: [],
-            source_sizes: %{},
+            source_stats: %{},
             beam_paths: [],
             applications: %{},
             unlisted_sources: nil
 
   @type t :: %__MODULE__{
           source_paths: [Path.t()],
-          source_sizes: %{optional(Path.t()) => non_neg_integer()},
+          source_stats: %{optional(Path.t()) => File.Stat.t()},
           beam_paths: [Path.t()],
           applications: %{optional(Path.t()) => atom()},
           unlisted_sources: {Path.t(), [Path.t()]} | nil
@@ -91,12 +91,12 @@ defmodule Expert.Search.Indexer.Paths do
   end
 
   def list_sources(%__MODULE__{unlisted_sources: {root, excluded}} = paths) do
-    {source_paths, source_sizes} = source_files(root, excluded)
+    {source_paths, source_stats} = source_files(root, excluded)
 
     %__MODULE__{
       paths
       | source_paths: source_paths,
-        source_sizes: source_sizes,
+        source_stats: source_stats,
         unlisted_sources: nil
     }
   end
@@ -104,7 +104,7 @@ defmodule Expert.Search.Indexer.Paths do
   def list_sources(%__MODULE__{} = paths), do: paths
 
   # The files `Forge.Path.glob([root, "**", "*.{ex,exs}"])` finds outside
-  # `excluded`, and their sizes, which the walk stats anyway. Like the glob,
+  # `excluded`, and the stats the walk takes of them. Like the glob,
   # it skips hidden entries and follows links to directories. It doesn't go
   # into excluded directories, where a build directory alone can hold tens
   # of thousands of files.
@@ -115,12 +115,13 @@ defmodule Expert.Search.Indexer.Paths do
       root
       |> Forge.Path.normalize()
       |> walk(excluded?, [])
-      |> Enum.map(fn {path, size} -> {Forge.Path.native(path), size} end)
-      |> Enum.reject(fn {path, _size} -> excluded?.(path) end)
-      |> Enum.sort()
-      |> Enum.uniq_by(fn {path, _size} -> path end)
+      |> Enum.map(fn {path, stat} -> {Forge.Path.native(path), stat} end)
+      |> Enum.reject(fn {path, _stat} -> excluded?.(path) end)
+      |> Enum.sort_by(fn {path, _stat} -> path end)
+      |> Enum.uniq_by(fn {path, _stat} -> path end)
 
-    {Enum.map(found, &elem(&1, 0)), Map.new(found)}
+    stats = for {path, %File.Stat{} = stat} <- found, into: %{}, do: {path, stat}
+    {Enum.map(found, &elem(&1, 0)), stats}
   end
 
   defp walk(directory, excluded?, found) do
@@ -141,13 +142,10 @@ defmodule Expert.Search.Indexer.Paths do
 
     found =
       if source_name?(name) do
-        size =
-          case stat do
-            {:ok, %File.Stat{size: size}} -> size
-            _ -> 0
-          end
-
-        [{path, size} | found]
+        case stat do
+          {:ok, %File.Stat{} = stat} -> [{path, stat} | found]
+          _ -> [{path, nil} | found]
+        end
       else
         found
       end

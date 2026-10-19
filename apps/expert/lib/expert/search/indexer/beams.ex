@@ -13,14 +13,66 @@ defmodule Expert.Search.Indexer.Beams do
   @beam_index_concurrency 16
   @beam_index_chunk_bytes 128 * 1024
 
-  def stream(paths, opts \\ []) when is_list(paths) do
-    paths
+  @doc """
+  Indexes beams, registering their modules. Beams are given by path, or as
+  the `{path, stat}` pairs `register/2` returns.
+  """
+  def stream(beams, opts \\ []) when is_list(beams) do
+    beams
     |> result_chunks(opts)
     |> Stream.flat_map(& &1)
   end
 
-  defp result_chunks(paths, opts) do
-    {beams, total_bytes} = stat_beams(paths)
+  @register_chunk_size 500
+
+  @doc """
+  Registers the modules of the beams at `paths` without indexing them.
+
+  Returns `{path, stat, source}` for each beam that could be stat'ed, where
+  `source` is `{module, source_file}` when the beam's debug info names the
+  file its module was compiled from, and `nil` otherwise.
+  """
+  def register(paths, opts) when is_list(paths) do
+    application = &Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(&1))
+    project = Keyword.get(opts, :project)
+
+    paths
+    |> Enum.chunk_every(@register_chunk_size)
+    |> Task.async_stream(
+      fn chunk ->
+        for path <- chunk, {:ok, %File.Stat{} = stat} <- [File.stat(path)] do
+          {path, stat, register_beam(path, project, application.(path))}
+        end
+      end,
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Stream.transform(
+      fn -> start_progress("Registering dependencies") end,
+      fn {:ok, beams}, progress ->
+        {beams, report_progress(progress, length(beams), length(paths), "Registering")}
+      end,
+      &complete_progress/1
+    )
+    |> Enum.to_list()
+  end
+
+  defp register_beam(path, project, application) do
+    with {:ok, beam} <- File.read(path),
+         {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
+      register_modules(project, [{module, path, application, exports}])
+
+      case debug_metadata_result do
+        {:ok, %{file: file}} when is_binary(file) -> {module, Forge.Path.native(file)}
+        _ -> nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp result_chunks(beams, opts) do
+    {beams, total_bytes} = stat_beams(beams)
 
     if beams == [] do
       Stream.concat([])
@@ -78,15 +130,19 @@ defmodule Expert.Search.Indexer.Beams do
     end
   end
 
-  defp stat_beams(paths) do
-    Enum.reduce(paths, {[], 0}, fn path, {beams, total_bytes} ->
-      case File.stat(path) do
-        {:ok, %File.Stat{} = stat} ->
-          {[{path, stat} | beams], total_bytes + stat.size}
+  defp stat_beams(beams) do
+    Enum.reduce(beams, {[], 0}, fn
+      {path, %File.Stat{} = stat}, {beams, total_bytes} ->
+        {[{path, stat} | beams], total_bytes + stat.size}
 
-        _ ->
-          {beams, total_bytes}
-      end
+      path, {beams, total_bytes} ->
+        case File.stat(path) do
+          {:ok, %File.Stat{} = stat} ->
+            {[{path, stat} | beams], total_bytes + stat.size}
+
+          _ ->
+            {beams, total_bytes}
+        end
     end)
   end
 

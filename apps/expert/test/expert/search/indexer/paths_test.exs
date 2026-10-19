@@ -166,8 +166,8 @@ defmodule Expert.Search.Indexer.PathsTest do
       paths = Paths.for_project(project, fn ^project -> {:ok, info} end)
       assert paths.source_paths == globbed
       assert Path.join(root, "linked/a.ex") in paths.source_paths
-      assert paths.source_sizes[Path.join(root, "lib/a.ex")] == byte_size("fixture")
-      assert paths.source_sizes[Path.join(root, "broken.ex")] == 0
+      assert paths.source_stats[Path.join(root, "lib/a.ex")].size == byte_size("fixture")
+      refute Map.has_key?(paths.source_stats, Path.join(root, "broken.ex"))
 
       bare =
         Paths.for_project(Project.bare(Forge.Document.Path.to_uri(root)), fn _ -> flunk() end)

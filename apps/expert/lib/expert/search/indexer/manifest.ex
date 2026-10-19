@@ -37,6 +37,10 @@ defmodule Expert.Search.Indexer.Manifest do
       from_file(path, path, :source)
     end
 
+    def source(path, %File.Stat{} = stat) when is_binary(path) do
+      {:ok, from_stat(path, path, :source, stat)}
+    end
+
     def beam(path, output_path) when is_binary(path) and is_binary(output_path) do
       with {:ok, entry} <- from_file(path, output_path, :beam),
            {:ok, source_stat} <- File.stat(output_path) do

@@ -7,6 +7,7 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
+  alias Expert.Search.Subject
   alias Forge.Project
 
   @entry_chunk_size 4_000
@@ -284,37 +285,87 @@ defmodule Expert.Search.Indexer do
     |> MapSet.new()
   end
 
-  # Indexing beams needs neither the source files listed nor the engine's
+  # A full build registers every beam's module first, since indexing sources
+  # looks modules up in the registry, then indexes the source files, and then
+  # indexes only the beams their sources don't cover (see covered_beam?/4):
+  # registering a beam costs far less than indexing it, and most are
+  # covered. Registering doesn't need the sources listed or the engine's
   # application cache cleared, and indexing sources needs both, so they're
-  # done while the beams are indexed. Updates clear the cache themselves
-  # before they look anything up.
-  defp index_stream(%Paths{} = paths, project, clear_cache?) do
+  # done while beams are registered.
+  #
+  # Returns the source stream, and a function making the beam stream from
+  # the keys of the definitions the sources produced.
+  defp index_streams(%Paths{} = paths, project, clear_cache?) do
     cache_cleared =
       Task.async(fn ->
         if clear_cache?, do: EngineApi.clear_application_cache(project), else: :ok
       end)
 
     sources_listed = Task.async(fn -> Paths.list_sources(paths) end)
+    beam_opts = [project: project, applications: paths.applications]
+    registered = Beams.register(paths.beam_paths, beam_opts)
 
-    beam_items =
-      paths.beam_paths
-      |> Beams.stream(project: project, applications: paths.applications)
-      |> Enum.to_list()
-
-    %Paths{source_paths: source_paths, source_sizes: sizes} =
+    %Paths{source_paths: source_paths, source_stats: stats} =
       Task.await(sources_listed, :infinity)
 
     :ok = Task.await(cache_cleared, :infinity)
 
-    beam_manifest_entries =
-      Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
+    sources =
+      source_paths
+      |> Sources.stream(source_indexer(project), &Store.encode_entries/1, stats)
+      |> tag_stream(:source)
 
-    source_paths
-    |> include_beam_sources(source_paths, beam_manifest_entries)
-    |> Sources.stream(source_indexer(project), &Store.encode_entries/1, sizes)
-    |> tag_stream(:source)
-    |> Stream.concat(tag_stream(beam_items, :beam))
+    beams = fn source_keys ->
+      {covered, uncovered} =
+        Enum.split_with(registered, &covered_beam?(&1, project, source_keys, stats))
+
+      uncovered = for {beam_path, beam_stat, _source} <- uncovered, do: {beam_path, beam_stat}
+
+      covered
+      |> covered_manifest_items(stats)
+      |> Stream.concat(Beams.stream(uncovered, beam_opts))
+      |> tag_stream(:beam)
+    end
+
+    {sources, beams}
   end
+
+  # A covered beam isn't indexed, but gets the manifest entry indexing it
+  # would have made.
+  defp covered_manifest_items(covered, source_stats) do
+    for {beam_path, beam_stat, {_module, source_file}} <- covered do
+      source_stat = Map.fetch!(source_stats, source_file)
+      {:ok, entry} = Manifest.Entry.beam(beam_path, source_file, beam_stat, {:ok, source_stat})
+      {nil, [entry]}
+    end
+  end
+
+  # Indexing a beam makes its module's definition and those of its exports
+  # (see Beams), so when its source file defines them all, the beam adds
+  # nothing. Only beams compiled from one of the project's source files are
+  # checked, since the manifest entry needs that file's stat.
+  defp covered_beam?({_path, _stat, {module, source_file}}, project, source_keys, source_stats)
+       when is_binary(source_file) do
+    defined? = fn subject, kind ->
+      MapSet.member?(source_keys, {:entry, {source_file, subject, :definition, kind}})
+    end
+
+    with %{^source_file => %File.Stat{}} <- source_stats,
+         true <- defined?.(module, :module),
+         {:ok, %{functions: functions, macros: macros}} <-
+           ModuleRegistry.module_exports(project, module) do
+      Enum.all?(functions, fn {name, arity} ->
+        defined?.(Subject.mfa(module, name, arity), :function)
+      end) and
+        Enum.all?(macros, fn {name, arity} ->
+          defined?.(Subject.mfa(module, name, arity), :macro)
+        end)
+    else
+      _ -> false
+    end
+  end
+
+  defp covered_beam?(_beam, _project, _source_keys, _source_stats), do: false
 
   defp include_beam_sources(source_paths, current_source_paths, manifest_entries) do
     # A BEAM batch replaces all entries for its source path. Parse that source in the same batch.
@@ -342,9 +393,11 @@ defmodule Expert.Search.Indexer do
 
   defp replace_store(%Paths{} = paths, state, project, clear_cache?) do
     replacement = fn write_batch ->
-      paths
-      |> index_stream(project, clear_cache?)
-      |> stream_into_store(state, write_batch)
+      {sources, beams} = index_streams(paths, project, clear_cache?)
+
+      with {:ok, state} <- stream_into_store(sources, state, write_batch) do
+        state.source_keys |> beams.() |> stream_into_store(state, write_batch)
+      end
     end
 
     case Store.replace(project, replacement) do

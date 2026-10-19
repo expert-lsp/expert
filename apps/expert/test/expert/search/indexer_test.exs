@@ -747,6 +747,74 @@ defmodule Expert.Search.IndexerTest do
     end
 
     @tag :tmp_dir
+    test "indexes only the beams that define something their source file doesn't", %{
+      tmp_dir: tmp_dir
+    } do
+      covered = Module.concat(BeamDependencyIndexerTest, :"Covered#{unique_id()}")
+      guarded = Module.concat(BeamDependencyIndexerTest, :"Guarded#{unique_id()}")
+
+      dep_source = """
+      defmodule #{inspect(covered)} do
+        def public_fun(a, b \\\\ 1), do: {a, b, private_fun()}
+        defmacro public_macro, do: :ok
+        defdelegate delegated(term), to: Enum, as: :count
+        defp private_fun, do: :ok
+      end
+
+      defmodule #{inspect(guarded)} do
+        defguard is_small(term) when is_integer(term) and term < 10
+      end
+      """
+
+      %{beam_paths: [covered_beam, guarded_beam] = beam_paths, dep_file: dep_file, project: project} =
+        with_beam_dependency(tmp_dir,
+          modules: [covered, guarded],
+          dep_source: dep_source,
+          rewrite_source?: false
+        )
+
+      start_registry(project)
+      dep_root = dep_file |> Path.dirname() |> Path.dirname()
+
+      patch(Paths, :without_sources, fn ^project ->
+        %Paths{
+          unlisted_sources: {dep_root, []},
+          beam_paths: beam_paths,
+          applications: %{Path.dirname(covered_beam) => :beam_dep}
+        }
+      end)
+
+      spy(Beams)
+      entries = create_index(project)
+
+      # the source defines everything the covered beam exports, so only the
+      # guard's beam is indexed
+      assert_called(Beams.stream([{^guarded_beam, _}], _))
+
+      identity = fn %Entry{} = entry ->
+        {entry.path, entry.subject, entry.subtype, elem_or_type(entry.type)}
+      end
+
+      {:ok, source_entries} = Source.index(dep_file, File.read!(dep_file))
+      {beam_entries, beam_manifest_entries} = index_beams(beam_paths)
+
+      # block structures carry ids made up per run
+      searchable = fn %Entry{path: path, subtype: subtype} -> path == dep_file and subtype != :block_structure end
+
+      assert entries |> Enum.filter(searchable) |> MapSet.new(identity) ==
+               source_entries |> Enum.concat(beam_entries) |> Enum.filter(searchable) |> MapSet.new(identity)
+
+      assert Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(guarded, :is_small, 1)))
+
+      {:ok, manifest} = ManifestStore.load(project)
+
+      for beam_path <- beam_paths do
+        expected = Enum.find(beam_manifest_entries, &(&1.input_path == beam_path))
+        assert Manifest.fetch(manifest, beam_path) == {:ok, expected}
+      end
+    end
+
+    @tag :tmp_dir
     test "retains source entries when only a project beam changes", %{tmp_dir: tmp_dir} do
       %{beam_path: beam_path, dep_file: source_path, module: module, project: project} =
         with_beam_dependency(tmp_dir, rewrite_source?: false)
@@ -1129,6 +1197,9 @@ defmodule Expert.Search.IndexerTest do
       assert {[], [^file_path]} = update_index(project)
     end
   end
+
+  defp elem_or_type({kind, _visibility}) when kind in [:function, :macro], do: kind
+  defp elem_or_type(type), do: type
 
   defp with_beam_dependency(tmp_dir, opts \\ []) do
     module_count = Keyword.get(opts, :module_count, 1)
