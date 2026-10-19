@@ -76,13 +76,28 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
           [{atom(), arity()}]
         ) :: :ok
   def put(%Project{} = project, module, beam_path, application, beam_exports) do
-    metadata = %{
-      application: application,
-      beam_path: Forge.Path.native(beam_path),
-      exports: exports_from_beam_chunk(beam_exports)
-    }
+    put_all(project, [{module, beam_path, application, beam_exports}])
+  end
 
-    true = :ets.insert(name(project), {{:module, module}, metadata})
+  @spec put_all(
+          Project.t(),
+          [{module(), Path.t(), atom() | nil, [{atom(), arity()}]}]
+        ) :: :ok
+  def put_all(%Project{} = _project, []), do: :ok
+
+  def put_all(%Project{} = project, modules) when is_list(modules) do
+    objects =
+      Enum.map(modules, fn {module, beam_path, application, beam_exports} ->
+        metadata = %{
+          application: application,
+          beam_path: Forge.Path.native(beam_path),
+          exports: exports_from_beam_chunk(beam_exports)
+        }
+
+        {{:module, module}, metadata}
+      end)
+
+    true = :ets.insert(name(project), objects)
     :ok
   end
 

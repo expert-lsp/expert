@@ -131,4 +131,32 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert [] = :ets.lookup(registry, {:available_module, Current})
     assert [] = :ets.lookup(registry, {:available_module, Removed})
   end
+
+  test "registers multiple modules in batch with put_all/2" do
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+
+    assert :ok = ModuleRegistry.put_all(project, [])
+
+    modules = [
+      {ModA, "/a.beam", :app_a, [foo: 1]},
+      {ModB, "/b.beam", :app_b, [bar: 2]}
+    ]
+
+    assert :ok = ModuleRegistry.put_all(project, modules)
+
+    assert ModuleRegistry.available_module?(project, ModA)
+    assert ModuleRegistry.application(project, ModA) == :app_a
+    assert ModuleRegistry.beam_path(project, ModA) == Forge.Path.native("/a.beam")
+
+    assert {:ok, %{functions: [foo: 1], macros: []}} =
+             ModuleRegistry.module_exports(project, ModA)
+
+    assert ModuleRegistry.available_module?(project, ModB)
+    assert ModuleRegistry.application(project, ModB) == :app_b
+    assert ModuleRegistry.beam_path(project, ModB) == Forge.Path.native("/b.beam")
+
+    assert {:ok, %{functions: [bar: 2], macros: []}} =
+             ModuleRegistry.module_exports(project, ModB)
+  end
 end
