@@ -77,14 +77,15 @@ defmodule Expert.EngineApi do
     ])
   end
 
-  def resolve_code_action(
-        %Project{} = project,
-        %Document{} = document,
-        %Range{} = range,
-        module_name
-      ) do
-    call(project, Engine, :resolve_code_action, [document, range, module_name])
+  def formatter_opts(%Project{} = project, file_path) do
+    call(project, Engine, :formatter_opts, [file_path])
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
   end
+
+  def formatter_opts(_project, _file_path), do: []
 
   def complete(%Project{} = project, %Env{} = env) do
     Logger.info("Completion for #{inspect(env.position)}")
