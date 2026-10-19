@@ -5,6 +5,9 @@ defmodule Expert.Search.Indexer.Sources do
 
   require Logger
 
+  # 8 MB on a 64-bit VM
+  @worker_heap_words 1_000_000
+
   def stream(
         paths,
         source_indexer \\ &Source.index/2,
@@ -19,7 +22,13 @@ defmodule Expert.Search.Indexer.Sources do
     else
       sized_paths
       |> Task.async_stream(
-        fn {path, size, stat} -> {size, index_path(path, stat, source_indexer, encode)} end,
+        fn {path, size, stat} ->
+          # A file's syntax tree is many times its size, and a task's heap
+          # starts tiny and grows by copying, so without this a third of a
+          # worker's time goes to garbage collections that free nothing.
+          Process.flag(:min_heap_size, @worker_heap_words)
+          {size, index_path(path, stat, source_indexer, encode)}
+        end,
         ordered: false,
         timeout: :infinity
       )
