@@ -19,8 +19,8 @@ defmodule Expert.Search.Indexer.Source do
   def index(path, source, extractors, project) do
     document = Document.new(path, source, 1)
 
-    case Ast.from(document) do
-      {:ok, quoted, _comments} ->
+    case parse(document, source) do
+      {:ok, quoted} ->
         use_imports =
           if may_call_use?(source),
             do: EngineApi.use_imports(project, quoted, document),
@@ -30,6 +30,30 @@ defmodule Expert.Search.Indexer.Source do
 
       _invalid ->
         {:ok, []}
+    end
+  end
+
+  # A file on disk nearly always parses, and nothing is indexed from one that
+  # doesn't, so the Erlang parser does the work, with the options of
+  # `Forge.Ast.from/1`, and the error-tolerant parser behind `Forge.Ast.from/1`
+  # only sees what it rejects.
+  defp parse(document, source) do
+    opts = [
+      literal_encoder: &{:ok, {:__block__, &2, [&1]}},
+      token_metadata: true,
+      columns: true,
+      unescape: false
+    ]
+
+    case Code.string_to_quoted(source, opts) do
+      {:ok, quoted} ->
+        {:ok, quoted}
+
+      {:error, _} ->
+        case Ast.from(document) do
+          {:ok, quoted, _comments} -> {:ok, quoted}
+          invalid -> invalid
+        end
     end
   end
 
