@@ -21,20 +21,16 @@ defmodule Expert.Search.Fuzzy.Scorer do
   @tail_match_boost 55
   @consecutive_character_bonus 15
   @mismatched_character_penalty 5
+  @initial_period_positions MapSet.new([-1])
 
   @spec preprocess(subject()) :: preprocessed()
   def preprocess(subject) when is_binary(subject) do
-    graphemes =
-      subject
-      |> String.graphemes()
-      |> List.to_tuple()
-
-    normalized = normalize(subject)
+    graphemes = String.graphemes(subject)
 
     subject(
-      graphemes: graphemes,
-      normalized: normalized,
-      period_positions: period_positions(normalized)
+      graphemes: List.to_tuple(graphemes),
+      normalized: normalize(subject),
+      period_positions: period_positions(subject, graphemes)
     )
   end
 
@@ -202,14 +198,22 @@ defmodule Expert.Search.Fuzzy.Scorer do
 
   defp uppercase?(_), do: false
 
-  defp period_positions(string) do
-    string
-    |> String.graphemes()
-    |> Enum.with_index()
-    |> Enum.reduce(MapSet.new([-1]), fn
-      {".", index}, positions -> MapSet.put(positions, index)
-      _, positions -> positions
-    end)
+  defp period_positions(subject, graphemes) do
+    if :binary.match(subject, ".") == :nomatch do
+      @initial_period_positions
+    else
+      find_period_positions(graphemes, 0, @initial_period_positions)
+    end
+  end
+
+  defp find_period_positions([], _idx, acc), do: acc
+
+  defp find_period_positions(["." | rest], idx, acc) do
+    find_period_positions(rest, idx + 1, MapSet.put(acc, idx))
+  end
+
+  defp find_period_positions([_ | rest], idx, acc) do
+    find_period_positions(rest, idx + 1, acc)
   end
 
   defp normalize(string), do: String.downcase(string)
