@@ -771,8 +771,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  @impl Backend
+  def encode_entries(entries) do
+    Enum.map(entries, fn
+      %Entry{} = entry when Entry.is_structure(entry) -> {:encoded, entry, nil}
+      %Entry{} = entry -> {:encoded, entry, encode_row(entry)}
+    end)
+  end
+
   defp insert_entries(%State{} = state, entries) do
-    {structures, entries} = Enum.split_with(entries, fn entry -> Entry.is_structure(entry) end)
+    {structures, entries} =
+      Enum.split_with(entries, fn item -> Entry.is_structure(entry_of(item)) end)
+
+    structures = Enum.map(structures, &entry_of/1)
 
     with :ok <- insert_entry_batches(state, entries) do
       insert_structures(state, structures)
@@ -794,12 +805,23 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp insert_entry_batch(%State{} = state, batch) do
     with {:ok, entry_key} <- next_entry_key(state) do
-      rows = Enum.with_index(batch, entry_key)
+      rows = batch |> encode_rows() |> Enum.with_index(entry_key)
 
       with :ok <- insert_entry_rows(state, rows) do
         insert_entry_blobs(state, rows)
       end
     end
+  end
+
+  defp entry_of({:encoded, entry, _row}), do: entry
+  defp entry_of(%Entry{} = entry), do: entry
+
+  defp encode_rows(batch), do: Enum.map(batch, &encode_row/1)
+
+  defp encode_row({:encoded, _entry, row}), do: row
+
+  defp encode_row(%Entry{} = entry) do
+    {entry_args(entry), build_entry_blob(entry)}
   end
 
   defp next_entry_key(%State{} = state) do
@@ -815,19 +837,15 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     VALUES #{row_placeholders(rows, 8)}
     """
 
-    args = Enum.flat_map(rows, &entry_args/1)
+    args =
+      Enum.flat_map(rows, fn {{entry_args, _blob}, entry_key} -> [entry_key | entry_args] end)
 
     exec(state, sql, args)
   end
 
   defp insert_entry_blobs(%State{} = state, rows) do
-    sql =
-      "INSERT INTO entry_blobs (entry_key, entry) VALUES #{row_placeholders(rows, 2)}"
-
-    args =
-      Enum.flat_map(rows, fn {entry, entry_key} ->
-        [entry_key, build_entry_blob(entry)]
-      end)
+    sql = "INSERT INTO entry_blobs (entry_key, entry) VALUES #{row_placeholders(rows, 2)}"
+    args = Enum.flat_map(rows, fn {{_entry_args, blob}, entry_key} -> [entry_key, blob] end)
 
     exec(state, sql, args)
   end
@@ -854,9 +872,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     exec(state, sql, args)
   end
 
-  defp entry_args({%Entry{} = entry, entry_key}) do
+  defp entry_args(%Entry{} = entry) do
     [
-      entry_key,
       entry.id,
       entry.path,
       subject_key(entry.subject),

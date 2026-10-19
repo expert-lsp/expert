@@ -256,6 +256,42 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert [^entry] = Sqlite.find_by_subject(project, Persisted.Module, :_, :_)
     end
 
+    test "persists entries returned by encode_entries/1 the same as plain entries", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      entries =
+        for id <- 1..5 do
+          %Entry{
+            id: id,
+            subject: "Encoded.function_#{id}/0",
+            path: "/encoded.ex",
+            type: {:function, :public},
+            subtype: :definition,
+            block_id: :root
+          }
+        end
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+
+      encoded = Sqlite.encode_entries(entries)
+      assert Enum.all?(encoded, &match?({:encoded, %Entry{}, _row}, &1))
+
+      assert :ok = Sqlite.replace_all(project, encoded)
+
+      assert Enum.sort_by(
+               Sqlite.find_by_subject(project, :_, {:function, :public}, :definition),
+               & &1.id
+             ) ==
+               entries
+    end
+
     test "restores entries and indexes when replacement fails", %{
       project: project,
       runtime_versions: runtime_versions

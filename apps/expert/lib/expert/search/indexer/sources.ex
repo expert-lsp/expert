@@ -5,7 +5,8 @@ defmodule Expert.Search.Indexer.Sources do
 
   require Logger
 
-  def stream(paths, source_indexer \\ &Source.index/2) when is_list(paths) do
+  def stream(paths, source_indexer \\ &Source.index/2, encode \\ &Function.identity/1)
+      when is_list(paths) do
     {sized_paths, total_bytes} = stat_paths(paths)
 
     if sized_paths == [] do
@@ -13,7 +14,7 @@ defmodule Expert.Search.Indexer.Sources do
     else
       sized_paths
       |> Task.async_stream(
-        fn {path, size} -> {size, index_path(path, source_indexer)} end,
+        fn {path, size} -> {size, index_path(path, source_indexer, encode)} end,
         ordered: false,
         timeout: :infinity
       )
@@ -28,12 +29,12 @@ defmodule Expert.Search.Indexer.Sources do
     end
   end
 
-  defp index_path(path, source_indexer) do
+  defp index_path(path, source_indexer, encode) do
     with {:ok, contents} <- File.read(path),
          {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
          true <- has_search_entries?(entries),
          {:ok, manifest_entry} <- Manifest.Entry.source(path) do
-      [{entries, manifest_entry}]
+      [{encode.(entries), manifest_entry}]
     else
       _ -> []
     end
