@@ -57,18 +57,26 @@ defmodule Expert.Search.Indexer.Beams do
     |> Enum.to_list()
   end
 
+  # Registering needs the exports and the source file, which the compile
+  # info chunk has; the debug info, decoded only when a beam is indexed, is
+  # the module's whole abstract code.
   defp register_beam(path, project, application) do
     with {:ok, beam} <- File.read(path),
-         {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
-      register_modules(project, [{module, path, application, exports}])
+         {:ok, {module, chunks}} <- :beam_lib.chunks(beam, [:compile_info, :exports]) do
+      register_modules(project, [{module, path, application, chunks[:exports] || []}])
 
-      case debug_metadata_result do
-        {:ok, %{file: file}} when is_binary(file) -> {module, Forge.Path.native(file)}
-        _ -> nil
+      case Keyword.get(chunks[:compile_info] || [], :source) do
+        source when is_list(source) and source != [] ->
+          {module, Forge.Path.native(to_string(source))}
+
+        _ ->
+          nil
       end
     else
       _ -> nil
     end
+  catch
+    _kind, _reason -> nil
   end
 
   defp result_chunks(beams, opts) do
