@@ -1,4 +1,6 @@
-defmodule Forge.Namespace.Transform.AppDirectories do
+defmodule Expert.Namespace.Transform.AppDirectories do
+  alias Expert.Namespace.Path, as: NamespacePath
+
   def apply_to_all(base_directory) do
     base_directory
     |> find_app_directories()
@@ -9,7 +11,7 @@ defmodule Forge.Namespace.Transform.AppDirectories do
     namespaced_relative_path =
       app_path
       |> Path.relative_to(base_directory)
-      |> Forge.Namespace.Path.apply()
+      |> NamespacePath.apply()
 
     namespaced_app_path = Path.join(base_directory, namespaced_relative_path)
 

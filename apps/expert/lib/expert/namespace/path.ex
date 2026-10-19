@@ -1,4 +1,6 @@
-defmodule Forge.Namespace.Path do
+defmodule Expert.Namespace.Path do
+  alias Expert.Namespace.Module, as: NamespaceModule
+
   def apply(path) when is_list(path) do
     path
     |> List.to_string()
@@ -20,7 +22,7 @@ defmodule Forge.Namespace.Path do
       if path == Atom.to_string(app_name) do
         new_path =
           app_name
-          |> Forge.Namespace.Module.apply()
+          |> NamespaceModule.apply()
           |> Atom.to_string()
 
         rebuild_path(new_path, vsn)

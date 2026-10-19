@@ -1,4 +1,4 @@
-defmodule Forge.Namespace.Transform.Boots do
+defmodule Expert.Namespace.Transform.Boots do
   @moduledoc """
   A transformer that re-builds .boot files by converting a .script file
   """

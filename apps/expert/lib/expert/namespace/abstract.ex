@@ -1,10 +1,12 @@
-defmodule Forge.Namespace.Abstract do
+defmodule Expert.Namespace.Abstract do
   @moduledoc """
   Transformations from erlang abstract syntax
 
   The abstract syntax is rather tersely defined here:
   https://www.erlang.org/doc/apps/erts/absform.html
   """
+
+  alias Expert.Namespace.Module, as: NamespaceModule
 
   def rewrite(abstract_format) when is_list(abstract_format) do
     Enum.map(abstract_format, &rewrite/1)
@@ -294,6 +296,6 @@ defmodule Forge.Namespace.Abstract do
   end
 
   defp rewrite_module(module) do
-    Forge.Namespace.Module.apply(module)
+    NamespaceModule.apply(module)
   end
 end

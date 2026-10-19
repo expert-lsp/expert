@@ -12,8 +12,9 @@ defmodule Mix.Tasks.Namespace do
   """
   use Mix.Task
 
+  alias Expert.Namespace.FileSync, as: NamespaceFileSync
+  alias Expert.Namespace.Transform, as: NamespaceTransform
   alias Forge.Ast
-  alias Forge.Namespace.Transform
 
   @excluded_apps [:patch, :burrito, :exqlite, :db_connection, :elixir_make, :cc_precompiler]
   # Unless explicitly added, nimble_parsec won't show up as a loaded app
@@ -55,21 +56,21 @@ defmodule Mix.Tasks.Namespace do
   end
 
   defp apply_transforms(directory, opts) do
-    Transform.Apps.apply_to_all(directory)
-    Transform.Beams.apply_to_all(directory, opts)
-    Transform.Scripts.apply_to_all(directory)
+    NamespaceTransform.Apps.apply_to_all(directory)
+    NamespaceTransform.Beams.apply_to_all(directory, opts)
+    NamespaceTransform.Scripts.apply_to_all(directory)
     # The boot file transform just turns script files into boot files
     # so it must come after the script file transform
-    Transform.Boots.apply_to_all(directory)
-    Transform.Configs.apply_to_all(directory)
-    Transform.AppDirectories.apply_to_all(directory)
+    NamespaceTransform.Boots.apply_to_all(directory)
+    NamespaceTransform.Configs.apply_to_all(directory)
+    NamespaceTransform.AppDirectories.apply_to_all(directory)
   end
 
   defp incremental_transforms(base_directory, output_directory, opts) do
     Application.ensure_all_started(:briefly)
 
     classification =
-      Forge.Namespace.FileSync.classify_files(base_directory, output_directory)
+      NamespaceFileSync.classify_files(base_directory, output_directory)
 
     tmp_dir = Briefly.create!(directory: true)
 
@@ -83,8 +84,8 @@ defmodule Mix.Tasks.Namespace do
       Deleted: #{length(classification.deleted)}
     """)
 
-    Forge.Namespace.FileSync.copy_new_and_changed(classification, base_directory, tmp_dir)
-    Forge.Namespace.FileSync.delete_removed(classification)
+    NamespaceFileSync.copy_new_and_changed(classification, base_directory, tmp_dir)
+    NamespaceFileSync.delete_removed(classification)
 
     # Apply transforms to temp directory
     apply_transforms(tmp_dir, opts)

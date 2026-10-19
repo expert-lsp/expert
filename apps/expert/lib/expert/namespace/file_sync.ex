@@ -1,5 +1,7 @@
-defmodule Forge.Namespace.FileSync do
+defmodule Expert.Namespace.FileSync do
   alias __MODULE__.Classification
+  alias Expert.Namespace.Module, as: NamespaceModule
+  alias Expert.Namespace.Path, as: NamespacePath
 
   defmodule Classification do
     defstruct changed: [],
@@ -40,7 +42,7 @@ defmodule Forge.Namespace.FileSync do
 
         namespaced_relative_path =
           relative_path
-          |> Forge.Namespace.Path.apply()
+          |> NamespacePath.apply()
           |> maybe_namespace_filename()
 
         dest_path = Path.join(output_directory, namespaced_relative_path)
@@ -123,7 +125,7 @@ defmodule Forge.Namespace.FileSync do
       namespaced_basename =
         basename
         |> String.to_atom()
-        |> Forge.Namespace.Module.apply()
+        |> NamespaceModule.apply()
         |> Atom.to_string()
 
       Path.join(dirname, namespaced_basename <> extname)

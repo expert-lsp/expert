@@ -1,4 +1,6 @@
-defmodule Forge.Namespace.Transform.Configs do
+defmodule Expert.Namespace.Transform.Configs do
+  alias Expert.Namespace.Module, as: NamespaceModule
+
   def apply_to_all(base_directory) do
     base_directory = Forge.OS.normalize_path(base_directory)
 
@@ -23,14 +25,14 @@ defmodule Forge.Namespace.Transform.Configs do
           namespaced_alias =
             alias
             |> Module.concat()
-            |> Forge.Namespace.Module.apply()
+            |> NamespaceModule.apply()
             |> Module.split()
             |> Enum.map(&String.to_atom/1)
 
           {:__aliases__, meta, namespaced_alias}
 
         atom when is_atom(atom) ->
-          Forge.Namespace.Module.apply(atom)
+          NamespaceModule.apply(atom)
 
         ast ->
           ast

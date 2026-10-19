@@ -1,8 +1,8 @@
-defmodule Forge.Namespace.Transform.BeamsTest do
+defmodule Expert.Namespace.Transform.BeamsTest do
   use ExUnit.Case, async: false
   use Patch
 
-  alias Forge.Namespace.Transform.Beams
+  alias Expert.Namespace.Transform.Beams
 
   @moduletag tmp_dir: true
 

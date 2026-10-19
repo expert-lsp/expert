@@ -1,7 +1,10 @@
-defmodule Forge.Namespace.Transform.Apps do
+defmodule Expert.Namespace.Transform.Apps do
   @moduledoc """
   Applies namespacing to all modules defined in .app files
   """
+
+  alias Expert.Namespace.Erlang, as: NamespaceErlang
+  alias Expert.Namespace.Module, as: NamespaceModule
 
   def apply_to_all(base_directory) do
     base_directory
@@ -13,7 +16,7 @@ defmodule Forge.Namespace.Transform.Apps do
   end
 
   def apply(file_path) do
-    with {:ok, app_definition} <- Forge.Namespace.Erlang.path_to_term(file_path),
+    with {:ok, app_definition} <- NamespaceErlang.path_to_term(file_path),
          {:ok, converted} <- convert(app_definition),
          :ok <- File.write(file_path, converted) do
       app_name =
@@ -22,7 +25,7 @@ defmodule Forge.Namespace.Transform.Apps do
         |> Path.rootname()
         |> String.to_atom()
 
-      namespaced_app_name = Forge.Namespace.Module.apply(app_name)
+      namespaced_app_name = NamespaceModule.apply(app_name)
       new_filename = "#{namespaced_app_name}.app"
 
       new_file_path =
@@ -51,21 +54,21 @@ defmodule Forge.Namespace.Transform.Apps do
     erlang_terms =
       app_definition
       |> visit()
-      |> Forge.Namespace.Erlang.term_to_string()
+      |> NamespaceErlang.term_to_string()
 
     {:ok, erlang_terms}
   end
 
   defp visit({:application, app_name, keys}) do
-    {:application, Forge.Namespace.Module.apply(app_name), Enum.map(keys, &visit/1)}
+    {:application, NamespaceModule.apply(app_name), Enum.map(keys, &visit/1)}
   end
 
   defp visit({:applications, app_list}) do
-    {:applications, Enum.map(app_list, &Forge.Namespace.Module.apply/1)}
+    {:applications, Enum.map(app_list, &NamespaceModule.apply/1)}
   end
 
   defp visit({:modules, module_list}) do
-    {:modules, Enum.map(module_list, &Forge.Namespace.Module.apply/1)}
+    {:modules, Enum.map(module_list, &NamespaceModule.apply/1)}
   end
 
   defp visit({:description, desc}) do
@@ -73,7 +76,7 @@ defmodule Forge.Namespace.Transform.Apps do
   end
 
   defp visit({:mod, {module_name, args}}) do
-    {:mod, {Forge.Namespace.Module.apply(module_name), args}}
+    {:mod, {NamespaceModule.apply(module_name), args}}
   end
 
   defp visit(key_value) do

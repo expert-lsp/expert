@@ -1,9 +1,9 @@
-defmodule Forge.Namespace.FileSyncTest do
+defmodule Expert.Namespace.FileSyncTest do
   use ExUnit.Case, async: false
   use Patch
 
-  alias Forge.Namespace.FileSync
-  alias Forge.Namespace.FileSync.Classification
+  alias Expert.Namespace.FileSync
+  alias Expert.Namespace.FileSync.Classification
 
   @moduletag tmp_dir: true
 

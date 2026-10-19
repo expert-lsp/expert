@@ -184,23 +184,6 @@ let
     with self;
     {
 
-      briefly =
-        let
-          version = "0.5.1";
-          drv = buildMix {
-            inherit version;
-            name = "briefly";
-            appConfigPath = ./config;
-
-            src = fetchHex {
-              inherit version;
-              pkg = "briefly";
-              sha256 = "bd684aa92ad8b7b4e0d92c31200993c4bc1469fc68cd6d5f15144041bd15cb57";
-            };
-          };
-        in
-        drv;
-
       gen_lsp =
         let
           version = "0.11.4";

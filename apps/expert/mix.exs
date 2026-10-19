@@ -35,7 +35,8 @@ defmodule Expert.MixProject do
       :runtime_tools,
       :kernel,
       :telemetry,
-      :hex_core
+      :hex_core,
+      :sasl
     ]
   end
 
@@ -110,6 +111,7 @@ defmodule Expert.MixProject do
 
   defp deps do
     [
+      {:briefly, "~> 0.5"},
       {:burrito, "~> 1.5"},
       {:deps_nix, "~> 3.0", only: :dev},
       Mix.Credo.dependency(),

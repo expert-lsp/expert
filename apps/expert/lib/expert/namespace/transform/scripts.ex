@@ -1,7 +1,11 @@
-defmodule Forge.Namespace.Transform.Scripts do
+defmodule Expert.Namespace.Transform.Scripts do
   @moduledoc """
   A transform that updates any module in .script and .rel files with namespaced versions
   """
+
+  alias Expert.Namespace.Erlang, as: NamespaceErlang
+  alias Expert.Namespace.Module, as: NamespaceModule
+  alias Expert.Namespace.Path, as: NamespacePath
 
   def apply_to_all(base_directory) do
     base_directory
@@ -13,7 +17,7 @@ defmodule Forge.Namespace.Transform.Scripts do
   end
 
   def apply(file_path) do
-    with {:ok, app_definition} <- Forge.Namespace.Erlang.path_to_term(file_path),
+    with {:ok, app_definition} <- NamespaceErlang.path_to_term(file_path),
          {:ok, converted} <- convert(app_definition) do
       File.write(file_path, converted)
     end
@@ -31,7 +35,7 @@ defmodule Forge.Namespace.Transform.Scripts do
 
   defp convert(app_definition) do
     converted = visit(app_definition)
-    erlang_terms = Forge.Namespace.Erlang.term_to_string(converted)
+    erlang_terms = NamespaceErlang.term_to_string(converted)
 
     script = """
     %% coding: utf-8
@@ -45,7 +49,7 @@ defmodule Forge.Namespace.Transform.Scripts do
   defp visit({:release, release_vsn, erts_vsn, app_versions}) do
     fixed_apps =
       Enum.map(app_versions, fn {app_name, version, start_type} ->
-        {Forge.Namespace.Module.apply(app_name), version, start_type}
+        {NamespaceModule.apply(app_name), version, start_type}
       end)
 
     {:release, release_vsn, erts_vsn, fixed_apps}
@@ -56,11 +60,11 @@ defmodule Forge.Namespace.Transform.Scripts do
   end
 
   defp visit({:primLoad, app_list}) do
-    {:primLoad, Enum.map(app_list, &Forge.Namespace.Module.apply/1)}
+    {:primLoad, Enum.map(app_list, &NamespaceModule.apply/1)}
   end
 
   defp visit({:path, paths}) do
-    {:path, Enum.map(paths, &Forge.Namespace.Path.apply/1)}
+    {:path, Enum.map(paths, &NamespacePath.apply/1)}
   end
 
   defp visit({:apply, {:application, :load, load_apps}}) do
@@ -68,28 +72,27 @@ defmodule Forge.Namespace.Transform.Scripts do
   end
 
   defp visit({:apply, {:application, :start_boot, apps_to_start}}) do
-    {:apply,
-     {:application, :start_boot, Enum.map(apps_to_start, &Forge.Namespace.Module.apply/1)}}
+    {:apply, {:application, :start_boot, Enum.map(apps_to_start, &NamespaceModule.apply/1)}}
   end
 
   defp visit({:application, app_name, app_keys}) do
-    {:application, Forge.Namespace.Module.apply(app_name), Enum.map(app_keys, &visit/1)}
+    {:application, NamespaceModule.apply(app_name), Enum.map(app_keys, &visit/1)}
   end
 
   defp visit({:application, app_name}) do
-    {:application, Forge.Namespace.Module.apply(app_name)}
+    {:application, NamespaceModule.apply(app_name)}
   end
 
   defp visit({:mod, {module_name, args}}) do
-    {:mod, {Forge.Namespace.Module.apply(module_name), Enum.map(args, &visit/1)}}
+    {:mod, {NamespaceModule.apply(module_name), Enum.map(args, &visit/1)}}
   end
 
   defp visit({:modules, module_list}) do
-    {:modules, Enum.map(module_list, &Forge.Namespace.Module.apply/1)}
+    {:modules, Enum.map(module_list, &NamespaceModule.apply/1)}
   end
 
   defp visit({:applications, app_names}) do
-    {:applications, Enum.map(app_names, &Forge.Namespace.Module.apply/1)}
+    {:applications, Enum.map(app_names, &NamespaceModule.apply/1)}
   end
 
   defp visit(key_value) do

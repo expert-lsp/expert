@@ -1,10 +1,10 @@
-defmodule Forge.Namespace.Transform.Beams do
+defmodule Expert.Namespace.Transform.Beams do
   @moduledoc """
   A transformer that finds and replaces any instance of a module in a .beam file
   """
 
-  alias Forge.Namespace.Abstract
-  alias Forge.Namespace.Code
+  alias Expert.Namespace.Abstract, as: NamespaceAbstract
+  alias Expert.Namespace.Code, as: NamespaceCode
 
   def apply_to_all(base_directory, opts) do
     Mix.Shell.IO.info("Rewriting .beam files")
@@ -37,9 +37,9 @@ defmodule Forge.Namespace.Transform.Beams do
     erlang_path = String.to_charlist(path)
 
     with {:ok, forms} <- abstract_code(erlang_path),
-         rewritten_forms = Abstract.rewrite(forms),
+         rewritten_forms = NamespaceAbstract.rewrite(forms),
          true <- changed?(forms, rewritten_forms),
-         {:ok, module_name, binary} <- Code.compile(rewritten_forms) do
+         {:ok, module_name, binary} <- NamespaceCode.compile(rewritten_forms) do
       write_module_beam(path, module_name, binary)
     end
   end

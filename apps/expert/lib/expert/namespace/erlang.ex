@@ -1,4 +1,4 @@
-defmodule Forge.Namespace.Erlang do
+defmodule Expert.Namespace.Erlang do
   @moduledoc """
   Utilities for reading and writing erlang terms from and to text
   """
