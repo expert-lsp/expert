@@ -135,8 +135,8 @@ defmodule Forge.Search.Indexer.Entry do
     is_block(entry)
   end
 
-  @spec updated_at(t()) :: date_type()
-  @spec updated_at(t(), datetime_format) :: date_type()
+  @spec updated_at(t()) :: date_type() | nil
+  @spec updated_at(t(), datetime_format) :: date_type() | nil
   def updated_at(entry, format \\ :erl)
 
   def updated_at(%__MODULE__{id: id} = entry, format) when is_integer(id) do
