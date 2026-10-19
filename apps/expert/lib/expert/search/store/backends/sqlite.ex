@@ -16,7 +16,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Forge.Document.Line
   require Logger
 
-  @schema_version 7
+  @schema_version 18
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # SQLite binds at most 32766 variables per statement, and ids are looked
