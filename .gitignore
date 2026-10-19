@@ -37,3 +37,6 @@ apps/forge/src/future_elixir_parser.erl
 
 .notes/
 result
+
+# indexes the forge fixture tests write
+apps/forge/test/fixtures/*/.expert/indexes/
