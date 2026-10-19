@@ -49,7 +49,7 @@ defmodule Engine.MixProject do
       Mix.Credo.dependency(),
       Mix.Dialyzer.dependency(),
       {:elixir_sense,
-       github: "elixir-lsp/elixir_sense", ref: "da065ae9ccc125d05b901b9eb6981ff559a8f9f1"},
+       github: "elixir-lsp/elixir_sense", ref: "4cbae01eda2208aa12fda728b47f690a1495639d"},
       {:forge, path: "../forge"},
       {:gen_lsp, "~> 0.11.4"},
       {:logger_backends, "~> 1.0"},

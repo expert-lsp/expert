@@ -47,7 +47,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.BitstringOptionsTest d
     end
 
     test "supports multiple options", %{project: project} do
-      assert {:ok, [utf8, utf16, utf32]} =
+      assert {:ok, [unit, utf8, utf16, utf32]} =
                project
                |> complete("<<foo::utf8, bar::ut|")
                |> fetch_completion(CompletionItemKind.unit())
@@ -55,6 +55,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.BitstringOptionsTest d
       assert apply_completion(utf8) == "<<foo::utf8, bar::utf8"
       assert apply_completion(utf16) == "<<foo::utf8, bar::utf16"
       assert apply_completion(utf32) == "<<foo::utf8, bar::utf32"
+      assert apply_completion(unit) == "<<foo::utf8, bar::unit"
     end
 
     test "supports dashed options", %{project: project} do
