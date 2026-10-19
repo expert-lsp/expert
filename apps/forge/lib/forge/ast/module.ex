@@ -23,11 +23,32 @@ defmodule Forge.Ast.Module do
     module_name
   end
 
+  # Module names made of plain segments, nearly all of them, print as they
+  # are without the inspect machinery; `inspect/1` prints the rest, among
+  # them names whose first segment is `Elixir`, which it keeps the prefix of.
   def name(module_name) when is_atom(module_name) do
-    module_name
-    |> inspect()
-    |> name()
+    case Atom.to_string(module_name) do
+      "Elixir." <> <<first, _::binary>> = string when first in ?A..?Z ->
+        name = binary_part(string, 7, byte_size(string) - 7)
+
+        if plain_segments?(name) and name != "Elixir" and not String.starts_with?(name, "Elixir."),
+          do: name,
+          else: inspect(module_name)
+
+      _ ->
+        inspect(module_name)
+    end
   end
+
+  defp plain_segments?(<<char, rest::binary>>)
+       when char in ?a..?z or char in ?A..?Z or char in ?0..?9 or char == ?_,
+       do: plain_segments?(rest)
+
+  defp plain_segments?(<<?., first, rest::binary>>) when first in ?A..?Z,
+    do: plain_segments?(rest)
+
+  defp plain_segments?(<<>>), do: true
+  defp plain_segments?(_rest), do: false
 
   @doc """
   local module name is the last part of a module name

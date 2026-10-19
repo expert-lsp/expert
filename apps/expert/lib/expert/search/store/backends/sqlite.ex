@@ -1943,7 +1943,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp subject_key(:_), do: :_
   defp subject_key(subject) when is_binary(subject), do: subject
-  defp subject_key(subject) when is_atom(subject), do: inspect(subject)
+  defp subject_key(subject) when is_atom(subject), do: Forge.Ast.Module.name(subject)
   defp subject_key(subject) when is_list(subject), do: List.to_string(subject)
   defp subject_key(subject), do: inspect(subject)
 
