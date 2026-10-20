@@ -50,9 +50,7 @@ defmodule Expert.Search.Indexer.Analyzer do
         {module, function_name, arity}
 
       :error ->
-        aliases = aliases_at(analysis, position)
-        current_module = aliases[[:__MODULE__]]
-        {current_module, function_name, arity}
+        {current_module_at(analysis, position), function_name, arity}
     end
   end
 
@@ -69,9 +67,14 @@ defmodule Expert.Search.Indexer.Analyzer do
         {module, function_name, arity}
 
       :error ->
-        aliases = aliases_at(analysis, position)
-        current_module = aliases[[:__MODULE__]]
-        {current_module, function_name, arity}
+        {current_module_at(analysis, position), function_name, arity}
+    end
+  end
+
+  defp current_module_at(analysis, position) do
+    case Aliases.fetch(Aliases.in_scope(analysis, position), [:__MODULE__]) do
+      {:ok, module} -> module
+      :error -> nil
     end
   end
 
@@ -134,7 +137,7 @@ defmodule Expert.Search.Indexer.Analyzer do
           {:ok, module()} | :error
   def expand_alias([_ | _] = segments, %Analysis{} = analysis, %Position{} = position) do
     with %Analysis{valid?: true} = analysis <- Forge.Ast.reanalyze_to(analysis, position),
-         aliases = aliases_at(analysis, position),
+         aliases = Aliases.in_scope(analysis, position),
          {:ok, resolved} <- resolve_alias(segments, aliases) do
       {:ok, Module.concat(resolved)}
     else
@@ -174,53 +177,53 @@ defmodule Expert.Search.Indexer.Analyzer do
     expand_alias([:__MODULE__], analysis, position)
   end
 
-  defp resolve_alias([{:@, _, [{:protocol, _, _}]} | rest], alias_mapping) do
-    with {:ok, protocol} <- Map.fetch(alias_mapping, [:"@protocol"]) do
+  defp resolve_alias([{:@, _, [{:protocol, _, _}]} | rest], aliases) do
+    with {:ok, protocol} <- Aliases.fetch(aliases, [:"@protocol"]) do
       Ast.reify_alias(protocol, rest)
     end
   end
 
   defp resolve_alias(
          [{:__aliases__, _, [{:@, _, [{:protocol, _, _}]} | _] = protocol}],
-         alias_mapping
+         aliases
        ) do
-    resolve_alias(protocol, alias_mapping)
+    resolve_alias(protocol, aliases)
   end
 
-  defp resolve_alias([{:@, _, [{:for, _, _} | _]} | rest], alias_mapping) do
-    with {:ok, protocol_for} <- Map.fetch(alias_mapping, [:"@for"]) do
+  defp resolve_alias([{:@, _, [{:for, _, _} | _]} | rest], aliases) do
+    with {:ok, protocol_for} <- Aliases.fetch(aliases, [:"@for"]) do
       Ast.reify_alias(protocol_for, rest)
     end
   end
 
   defp resolve_alias(
          [{:__aliases__, _, [{:@, _, [{:for, _, _}]} | _] = protocol_for}],
-         alias_mapping
+         aliases
        ) do
-    resolve_alias(protocol_for, alias_mapping)
+    resolve_alias(protocol_for, aliases)
   end
 
-  defp resolve_alias([first | _] = segments, aliases_mapping) when is_tuple(first) do
-    with {:ok, current_module} <- Map.fetch(aliases_mapping, [:__MODULE__]) do
+  defp resolve_alias([first | _] = segments, aliases) when is_tuple(first) do
+    with {:ok, current_module} <- Aliases.fetch(aliases, [:__MODULE__]) do
       Ast.reify_alias(current_module, segments)
     end
   end
 
-  defp resolve_alias([first | _] = segments, aliases_mapping) when is_atom(first) do
-    with :error <- fetch_leading_alias(segments, aliases_mapping) do
-      fetch_trailing_alias(segments, aliases_mapping)
+  defp resolve_alias([first | _] = segments, aliases) when is_atom(first) do
+    with :error <- fetch_leading_alias(segments, aliases) do
+      fetch_trailing_alias(segments, aliases)
     end
   end
 
   defp resolve_alias(_, _), do: :error
 
-  defp fetch_leading_alias([first | rest], aliases_mapping) do
-    with {:ok, resolved} <- Map.fetch(aliases_mapping, [first]) do
+  defp fetch_leading_alias([first | rest], aliases) do
+    with {:ok, resolved} <- Aliases.fetch(aliases, [first]) do
       {:ok, [resolved | rest]}
     end
   end
 
-  defp fetch_trailing_alias(segments, aliases_mapping) do
+  defp fetch_trailing_alias(segments, aliases) do
     # Trailing aliases happen when you use the curly syntax to define multiple aliases
     # in one go, like Foo.{First, Second.Third, Fourth}
     # Our alias mapping will have Third mapped to Foo.Second.Third, so we need to look
@@ -228,7 +231,7 @@ defmodule Expert.Search.Indexer.Analyzer do
     # The resolved module must end with all the segments being resolved; otherwise an
     # unrelated alias sharing the last segment (e.g. alias A.B.User while resolving
     # Foo.User) would shadow the literal module.
-    with {:ok, resolved} <- Map.fetch(aliases_mapping, [List.last(segments)]),
+    with {:ok, resolved} <- Aliases.fetch(aliases, [List.last(segments)]),
          true <- ends_with_segments?(resolved, segments) do
       {:ok, List.wrap(resolved)}
     else
@@ -247,9 +250,5 @@ defmodule Expert.Search.Indexer.Analyzer do
       _ ->
         false
     end
-  end
-
-  defp ends_with_segments?(_resolved, _segments) do
-    false
   end
 end

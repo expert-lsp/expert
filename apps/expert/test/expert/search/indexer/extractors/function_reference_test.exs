@@ -108,6 +108,21 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReferenceTest do
       assert reference.subtype == :reference
       assert "Mod.function(a, b, c)" == extract(code, reference.range)
     end
+
+    test "the last of two aliases on one line wins" do
+      code = ~q[
+      defmodule Parent do
+        alias First.Module; alias Second.Module
+        def func do
+          Module.function(a, b, c)
+        end
+      end
+      ]
+
+      {:ok, [reference], _} = index(code)
+
+      assert reference.subject == "Second.Module.function/3"
+    end
   end
 
   describe "defdelegate" do
