@@ -322,20 +322,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_path_to_ids(%State{} = state) do
-    # One index seek per file and table, rather than a GROUP BY over every entry.
-    sql = """
-    SELECT path, MAX(COALESCE(definition_id, 0), COALESCE(reference_id, 0))
-    FROM (
-      SELECT
-        files.path,
-        (SELECT MAX(id) FROM entries WHERE entries.file_id = files.id) AS definition_id,
-        (SELECT MAX(max_id) FROM refs WHERE refs.file_id = files.id) AS reference_id
-      FROM files
-    )
-    WHERE definition_id IS NOT NULL OR reference_id IS NOT NULL
-    """
-
-    case query(state, sql) do
+    case query(state, "SELECT path, max_id FROM files WHERE max_id IS NOT NULL") do
       {:ok, rows} -> Map.new(rows, fn [path, id] -> {path, id} end)
       {:error, _} = error -> error
     end
@@ -844,11 +831,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   # Each file's path is stored once, and entries refer to it by id: the path
   # would otherwise be repeated in every entry and in four of its indexes.
+  # `max_id` is the highest id of the file's entries, and marks the files
+  # whose entries are stored: an update reindexes the others.
   defp create_files_table(%State{} = state) do
     exec(state, """
     CREATE TABLE IF NOT EXISTS files (
       id INTEGER PRIMARY KEY,
-      path TEXT NOT NULL UNIQUE
+      path TEXT NOT NULL UNIQUE,
+      max_id INTEGER
     )
     """)
   end
@@ -880,7 +870,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     "entries_type_idx ON entries (type_id)",
     "refs_subject_idx ON refs (subject, type_id)",
     "refs_caller_idx ON refs (caller, file_id, type_id) WHERE caller IS NOT NULL",
-    "refs_file_idx ON refs (file_id, max_id)",
+    "refs_file_idx ON refs (file_id)",
     # the module of the calls whose module references are kept with them
     "refs_module_idx ON refs (module) WHERE module IS NOT NULL"
   ]
@@ -1100,9 +1090,49 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     refs = encoded_refs ++ encode_entries(plain_refs)
 
     with :ok <- insert_entry_batches(state, definitions),
-         :ok <- insert_ref_batches(state, refs) do
-      insert_structures(state, structures)
+         :ok <- insert_ref_batches(state, refs),
+         :ok <- insert_structures(state, structures) do
+      update_max_ids(state, max_ids(definitions, refs))
     end
+  end
+
+  # The highest entry id written for each file, from its definitions and
+  # its reference rows.
+  defp max_ids(definitions, refs) do
+    max_ids =
+      Enum.reduce(definitions, %{}, fn
+        {:encoded, _entry, {[id, path | _], _blob}}, max_ids when is_integer(id) ->
+          Map.update(max_ids, path, id, &max(&1, id))
+
+        %Entry{id: id, path: path}, max_ids when is_integer(id) ->
+          Map.update(max_ids, path, id, &max(&1, id))
+
+        _row, max_ids ->
+          max_ids
+      end)
+
+    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _, _]}},
+                                  max_ids ->
+      Map.update(max_ids, path, max_id, &max(&1, max_id))
+    end)
+  end
+
+  defp update_max_ids(%State{}, max_ids) when map_size(max_ids) == 0, do: :ok
+
+  defp update_max_ids(%State{} = state, max_ids) do
+    max_ids
+    |> Enum.chunk_every(div(@sqlite_variable_limit, 2))
+    |> Enum.reduce_while(:ok, fn batch, :ok ->
+      sql = """
+      INSERT INTO files (path, max_id) VALUES #{row_placeholders(batch, 2)}
+      ON CONFLICT (path) DO UPDATE SET max_id = MAX(COALESCE(max_id, 0), excluded.max_id)
+      """
+
+      case exec(state, sql, Enum.flat_map(batch, fn {path, max_id} -> [path, max_id] end)) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp row_kind({:encoded, _entry, {:refs, _args}}), do: :refs
