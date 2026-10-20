@@ -33,6 +33,14 @@ defmodule Expert.EngineApi do
     call(project, Ast, :analyze, [document, opts])
   end
 
+  @doc """
+  Expands the `use` calls in `quoted` with the project's code and returns the
+  functions each one imports.
+  """
+  def use_imports(%Project{} = project, quoted, %Document{} = document) do
+    call(project, Analysis, :use_imports, [quoted, document])
+  end
+
   def expand_alias(
         %Project{} = project,
         segments_or_module,

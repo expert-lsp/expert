@@ -104,6 +104,10 @@ defmodule Expert.Search.IndexerTest do
       Forge.Ast.analyze(document, opts)
     end)
 
+    patch(EngineApi, :use_imports, fn _project, quoted, document ->
+      Forge.Ast.Analysis.use_imports(quoted, document)
+    end)
+
     patch(EngineApi, :call, fn
       _project, Engine.ApplicationCache, :clear, [] ->
         Engine.ApplicationCache.clear()

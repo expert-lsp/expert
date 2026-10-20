@@ -179,6 +179,22 @@ defmodule Forge.Ast.Analysis do
     |> Map.values()
   end
 
+  @doc false
+  # Analyzes one node for callers that walk the AST themselves: the node to
+  # walk on with, and the state with the scope the node opens, if any, which
+  # the caller leaves with `State.leave_scope/1`.
+  def analyze_step(quoted, %State{} = state) do
+    case analyze_node(quoted, state) do
+      {new_quoted, new_state} -> {new_quoted, new_state}
+      new_state -> {quoted, new_state}
+    end
+  end
+
+  @doc false
+  # The functions each `use` imports, for callers that analyze the AST
+  # themselves.
+  def use_imports(ast, %Document{} = document), do: do_expand_use_imports(ast, document.path)
+
   defp preprocess(quoted) do
     Macro.prewalk(quoted, &with_scope_id/1)
   end

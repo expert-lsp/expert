@@ -19,16 +19,35 @@ defmodule Expert.Search.Indexer.SourceTest do
     {:ok, project: project}
   end
 
-  test "analyzes source in the Engine runtime", %{project: project} do
+  test "expands uses in the Engine runtime", %{project: project} do
     test_pid = self()
 
-    patch(EngineApi, :analyze, fn ^project, document, opts ->
-      send(test_pid, {:analyze, opts})
-      Ast.analyze(document, opts)
+    patch(EngineApi, :use_imports, fn ^project, _quoted, _document ->
+      send(test_pid, :use_imports)
+      %{}
+    end)
+
+    source = """
+    defmodule Example do
+      use Other
+    end
+    """
+
+    assert {:ok, _entries} = Source.index("example.ex", source, [], project)
+    assert_received :use_imports
+  end
+
+  test "doesn't ask the Engine about sources without uses", %{project: project} do
+    test_pid = self()
+
+    patch(EngineApi, :use_imports, fn ^project, _quoted, _document ->
+      send(test_pid, :use_imports)
+      %{}
     end)
 
     assert {:ok, _entries} = Source.index("example.ex", "1", [], project)
-    assert_received {:analyze, [expand_uses: true]}
+    assert {:ok, _entries} = Source.index("example.ex", "user = cause(reused)", [], project)
+    refute_received :use_imports
   end
 
   test "caches Engine lookups in the module registry", %{project: project} do
