@@ -80,20 +80,15 @@ defmodule Expert.Search.Indexer.Source.Reducer do
       ),
       do: Analyzer.resolve_local_call(analysis, position, name, arity)
 
-  def resolve_local_call(
-        %__MODULE__{analysis: analysis} = reducer,
-        position,
-        name,
-        arity
-      ),
-      do:
-        Analyzer.resolve_local_call(
-          analysis,
-          position,
-          name,
-          arity,
-          &module_exports(reducer, &1)
-        )
+  def resolve_local_call(%__MODULE__{analysis: analysis} = reducer, position, name, arity) do
+    case imported_call(reducer, position, name, arity) do
+      {:ok, mfa} ->
+        mfa
+
+      :error ->
+        Analyzer.resolve_local_call(analysis, position, name, arity, &module_exports(reducer, &1))
+    end
+  end
 
   def imports_at(%__MODULE__{analysis: analysis, project: nil}, position),
     do: Analyzer.imports_at(analysis, position)
@@ -103,6 +98,31 @@ defmodule Expert.Search.Indexer.Source.Reducer do
 
   def exunit_module?(%__MODULE__{project: project}, module),
     do: ModuleRegistry.exunit_module?(project, module)
+
+  # A name `Kernel` exports can only be imported from `Kernel`, unless the source
+  # excludes it.
+  defp imported_call(%__MODULE__{} = reducer, %Position{} = position, name, arity) do
+    with {:ok, module} <- Analyzer.current_module(reducer.analysis, position),
+         {:ok, mfa} <-
+           ModuleRegistry.imported_call(
+             reducer.project,
+             module,
+             {name, arity},
+             {position.line, position.character}
+           ),
+         false <- kernel_export?(reducer, name, arity) do
+      {:ok, mfa}
+    else
+      _ -> :error
+    end
+  end
+
+  defp kernel_export?(%__MODULE__{} = reducer, name, arity) do
+    case module_exports(reducer, Kernel) do
+      {:ok, exports} -> {name, arity} in exports.functions or {name, arity} in exports.macros
+      :error -> false
+    end
+  end
 
   defp module_exports(%__MODULE__{project: project}, module),
     do: ModuleRegistry.module_exports(project, module)

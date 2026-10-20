@@ -233,19 +233,82 @@ defmodule Expert.Search.Indexer.Beams do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
 
     with {:ok, beam} <- File.read(beam_path),
-         {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
+         {:ok, module, chunks, debug_metadata_result} <- metadata_from_binary(beam) do
       results =
         case debug_metadata_result do
-          {:ok, metadata} ->
-            metadata_result_from_beam(beam_path, beam_stat, metadata)
-
-          :error ->
-            skipped_result_from_beam(beam_path, beam_stat, nil, nil)
+          {:ok, metadata} -> metadata_result_from_beam(beam_path, beam_stat, metadata)
+          :error -> skipped_result_from_beam(beam_path, beam_stat, nil, nil)
         end
 
-      {results, {module, beam_path, application, exports}}
+      imported_calls = imported_calls(chunks, debug_metadata_result)
+      {results, {module, beam_path, application, chunks[:exports], imported_calls}}
     else
       _ -> {skipped_result_from_beam(beam_path, beam_stat, nil, nil), nil}
+    end
+  end
+
+  # Returns the module each bare call goes to, by name and arity, leaving out the
+  # module's own functions. In debug info, an imported call is a remote call with
+  # the dot at the call's position. Without debug info, every function in the
+  # imports chunk counts, except `:erlang`, where operators and inlined `Kernel`
+  # functions go.
+  defp imported_calls(chunks, debug_metadata_result) do
+    defined = MapSet.new(chunks[:exports] ++ chunks[:locals])
+
+    debug_metadata_result
+    |> calls(chunks)
+    |> Enum.reject(fn {_position, {_module, name, arity}} ->
+      MapSet.member?(defined, {name, arity})
+    end)
+    |> Enum.group_by(fn {_position, {_module, name, arity}} -> {name, arity} end)
+    |> Map.new(fn {function, calls} ->
+      case Enum.uniq_by(calls, fn {_position, {module, _name, _arity}} -> module end) do
+        [{_position, {module, _name, _arity}}] ->
+          {function, module}
+
+        _modules ->
+          {function,
+           Map.new(calls, fn {position, {module, _name, _arity}} -> {position, module} end)}
+      end
+    end)
+  end
+
+  defp calls({:ok, metadata}, _chunks) do
+    for {_definition, _kind, _meta, clauses} <- Map.get(metadata, :definitions, []),
+        {_meta, _args, guards, body} <- clauses,
+        reduce: [] do
+      calls -> calls({guards, body}, calls)
+    end
+  end
+
+  defp calls(:error, chunks) do
+    for {module, _name, _arity} = mfa <- chunks[:imports], module != :erlang, do: {nil, mfa}
+  end
+
+  defp calls(ast, calls) do
+    {_ast, calls} =
+      Macro.prewalk(ast, calls, fn
+        {{:., dot_meta, [module, function]}, meta, args} = call, calls
+        when is_atom(module) and module != :erlang and is_atom(function) and is_list(args) ->
+          case {position(meta), position(dot_meta)} do
+            {{_line, _column} = position, position} ->
+              {call, [{position, {module, function, length(args)}} | calls]}
+
+            _ ->
+              {call, calls}
+          end
+
+        node, calls ->
+          {node, calls}
+      end)
+
+    calls
+  end
+
+  defp position(meta) do
+    case {Keyword.get(meta, :line), Keyword.get(meta, :column)} do
+      {line, column} when is_integer(line) and is_integer(column) -> {line, column}
+      _ -> nil
     end
   end
 
@@ -305,9 +368,9 @@ defmodule Expert.Search.Indexer.Beams do
   # The debug-info chunk data is backend-owned and opaque. The public contract is
   # to ask the backend to decode it into the Elixir debug-info format we consume.
   defp metadata_from_binary(beam) do
-    case :beam_lib.chunks(beam, [:debug_info, :exports]) do
+    case :beam_lib.chunks(beam, [:debug_info, :exports, :imports, :locals]) do
       {:ok, {module, chunks}} ->
-        {:ok, module, chunks[:exports] || [], decode_debug_metadata(module, chunks[:debug_info])}
+        {:ok, module, Map.new(chunks), decode_debug_metadata(module, chunks[:debug_info])}
 
       _ ->
         :error
@@ -329,7 +392,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp debug_metadata_from_binary(beam) do
     case metadata_from_binary(beam) do
-      {:ok, _module, _exports, debug_metadata_result} -> debug_metadata_result
+      {:ok, _module, _chunks, debug_metadata_result} -> debug_metadata_result
       :error -> :error
     end
   end

@@ -10,10 +10,13 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   alias Forge.Project
 
   @type exports :: %{functions: [{atom(), arity()}], macros: [{atom(), arity()}]}
+  @type position :: {pos_integer(), pos_integer()}
+  @type imported_calls :: %{{atom(), arity()} => module() | %{position() => module()}}
   @type module_metadata :: %{
           application: atom() | nil,
           beam_path: Path.t() | nil,
-          exports: exports()
+          exports: exports(),
+          imported_calls: imported_calls()
         }
 
   def start_link(%Project{} = project) do
@@ -73,25 +76,36 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
           module(),
           Path.t(),
           atom() | nil,
-          [{atom(), arity()}]
+          [{atom(), arity()}],
+          imported_calls()
         ) :: :ok
-  def put(%Project{} = project, module, beam_path, application, beam_exports) do
-    put_all(project, [{module, beam_path, application, beam_exports}])
+  def put(
+        %Project{} = project,
+        module,
+        beam_path,
+        application,
+        beam_exports,
+        imported_calls \\ %{}
+      ) do
+    put_all(project, [{module, beam_path, application, beam_exports, imported_calls}])
   end
 
   @spec put_all(
           Project.t(),
-          [{module(), Path.t(), atom() | nil, [{atom(), arity()}]}]
+          [
+            {module(), Path.t(), atom() | nil, [{atom(), arity()}], imported_calls()}
+          ]
         ) :: :ok
   def put_all(%Project{} = _project, []), do: :ok
 
   def put_all(%Project{} = project, modules) when is_list(modules) do
     objects =
-      Enum.map(modules, fn {module, beam_path, application, beam_exports} ->
+      Enum.map(modules, fn {module, beam_path, application, beam_exports, imported_calls} ->
         metadata = %{
           application: application,
           beam_path: Forge.Path.native(beam_path),
-          exports: exports_from_beam_chunk(beam_exports)
+          exports: exports_from_beam_chunk(beam_exports),
+          imported_calls: imported_calls
         }
 
         {{:module, module}, metadata}
@@ -133,6 +147,25 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     case :ets.lookup(name(project), {:module, module}) do
       [{{:module, ^module}, %{exports: exports}}] -> {:ok, exports}
       [] -> engine_lookup(project, :module_exports, module, :error)
+    end
+  end
+
+  @spec imported_call(Project.t() | nil, module(), {atom(), arity()}, position()) ::
+          {:ok, mfa()} | :error
+  def imported_call(nil, _module, _function, _position), do: :error
+
+  def imported_call(%Project{} = project, module, {name, arity} = function, position)
+      when is_atom(module) do
+    case :ets.lookup(name(project), {:module, module}) do
+      [{{:module, ^module}, %{imported_calls: %{^function => imported}}}] ->
+        case imported do
+          %{^position => imported_module} -> {:ok, {imported_module, name, arity}}
+          imported_module when is_atom(imported_module) -> {:ok, {imported_module, name, arity}}
+          _ -> :error
+        end
+
+      _ ->
+        :error
     end
   end
 

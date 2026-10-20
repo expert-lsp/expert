@@ -60,6 +60,36 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     refute Code.loaded?(module)
   end
 
+  @tag :tmp_dir
+  test "registers a module's imported calls", %{tmp_dir: tmp_dir} do
+    {project, module, imported, other} = compile_importing_module(tmp_dir, debug_info: true)
+
+    assert {:ok, {^imported, :helper, 1}} =
+             ModuleRegistry.imported_call(project, module, {:helper, 1}, {15, 5})
+
+    assert {:ok, {^other, :helper, 1}} =
+             ModuleRegistry.imported_call(project, module, {:helper, 1}, {20, 5})
+
+    assert :error = ModuleRegistry.imported_call(project, module, {:helper, 1}, {1, 1})
+
+    assert {:ok, {:lists, :reverse, 1}} =
+             ModuleRegistry.imported_call(project, module, {:reverse, 1}, {1, 1})
+
+    assert :error = ModuleRegistry.imported_call(project, module, {:own, 1}, {22, 5})
+    assert :error = ModuleRegistry.imported_call(project, module, {:get, 2}, {1, 1})
+  end
+
+  @tag :tmp_dir
+  test "registers imported calls from beams without debug info", %{tmp_dir: tmp_dir} do
+    {project, module, _imported, _other} = compile_importing_module(tmp_dir, debug_info: false)
+
+    assert {:ok, {:lists, :reverse, 1}} =
+             ModuleRegistry.imported_call(project, module, {:reverse, 1}, {1, 1})
+
+    assert :error = ModuleRegistry.imported_call(project, module, {:helper, 1}, {15, 5})
+    assert :error = ModuleRegistry.imported_call(project, module, {:own, 1}, {22, 5})
+  end
+
   test "clears metadata without replacing the registry table" do
     project = project()
     start_supervised!({ModuleRegistry, project})
@@ -139,8 +169,8 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert :ok = ModuleRegistry.put_all(project, [])
 
     modules = [
-      {ModA, "/a.beam", :app_a, [foo: 1]},
-      {ModB, "/b.beam", :app_b, [bar: 2]}
+      {ModA, "/a.beam", :app_a, [foo: 1], %{}},
+      {ModB, "/b.beam", :app_b, [bar: 2], %{}}
     ]
 
     assert :ok = ModuleRegistry.put_all(project, modules)
@@ -158,5 +188,66 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
 
     assert {:ok, %{functions: [bar: 2], macros: []}} =
              ModuleRegistry.module_exports(project, ModB)
+  end
+
+  defp compile_importing_module(tmp_dir, debug_info: debug_info) do
+    suffix = System.unique_integer([:positive])
+    imported = Module.concat(__MODULE__, "Imported#{suffix}")
+    other = Module.concat(__MODULE__, "Other#{suffix}")
+    module = Module.concat(__MODULE__, "Importing#{suffix}")
+    source_path = Path.join(tmp_dir, "importing.ex")
+    beam_dir = Path.join(tmp_dir, "ebin")
+
+    File.mkdir_p!(beam_dir)
+
+    File.write!(source_path, """
+    defmodule #{inspect(imported)} do
+      def helper(value), do: value
+    end
+
+    defmodule #{inspect(other)} do
+      def helper(value), do: value
+      def own(value), do: value
+    end
+
+    defmodule #{inspect(module)} do
+      import :lists, only: [reverse: 1]
+
+      def run(value) do
+        import #{inspect(imported)}
+        helper(value)
+      end
+
+      def other(value) do
+        import #{inspect(other)}, only: [helper: 1]
+        helper(value)
+        #{inspect(other)}.own(value)
+        own(reverse([value]))
+      end
+
+      defp own(value), do: value
+      def get(value, key), do: value[key]
+    end
+    """)
+
+    compiler_options = Code.compiler_options()
+    Code.compiler_options(debug_info: debug_info, parser_options: [columns: true])
+    on_exit(fn -> Code.compiler_options(compiler_options) end)
+
+    assert {:ok, _modules, _diagnostics} =
+             Kernel.ParallelCompiler.compile_to_path([source_path], beam_dir,
+               return_diagnostics: true
+             )
+
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+
+    beam_dir
+    |> Path.join("*.beam")
+    |> Path.wildcard()
+    |> Beams.stream(project: project)
+    |> Enum.to_list()
+
+    {project, module, imported, other}
   end
 end
