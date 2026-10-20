@@ -88,11 +88,25 @@ defmodule Expert.Search.Indexer.Paths do
     apps
     |> Enum.uniq()
     |> Enum.flat_map(fn app ->
-      [build_path, "lib", Atom.to_string(app), "ebin", "*.beam"]
-      |> Path.join()
-      |> Path.wildcard()
-      |> Enum.map(&{&1, app})
+      ebin = Path.join([build_path, "lib", Atom.to_string(app), "ebin"])
+      Enum.map(beam_files(ebin), &{&1, app})
     end)
+  end
+
+  # What `Path.wildcard(ebin/*.beam)` returns, from one directory listing:
+  # the wildcard also stats every entry, which is most of its cost on an ebin
+  # with thousands of modules.
+  defp beam_files(ebin) do
+    case File.ls(ebin) do
+      {:ok, names} ->
+        for name <- Enum.sort(names),
+            String.ends_with?(name, ".beam"),
+            not String.starts_with?(name, "."),
+            do: Path.join(ebin, name)
+
+      {:error, _} ->
+        []
+    end
   end
 
   defp configured_build_root(root, info) do
