@@ -86,6 +86,67 @@ defmodule Expert.Search.Indexer.PathsTest do
     end
 
     @tag :tmp_dir
+    test "finds what a glob of the project finds, outside excluded directories", %{
+      tmp_dir: root
+    } do
+      for path <- [
+            "top.ex",
+            "lib/a.ex",
+            "lib/b.exs",
+            "lib/c.txt",
+            "lib/.dot.ex",
+            "lib/dir.ex/inner.ex",
+            ".hidden/h.ex",
+            "_build/dev/lib/x/y.ex",
+            "deps/dep/d.ex",
+            "deps/dep/mix.exs"
+          ],
+          do: write_file!(Path.join(root, path), "fixture")
+
+      File.ln_s!(Path.join(root, "lib"), Path.join(root, "linked"))
+      File.ln_s!(Path.join(root, "missing.ex"), Path.join(root, "broken.ex"))
+
+      project = root |> Forge.Document.Path.to_uri() |> Project.bare()
+      project = %{project | kind: :mix}
+      build = Path.join(root, "_build/dev")
+
+      info = %{
+        config: [app: :example],
+        project_config: [],
+        build_path: build,
+        deps_path: Path.join(root, "deps"),
+        apps_paths: nil,
+        dependency_apps: {:ok, []},
+        env: :dev,
+        target: :host,
+        build_root: nil
+      }
+
+      excluded = [
+        Project.workspace_path(project),
+        build,
+        Path.join(root, "_build"),
+        Path.join(root, "deps")
+      ]
+
+      globbed =
+        [root, "**", "*.{ex,exs}"]
+        |> Forge.Path.glob()
+        |> Enum.reject(fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end)
+
+      paths = Paths.for_project(project, fn ^project -> {:ok, info} end)
+      assert paths.source_paths == globbed
+      assert Path.join(root, "linked/a.ex") in paths.source_paths
+      assert paths.source_sizes[Path.join(root, "lib/a.ex")] == byte_size("fixture")
+      assert paths.source_sizes[Path.join(root, "broken.ex")] == 0
+
+      bare =
+        Paths.for_project(Project.bare(Forge.Document.Path.to_uri(root)), fn _ -> flunk() end)
+
+      assert bare.source_paths == Forge.Path.glob([root, "**", "*.{ex,exs}"])
+    end
+
+    @tag :tmp_dir
     test "bare discovery needs no engine configuration", %{tmp_dir: root} do
       source = native_join([root, "deps", "source.ex"])
       write_file!(source, "defmodule BareDependency, do: :ok")

@@ -5,9 +5,14 @@ defmodule Expert.Search.Indexer.Sources do
 
   require Logger
 
-  def stream(paths, source_indexer \\ &Source.index/2, encode \\ &Function.identity/1)
+  def stream(
+        paths,
+        source_indexer \\ &Source.index/2,
+        encode \\ &Function.identity/1,
+        sizes \\ %{}
+      )
       when is_list(paths) do
-    {sized_paths, total_bytes} = stat_paths(paths)
+    {sized_paths, total_bytes} = stat_paths(paths, sizes)
 
     if sized_paths == [] do
       Stream.concat([])
@@ -50,8 +55,15 @@ defmodule Expert.Search.Indexer.Sources do
     [{entry, [manifest_entry]} | Enum.map(entries, &{&1, []})]
   end
 
-  defp stat_paths(paths) do
-    sized_paths = Enum.map(paths, fn path -> {path, file_size(path)} end)
+  defp stat_paths(paths, sizes) do
+    sized_paths =
+      Enum.map(paths, fn path ->
+        case sizes do
+          %{^path => size} -> {path, size}
+          %{} -> {path, file_size(path)}
+        end
+      end)
+
     total_bytes = sized_paths |> Enum.map(fn {_path, size} -> size end) |> Enum.sum()
 
     {sized_paths, total_bytes}

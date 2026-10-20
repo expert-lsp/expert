@@ -291,7 +291,8 @@ defmodule Expert.Search.Indexer do
       paths.source_paths,
       paths.beam_paths,
       paths.applications,
-      paths.source_paths
+      paths.source_paths,
+      paths.source_sizes
     )
   end
 
@@ -300,7 +301,8 @@ defmodule Expert.Search.Indexer do
          source_paths,
          beam_paths,
          applications,
-         current_source_paths
+         current_source_paths,
+         source_sizes
        ) do
     beam_items =
       beam_paths
@@ -314,7 +316,7 @@ defmodule Expert.Search.Indexer do
       include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
 
     source_paths
-    |> Sources.stream(source_indexer(project), &Store.encode_entries/1)
+    |> Sources.stream(source_indexer(project), &Store.encode_entries/1, source_sizes)
     |> tag_stream(:source)
     |> Stream.concat(tag_stream(beam_items, :beam))
   end

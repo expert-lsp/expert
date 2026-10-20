@@ -3,12 +3,11 @@ defmodule Expert.Search.Indexer.Paths do
   alias Forge.Document
   alias Forge.Project
 
-  @indexable_extensions "*.{ex,exs}"
-
-  defstruct source_paths: [], beam_paths: [], applications: %{}
+  defstruct source_paths: [], source_sizes: %{}, beam_paths: [], applications: %{}
 
   @type t :: %__MODULE__{
           source_paths: [Path.t()],
+          source_sizes: %{optional(Path.t()) => non_neg_integer()},
           beam_paths: [Path.t()],
           applications: %{optional(Path.t()) => atom()}
         }
@@ -18,7 +17,8 @@ defmodule Expert.Search.Indexer.Paths do
   end
 
   def for_project(%Project{kind: :bare} = project, _configuration) do
-    %__MODULE__{source_paths: source_files(Project.root_path(project), [])}
+    {source_paths, source_sizes} = source_files(Project.root_path(project), [])
+    %__MODULE__{source_paths: source_paths, source_sizes: source_sizes}
   end
 
   def for_project(%Project{} = project, configuration) do
@@ -54,7 +54,7 @@ defmodule Expert.Search.Indexer.Paths do
           build_root | dependency_roots ++ build_roots
         ]
 
-        sources = source_files(root, excluded)
+        {sources, sizes} = source_files(root, excluded)
         dependencies = application_beams(info.build_path, dependency_apps)
         project_beams = application_beams(info.build_path, project_apps)
         artifacts = Enum.uniq(dependencies ++ project_beams)
@@ -62,6 +62,7 @@ defmodule Expert.Search.Indexer.Paths do
 
         %__MODULE__{
           source_paths: sources,
+          source_sizes: sizes,
           beam_paths: Enum.map(artifacts, &elem(&1, 0)),
           applications: applications
         }
@@ -73,16 +74,70 @@ defmodule Expert.Search.Indexer.Paths do
           Path.join(root, "_build")
         ]
 
-        %__MODULE__{source_paths: source_files(root, excluded)}
+        {sources, sizes} = source_files(root, excluded)
+        %__MODULE__{source_paths: sources, source_sizes: sizes}
     end
   end
 
+  # The files `Forge.Path.glob([root, "**", "*.{ex,exs}"])` finds outside
+  # `excluded`, and their sizes, which the walk stats anyway. Like the glob,
+  # it skips hidden entries and follows links to directories. It doesn't go
+  # into excluded directories, where a build directory alone can hold tens
+  # of thousands of files.
   defp source_files(root, excluded) do
-    [root, "**", @indexable_extensions]
-    |> Forge.Path.glob()
-    |> Enum.reject(fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end)
-    |> Enum.uniq()
+    excluded? = fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end
+
+    found =
+      root
+      |> Forge.Path.normalize()
+      |> walk(excluded?, [])
+      |> Enum.map(fn {path, size} -> {Forge.Path.native(path), size} end)
+      |> Enum.reject(fn {path, _size} -> excluded?.(path) end)
+      |> Enum.sort()
+      |> Enum.uniq_by(fn {path, _size} -> path end)
+
+    {Enum.map(found, &elem(&1, 0)), Map.new(found)}
   end
+
+  defp walk(directory, excluded?, found) do
+    case :prim_file.list_dir(directory) do
+      {:ok, names} ->
+        Enum.reduce(names, found, &visit(directory, IO.chardata_to_string(&1), excluded?, &2))
+
+      {:error, _} ->
+        found
+    end
+  end
+
+  defp visit(_directory, "." <> _hidden, _excluded?, found), do: found
+
+  defp visit(directory, name, excluded?, found) do
+    path = Path.join(directory, name)
+    stat = File.stat(path)
+
+    found =
+      if source_name?(name) do
+        size =
+          case stat do
+            {:ok, %File.Stat{size: size}} -> size
+            _ -> 0
+          end
+
+        [{path, size} | found]
+      else
+        found
+      end
+
+    case stat do
+      {:ok, %File.Stat{type: :directory}} ->
+        if excluded?.(path), do: found, else: walk(path, excluded?, found)
+
+      _ ->
+        found
+    end
+  end
+
+  defp source_name?(name), do: String.ends_with?(name, ".ex") or String.ends_with?(name, ".exs")
 
   defp application_beams(build_path, apps) do
     apps
