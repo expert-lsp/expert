@@ -103,19 +103,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   def extract({:__aliases__, metadata, maybe_module}, %Reducer{} = reducer)
       when is_list(maybe_module) do
     with {:ok, module} <- module(reducer, maybe_module),
-         {:ok, range} <- module_range(reducer, maybe_module, metadata) do
-      %Block{} = current_block = Reducer.current_block(reducer)
-
-      entry =
-        Entry.reference(
-          reducer.analysis.document.path,
-          current_block,
-          Subject.module(module),
-          :module,
-          range,
-          Reducer.application(reducer, module)
-        )
-
+         {:ok, entry} <- reference(reducer, module, maybe_module, metadata) do
       {:ok, entry, nil}
     else
       _ -> :ignored
@@ -208,6 +196,22 @@ defmodule Expert.Search.Indexer.Extractors.Module do
     :ignored
   end
 
+  def reference(%Reducer{} = reducer, module, segments, metadata) do
+    with {:ok, range} <- module_range(reducer, segments, metadata) do
+      entry =
+        Entry.reference(
+          reducer.analysis.document.path,
+          Reducer.current_block(reducer),
+          Subject.module(module),
+          :module,
+          range,
+          Reducer.application(reducer, module)
+        )
+
+      {:ok, entry}
+    end
+  end
+
   defp defimpl_range(%Reducer{} = reducer, {_, protocol_meta, _} = protocol_ast) do
     start = Sourceror.get_start_position(protocol_ast)
 
@@ -283,9 +287,8 @@ defmodule Expert.Search.Indexer.Extractors.Module do
 
   @protocol_module_attribute_names [:protocol, :for]
 
-  @starts_with_capital ~r/[A-Z]+/
   defp module_part?(part) when is_atom(part) do
-    Regex.match?(@starts_with_capital, Atom.to_string(part))
+    part |> Atom.to_string() |> starts_with_capital?()
   end
 
   defp module_part?({:@, _, [{type, _, _} | _]}) when type in @protocol_module_attribute_names,
@@ -294,6 +297,9 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   defp module_part?({:__MODULE__, _, context}) when is_atom(context), do: true
 
   defp module_part?(_), do: false
+
+  defp starts_with_capital?(<<char, _rest::binary>>), do: char in ?A..?Z
+  defp starts_with_capital?(<<>>), do: false
 
   defp module_range(%Reducer{} = reducer, module_name, metadata) do
     case Metadata.position(metadata) do

@@ -211,6 +211,21 @@ defmodule Expert.Search.Indexer.Extractors.ModuleTest do
       assert decorate(doc, module_ref.range) =~ "  «Some.Module».function()"
     end
 
+    test "can detect a module reference in a remote call through __MODULE__" do
+      {:ok, [_module, module_ref], _doc} =
+        ~q[
+          defmodule RemoteCall do
+          def my_fn do
+            __MODULE__.Child.function()
+          end
+        end
+      ]t
+        |> index()
+
+      assert module_ref.type == :module
+      assert module_ref.subject == RemoteCall.Child
+    end
+
     test "can detect a module reference in a remote captured function" do
       {:ok, [_module, module_ref], doc} =
         ~q[
