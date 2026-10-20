@@ -73,13 +73,22 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
           module(),
           Path.t(),
           atom() | nil,
-          [{atom(), arity()}]
+          [{atom(), arity()}],
+          %{{pos_integer(), pos_integer()} => mfa()}
         ) :: :ok
-  def put(%Project{} = project, module, beam_path, application, beam_exports) do
+  def put(
+        %Project{} = project,
+        module,
+        beam_path,
+        application,
+        beam_exports,
+        imported_calls \\ %{}
+      ) do
     metadata = %{
       application: application,
       beam_path: Forge.Path.native(beam_path),
-      exports: exports_from_beam_chunk(beam_exports)
+      exports: exports_from_beam_chunk(beam_exports),
+      imported_calls: imported_calls
     }
 
     true = :ets.insert(name(project), {{:module, module}, metadata})
@@ -118,6 +127,21 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     case :ets.lookup(name(project), {:module, module}) do
       [{{:module, ^module}, %{exports: exports}}] -> {:ok, exports}
       [] -> engine_lookup(project, :module_exports, module, :error)
+    end
+  end
+
+  @doc """
+  Returns the imported function that `module`'s compiled code calls at the given
+  line and column.
+  """
+  @spec imported_call(Project.t() | nil, module(), {pos_integer(), pos_integer()}) ::
+          {:ok, mfa()} | :error
+  def imported_call(nil, _module, _position), do: :error
+
+  def imported_call(%Project{} = project, module, position) when is_atom(module) do
+    case :ets.lookup(name(project), {:module, module}) do
+      [{{:module, ^module}, %{imported_calls: %{^position => mfa}}}] -> {:ok, mfa}
+      _ -> :error
     end
   end
 

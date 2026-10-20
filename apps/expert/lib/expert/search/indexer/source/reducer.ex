@@ -80,20 +80,15 @@ defmodule Expert.Search.Indexer.Source.Reducer do
       ),
       do: Analyzer.resolve_local_call(analysis, position, name, arity)
 
-  def resolve_local_call(
-        %__MODULE__{analysis: analysis} = reducer,
-        position,
-        name,
-        arity
-      ),
-      do:
-        Analyzer.resolve_local_call(
-          analysis,
-          position,
-          name,
-          arity,
-          &module_exports(reducer, &1)
-        )
+  def resolve_local_call(%__MODULE__{analysis: analysis} = reducer, position, name, arity) do
+    case imported_call(reducer, position) do
+      {:ok, {module, ^name, ^arity}} ->
+        {module, name, arity}
+
+      _ ->
+        Analyzer.resolve_local_call(analysis, position, name, arity, &module_exports(reducer, &1))
+    end
+  end
 
   def imports_at(%__MODULE__{analysis: analysis, project: nil}, position),
     do: Analyzer.imports_at(analysis, position)
@@ -103,6 +98,16 @@ defmodule Expert.Search.Indexer.Source.Reducer do
 
   def exunit_module?(%__MODULE__{project: project}, module),
     do: ModuleRegistry.exunit_module?(project, module)
+
+  defp imported_call(%__MODULE__{} = reducer, %Position{} = position) do
+    case Analyzer.current_module(reducer.analysis, position) do
+      {:ok, module} ->
+        ModuleRegistry.imported_call(reducer.project, module, {position.line, position.character})
+
+      _ ->
+        :error
+    end
+  end
 
   defp module_exports(%__MODULE__{project: project}, module),
     do: ModuleRegistry.module_exports(project, module)
