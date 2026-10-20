@@ -5,7 +5,9 @@ defmodule Expert.Search.Fuzzy do
 
   import Record
 
+  alias Expert.EngineApi
   alias Expert.Search.Fuzzy.Scorer
+  alias Expert.Search.Indexer.Paths
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
@@ -272,18 +274,20 @@ defmodule Expert.Search.Fuzzy do
     end
   end
 
-  defp deps_roots(%Project{kind: :mix} = project) do
-    [Project.root_path(project), "**", "mix.exs"]
-    |> Path.join()
-    |> Path.wildcard()
-    |> Enum.map(fn relative_mix_path ->
-      relative_mix_path
-      |> Path.absname()
-      |> Path.dirname()
-      |> Path.join("deps")
-    end)
-    |> Enum.filter(&File.exists?/1)
-  end
+  # The dependency and build roots the indexer leaves out of the sources, which
+  # it has from the project's configuration rather than from walking it. The
+  # engine isn't there to ask when the store starts, which leaves the usual
+  # roots.
+  defp deps_roots(%Project{} = project) do
+    configuration = fn configured ->
+      try do
+        EngineApi.project_configuration(project, configured)
+      rescue
+        _no_engine -> {:error, :engine}
+      end
+    end
 
-  defp deps_roots(_), do: []
+    %Paths{unlisted_sources: {_root, excluded}} = Paths.without_sources(project, configuration)
+    excluded
+  end
 end
