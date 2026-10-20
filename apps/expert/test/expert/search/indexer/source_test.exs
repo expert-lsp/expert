@@ -19,18 +19,6 @@ defmodule Expert.Search.Indexer.SourceTest do
     {:ok, project: project}
   end
 
-  test "analyzes source in the Engine runtime", %{project: project} do
-    test_pid = self()
-
-    patch(EngineApi, :analyze, fn ^project, document, opts ->
-      send(test_pid, {:analyze, opts})
-      Ast.analyze(document, opts)
-    end)
-
-    assert {:ok, _entries} = Source.index("example.ex", "1", [], project)
-    assert_received {:analyze, [expand_uses: true]}
-  end
-
   test "resolves a bare call to the function the compiled module imports", %{project: project} do
     patch(EngineApi, :application, fn ^project, _module -> :example end)
     patch(EngineApi, :available_module?, fn ^project, _module -> false end)

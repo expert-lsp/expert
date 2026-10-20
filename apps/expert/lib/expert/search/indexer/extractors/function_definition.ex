@@ -8,7 +8,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
 
   @function_definitions [:def, :defp, :defmacro, :defmacrop]
 
-  def extract({definition, _, [{fn_name, _, _} = def_ast | body]} = ast, %Reducer{} = reducer)
+  def extract({definition, meta, [{fn_name, _, _} = def_ast | body]} = ast, %Reducer{} = reducer)
       when is_atom(fn_name) and definition in @function_definitions do
     with {:ok, detail_range} <- Ast.Range.fetch(def_ast, reducer.analysis.document),
          true <- valid_bodyless_head?(body, reducer.analysis, detail_range),
@@ -32,13 +32,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
           )
         end
 
-      args_and_guards =
-        case def_ast do
-          {:when, _, [{_, _, args} | guards]} -> [args | guards]
-          {_, _, args} -> args
-        end
-
-      {:ok, entries, [args_and_guards, body]}
+      {:ok, entries, {definition, meta, [skip_head(def_ast) | body]}}
     else
       _ ->
         :ignored
@@ -85,6 +79,11 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
   def extract(_ast, _reducer) do
     :ignored
   end
+
+  defp skip_head({:when, when_meta, [{name, head_meta, args} | guards]}),
+    do: {:when, Reducer.skip(when_meta), [{name, Reducer.skip(head_meta), args} | guards]}
+
+  defp skip_head({name, head_meta, args}), do: {name, Reducer.skip(head_meta), args}
 
   def fetch_delegated_mfa({:defdelegate, _, [call | keywords]}, analysis, position) do
     {_, keyword_args} =

@@ -63,6 +63,12 @@ defmodule Forge.Ast.Analysis.State do
     end
   end
 
+  # Leaves the current scope without recording it, for walkers that only
+  # need the scopes enclosing the node they're visiting.
+  def leave_scope(%__MODULE__{scopes: [_scope | rest]} = state) do
+    %__MODULE__{state | scopes: rest}
+  end
+
   def pop_scope(%__MODULE__{scopes: [scope | rest]} = state) do
     %__MODULE__{state | scopes: rest, visited: Map.put(state.visited, scope.id, scope)}
   end
