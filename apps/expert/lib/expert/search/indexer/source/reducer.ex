@@ -153,8 +153,57 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     end
   end
 
+  # The node forms each default extractor has clauses for. Function
+  # references also match every call with arguments and every remote call,
+  # struct references every remote call.
+  @extractor_forms %{
+    Extractors.Module => [
+      :defmodule,
+      :defprotocol,
+      :defimpl,
+      :__aliases__,
+      :__MODULE__,
+      :__block__,
+      :&
+    ],
+    Extractors.ModuleAttribute => [:@],
+    Extractors.FunctionDefinition => [:def, :defp, :defmacro, :defmacrop, :defdelegate],
+    Extractors.FunctionReference => [],
+    Extractors.StructDefinition => [:defstruct],
+    Extractors.StructReference => [:%, :struct, :struct!],
+    Extractors.EctoSchema => [:schema, :embedded_schema, :embeds_one, :embeds_many]
+  }
+
+  @forms @extractor_forms |> Map.values() |> List.flatten() |> Enum.uniq()
+
+  @extractors_by_form Map.new(@forms, fn form ->
+                        {form, Enum.filter(@extractors, &(form in @extractor_forms[&1]))}
+                      end)
+
+  @call_extractors Map.new(@extractors_by_form, fn {form, extractors} ->
+                     {form,
+                      Enum.filter(
+                        @extractors,
+                        &(&1 in extractors or &1 == Extractors.FunctionReference)
+                      )}
+                   end)
+
+  # Only the extractors that can match the node run; the others would ignore it.
+  defp extractors_for(@extractors, {form, _meta, args}) when is_atom(form) and is_list(args),
+    do: Map.get(@call_extractors, form, [Extractors.FunctionReference])
+
+  defp extractors_for(@extractors, {form, _meta, _args}) when is_atom(form),
+    do: Map.get(@extractors_by_form, form, [])
+
+  defp extractors_for(@extractors, {_form, _meta, _args}),
+    do: [Extractors.FunctionReference, Extractors.StructReference]
+
+  defp extractors_for(extractors, _element), do: extractors
+
   defp apply_extractors(%__MODULE__{} = reducer, element) do
-    Enum.reduce(reducer.extractors, {reducer, element}, fn detector_module, {reducer, element} ->
+    reducer.extractors
+    |> extractors_for(element)
+    |> Enum.reduce({reducer, element}, fn detector_module, {reducer, element} ->
       case detector_module.extract(element, reducer) do
         {:ok, entry} ->
           reducer = push_entry(reducer, entry)
