@@ -102,7 +102,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   # This matches an elixir module reference
   def extract({:__aliases__, metadata, maybe_module}, %Reducer{} = reducer)
       when is_list(maybe_module) do
-    with {:ok, module} <- module(reducer, maybe_module),
+    with {:ok, module} <- module(reducer, maybe_module, metadata),
          {:ok, range} <- module_range(reducer, maybe_module, metadata) do
       %Block{} = current_block = Reducer.current_block(reducer)
 
@@ -257,6 +257,17 @@ defmodule Expert.Search.Indexer.Extractors.Module do
     Analyzer.expand_alias(unresolved_alias, reducer.analysis, position)
   end
 
+  # A remote call's alias arrives already expanded at the same position.
+  defp module(%Reducer{} = reducer, maybe_module, metadata) when is_list(maybe_module) do
+    with {position, module} <- Keyword.get(metadata, :expanded_alias),
+         true <- position == reducer.position,
+         true <- Enum.all?(maybe_module, &module_part?/1) do
+      {:ok, module}
+    else
+      _ -> module(reducer, maybe_module)
+    end
+  end
+
   defp module(%Reducer{} = reducer, maybe_module) when is_list(maybe_module) do
     with true <- Enum.all?(maybe_module, &module_part?/1),
          {:ok, resolved} <- resolve_alias(reducer, maybe_module) do
@@ -283,9 +294,8 @@ defmodule Expert.Search.Indexer.Extractors.Module do
 
   @protocol_module_attribute_names [:protocol, :for]
 
-  @starts_with_capital ~r/[A-Z]+/
   defp module_part?(part) when is_atom(part) do
-    Regex.match?(@starts_with_capital, Atom.to_string(part))
+    part |> Atom.to_string() |> has_capital?()
   end
 
   defp module_part?({:@, _, [{type, _, _} | _]}) when type in @protocol_module_attribute_names,
@@ -294,6 +304,10 @@ defmodule Expert.Search.Indexer.Extractors.Module do
   defp module_part?({:__MODULE__, _, context}) when is_atom(context), do: true
 
   defp module_part?(_), do: false
+
+  defp has_capital?(<<char, _rest::binary>>) when char in ?A..?Z, do: true
+  defp has_capital?(<<_char, rest::binary>>), do: has_capital?(rest)
+  defp has_capital?(<<>>), do: false
 
   defp module_range(%Reducer{} = reducer, module_name, metadata) do
     case Metadata.position(metadata) do
@@ -332,17 +346,41 @@ defmodule Expert.Search.Indexer.Extractors.Module do
 
   defp to_range(%Reducer{} = reducer, module_name, {line, column}) do
     document = reducer.analysis.document
-
-    module_length =
-      module_name
-      |> Ast.Module.name()
-      |> String.length()
+    module_length = name_length(module_name)
 
     Range.new(
       Position.new(document, line, column),
       Position.new(document, line, column + module_length)
     )
   end
+
+  # Inspecting a module creates and classifies an atom just to measure it. A
+  # plain alias, made of ASCII segments that each start with a capital, prints
+  # as its segments joined by dots, unless it starts with Elixir, which
+  # Module.concat/1 drops.
+  defp name_length([first | _] = segments) when first != Elixir do
+    if Enum.all?(segments, &alias_segment?/1),
+      do: Enum.reduce(segments, -1, &(byte_size(Atom.to_string(&1)) + 1 + &2)),
+      else: segments |> Ast.Module.name() |> String.length()
+  end
+
+  defp name_length(module_name), do: module_name |> Ast.Module.name() |> String.length()
+
+  defp alias_segment?(segment) when is_atom(segment) do
+    case Atom.to_string(segment) do
+      <<first, rest::binary>> when first in ?A..?Z -> alias_rest?(rest)
+      _ -> false
+    end
+  end
+
+  defp alias_segment?(_segment), do: false
+
+  defp alias_rest?(<<char, rest::binary>>)
+       when char in ?a..?z or char in ?A..?Z or char in ?0..?9 or char == ?_,
+       do: alias_rest?(rest)
+
+  defp alias_rest?(<<>>), do: true
+  defp alias_rest?(_rest), do: false
 
   defp block_range(document, ast) do
     case Ast.Range.fetch(ast, document) do
