@@ -41,12 +41,12 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
           conn,
           """
           EXPLAIN QUERY PLAN
-          SELECT entry_blobs.entry
-          FROM entries
-          JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
-          WHERE type_id = (SELECT id FROM types WHERE type = ?) AND subtype = ?
+          SELECT def_blobs.entry
+          FROM defs
+          JOIN def_blobs ON def_blobs.entry_key = defs.entry_key
+          WHERE type_id = (SELECT id FROM types WHERE type = ?)
           """,
-          [{:blob, :erlang.term_to_binary(:module)}, "definition"]
+          [{:blob, :erlang.term_to_binary(:module)}]
         )
 
       assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
@@ -55,13 +55,12 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert Enum.any?(rows, fn row ->
                plan = row |> List.last() |> to_string()
 
-               String.contains?(plan, "entries_type_subtype_idx") and
-                 String.contains?(plan, "type_id=?") and
-                 String.contains?(plan, "subtype=?")
+               String.contains?(plan, "defs_type_idx") and
+                 String.contains?(plan, "type_id=?")
              end)
     end
 
-    test "stores only entry data that is not available in the entries table", %{
+    test "stores only entry data that is not available in the defs table", %{
       project: project,
       runtime_versions: runtime_versions
     } do
@@ -77,10 +76,10 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
 
-      result = Exqlite.Basic.exec(conn, "PRAGMA table_info(entries)")
+      result = Exqlite.Basic.exec(conn, "PRAGMA table_info(defs)")
       assert {:ok, entry_columns, _columns} = Exqlite.Basic.rows(result)
 
-      result = Exqlite.Basic.exec(conn, "PRAGMA table_info(entry_blobs)")
+      result = Exqlite.Basic.exec(conn, "PRAGMA table_info(def_blobs)")
       assert {:ok, blob_columns, _columns} = Exqlite.Basic.rows(result)
 
       assert :ok = Exqlite.Basic.close(conn)
@@ -170,7 +169,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Sqlite.replace_all(project, [entry])
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
-      result = Exqlite.Basic.exec(conn, "SELECT entry FROM entry_blobs")
+      result = Exqlite.Basic.exec(conn, "SELECT entry FROM def_blobs")
       assert {:ok, [[entry_blob]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
 
@@ -294,6 +293,126 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                entries
     end
 
+    test "finds references by subject, prefix, subjects and caller", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      range = fn line, from, to ->
+        %Range{
+          start: %Position{line: line, character: from},
+          end: %Position{line: line, character: to}
+        }
+      end
+
+      reference = fn fields ->
+        struct!(
+          %Entry{path: "/references.ex", subtype: :reference, block_id: 5, application: :app},
+          fields
+        )
+      end
+
+      call =
+        reference.(
+          id: 10,
+          range: range.(3, 5, 25),
+          subject: "Referenced.Target.run/1",
+          type: {:function, :usage},
+          caller: "Referenced.Caller.go/0"
+        )
+
+      call_module =
+        reference.(id: 11, range: range.(3, 5, 18), subject: Referenced.Target, type: :module)
+
+      plain_module =
+        reference.(
+          id: 12,
+          block_id: :root,
+          range: range.(4, 1, 14),
+          subject: Referenced.Target,
+          type: :module
+        )
+
+      nested_call =
+        reference.(
+          id: 13,
+          range: range.(5, 5, 30),
+          subject: "Referenced.Target.Inner.run/0",
+          type: {:function, :usage},
+          caller: "Referenced.Caller.go/0"
+        )
+
+      nested_module =
+        reference.(
+          id: 14,
+          range: range.(5, 5, 24),
+          subject: Referenced.Target.Inner,
+          type: :module
+        )
+
+      entries = [call, call_module, plain_module, nested_call, nested_module]
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries(entries))
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+      result = Exqlite.Basic.exec(conn, "SELECT count(*) FROM refs")
+      assert {:ok, [[4]], _columns} = Exqlite.Basic.rows(result)
+      assert :ok = Exqlite.Basic.close(conn)
+
+      ids = fn found -> found |> Enum.map(& &1.id) |> Enum.sort() end
+
+      assert Enum.sort_by(Sqlite.find_by_paths(project, ["/references.ex"], :_, :_), & &1.id) ==
+               entries
+
+      assert ids.(Sqlite.find_by_subject(project, Referenced.Target, :module, :reference)) == [
+               11,
+               12
+             ]
+
+      assert ids.(Sqlite.find_by_subject(project, Referenced.Target, :_, :_)) == [11, 12]
+      assert ids.(Sqlite.find_by_subject(project, "Referenced.Target.run/1", :_, :_)) == [10]
+      assert ids.(Sqlite.find_by_subject(project, :_, :module, :reference)) == [11, 12, 14]
+
+      assert ids.(Sqlite.find_by_prefix(project, "Referenced.Target", :module, :reference)) == [
+               11,
+               12,
+               14
+             ]
+
+      assert ids.(Sqlite.find_by_prefix(project, "Referenced.Target", :_, :_)) == [
+               10,
+               11,
+               12,
+               13,
+               14
+             ]
+
+      assert ids.(
+               Sqlite.find_by_subjects(
+                 project,
+                 [Referenced.Target, Referenced.Target.Inner],
+                 :module,
+                 :_
+               )
+             ) ==
+               [11, 12, 14]
+
+      assert ids.(
+               Sqlite.find_by_caller(project, "Referenced.Caller.go/0", "/references.ex", :_, :_)
+             ) == [
+               10,
+               13
+             ]
+
+      assert Sqlite.path_to_ids(project) == %{"/references.ex" => 14}
+    end
+
     test "restores entries and indexes when replacement fails", %{
       project: project,
       runtime_versions: runtime_versions
@@ -336,7 +455,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:error, _reason} = Sqlite.replace_all(project, replacement)
 
       assert_called(
-        Exqlite.Basic.exec(_, "DROP INDEX IF EXISTS entries_caller_idx", []),
+        Exqlite.Basic.exec(_, "DROP INDEX IF EXISTS defs_caller_idx", []),
         1
       )
 
@@ -353,16 +472,139 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert MapSet.subset?(
                MapSet.new([
-                 "entries_subject_idx",
-                 "entries_caller_idx",
-                 "entries_block_idx",
-                 "entries_id_idx",
-                 "entries_file_id_idx",
-                 "entries_type_subtype_idx",
-                 "entries_definitions_idx"
+                 "defs_definitions_idx",
+                 "defs_caller_idx",
+                 "defs_id_idx",
+                 "defs_file_block_idx",
+                 "defs_type_idx",
+                 "refs_subject_idx",
+                 "refs_file_idx"
                ]),
                index_names
              )
+    end
+  end
+
+  describe "replace_all/2 with references" do
+    setup %{project: project, runtime_versions: runtime_versions} do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      :ok
+    end
+
+    test "reads callers back from the definitions written with them", %{project: project} do
+      definition = fn id, subject, type ->
+        %Entry{
+          id: id,
+          path: "/callers.ex",
+          subject: subject,
+          type: type,
+          subtype: :definition,
+          block_id: :root
+        }
+      end
+
+      call = fn id, caller ->
+        %Entry{
+          id: id,
+          path: "/callers.ex",
+          subject: "Callee.run/0",
+          type: {:function, :usage},
+          subtype: :reference,
+          block_id: :root,
+          caller: caller
+        }
+      end
+
+      entries = [
+        definition.(1, Callers, :module),
+        definition.(2, "Callers.go/1", {:function, :public}),
+        # a function with a default argument: one id, one definition per arity
+        definition.(3, "Callers.defaults/1", {:function, :public}),
+        definition.(3, "Callers.defaults/2", {:function, :public}),
+        call.(10, "Callers"),
+        call.(11, "Callers.go/1"),
+        call.(12, "Callers.defaults/1"),
+        call.(13, "Callers.defaults/2"),
+        call.(14, "/callers.ex"),
+        call.(15, "Callers.undefined/0"),
+        call.(16, nil)
+      ]
+
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      callers =
+        project
+        |> Sqlite.find_by_subject("Callee.run/0", :_, :reference)
+        |> Map.new(&{&1.id, &1.caller})
+
+      assert callers == Map.new(Enum.drop(entries, 4), &{&1.id, &1.caller})
+
+      for caller <- [
+            "Callers",
+            "Callers.go/1",
+            "Callers.defaults/2",
+            "/callers.ex",
+            "Callers.undefined/0"
+          ] do
+        assert [%Entry{caller: ^caller}] =
+                 Sqlite.find_by_caller(project, caller, "/callers.ex", :_, :_)
+      end
+    end
+
+    test "finds subjects by any prefix, across their module and name", %{project: project} do
+      subjects = [
+        "Foo.Bar.baz/1",
+        "Foo.Barn.qux/0",
+        "Foo.bar/2",
+        "foo/1",
+        "Kernel.../2",
+        "Foo.Bar"
+      ]
+
+      entries =
+        for {subject, id} <- Enum.with_index(subjects, 1) do
+          %Entry{
+            id: id,
+            path: "/prefixes.ex",
+            subject: subject,
+            type: {:function, :usage},
+            subtype: :reference,
+            block_id: :root
+          }
+        end
+
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      for prefix <- [
+            "",
+            "F",
+            "Foo",
+            "Foo.",
+            "Foo.B",
+            "Foo.Bar",
+            "Foo.Bar.",
+            "Foo.Bar.b",
+            "Foo.b",
+            "foo",
+            "Kernel..",
+            "Kernel...",
+            "x"
+          ] do
+        found =
+          project
+          |> Sqlite.find_by_prefix(prefix, :_, :_)
+          |> Enum.map(& &1.subject)
+          |> Enum.sort()
+
+        assert found == subjects |> Enum.filter(&String.starts_with?(&1, prefix)) |> Enum.sort(),
+               prefix
+      end
     end
   end
 
@@ -463,7 +705,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       result =
         Exqlite.Basic.exec(conn, """
-        SELECT (SELECT COUNT(*) FROM entries), (SELECT COUNT(*) FROM entry_blobs)
+        SELECT (SELECT COUNT(*) FROM defs), (SELECT COUNT(*) FROM def_blobs)
         """)
 
       assert {:ok, [[1, 1]], _columns} = Exqlite.Basic.rows(result)
@@ -593,7 +835,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       result =
         Exqlite.Basic.exec(conn, """
-        SELECT (SELECT COUNT(*) FROM entries), (SELECT COUNT(*) FROM entry_blobs)
+        SELECT (SELECT COUNT(*) FROM defs), (SELECT COUNT(*) FROM def_blobs)
         """)
 
       assert {:ok, [[1, 1]], _columns} = Exqlite.Basic.rows(result)
@@ -685,7 +927,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       try do
         # Simulate a persisted database created before the caller index was added.
-        result = Exqlite.Basic.exec(conn, "DROP INDEX entries_caller_idx")
+        result = Exqlite.Basic.exec(conn, "DROP INDEX defs_caller_idx")
         assert {:ok, [], _columns} = Exqlite.Basic.rows(result)
       after
         Exqlite.Basic.close(conn)
@@ -709,10 +951,10 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       try do
         result =
           Exqlite.Basic.exec(conn, "SELECT name FROM sqlite_master WHERE name = ?", [
-            "entries_caller_idx"
+            "defs_caller_idx"
           ])
 
-        assert {:ok, [["entries_caller_idx"]], _columns} = Exqlite.Basic.rows(result)
+        assert {:ok, [["defs_caller_idx"]], _columns} = Exqlite.Basic.rows(result)
       after
         Exqlite.Basic.close(conn)
       end
