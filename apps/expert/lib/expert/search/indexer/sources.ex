@@ -9,6 +9,10 @@ defmodule Expert.Search.Indexer.Sources do
   # 8 MB on a 64-bit VM
   @worker_heap_words 1_000_000
 
+  # A task costs its owner a few message round trips and gets a heap of its
+  # own, so each indexes several files.
+  @files_per_task 16
+
   def stream(
         paths,
         source_indexer \\ &Source.index/2,
@@ -22,13 +26,17 @@ defmodule Expert.Search.Indexer.Sources do
       Stream.concat([])
     else
       sized_paths
+      |> Enum.chunk_every(@files_per_task)
       |> Task.async_stream(
-        fn {path, size, stat} ->
+        fn group ->
           # A file's syntax tree is many times its size, and a task's heap
           # starts tiny and grows by copying, so without this a third of a
           # worker's time goes to garbage collections that free nothing.
           Process.flag(:min_heap_size, @worker_heap_words)
-          {size, index_path(path, stat, source_indexer, encode)}
+
+          Enum.map(group, fn {path, size, stat} ->
+            {size, index_path(path, stat, source_indexer, encode)}
+          end)
         end,
         ordered: false,
         timeout: :infinity
@@ -36,8 +44,10 @@ defmodule Expert.Search.Indexer.Sources do
       |> Stream.transform(
         fn -> start_progress("Indexing source code") end,
         fn task_result, progress ->
-          {size, result} = task_result!(task_result)
-          {stream_items(result), report_progress(progress, size, total_bytes, "Indexing")}
+          results = task_result!(task_result)
+          size = Enum.sum_by(results, fn {size, _result} -> size end)
+          items = Enum.flat_map(results, fn {_size, result} -> stream_items(result) end)
+          {items, report_progress(progress, size, total_bytes, "Indexing")}
         end,
         &complete_progress(&1, length(sized_paths))
       )
