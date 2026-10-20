@@ -212,9 +212,13 @@ let
             src = fetchFromGitHub {
               owner = "elixir-lsp";
               repo = "elixir_sense";
-              rev = "da065ae9ccc125d05b901b9eb6981ff559a8f9f1";
-              hash = "sha256-hIWAon1kttZNjm2z1NubUEqtXjCZabyifbGyAvkfjF8=";
+              rev = "4cbae01eda2208aa12fda728b47f690a1495639d";
+              hash = "sha256-HkvKqeliYtBQ6h4OH1B40pRaPC8Fj3nUUoke4kKpMJk=";
             };
+
+            beamDeps = [
+              toxic2
+            ];
           };
         in
         drv;
@@ -398,6 +402,24 @@ let
               inherit version;
               pkg = "telemetry";
               sha256 = "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1";
+            };
+          };
+        in
+        drv;
+
+      toxic2 =
+        let
+          version = "0.1.0";
+          drv = buildMix {
+            inherit version;
+            name = "toxic2";
+            appConfigPath = ./config;
+
+            src = fetchFromGitHub {
+              owner = "lukaszsamson";
+              repo = "toxic2";
+              rev = "c47c911dac5aafa860206d222a781c3d71afc843";
+              hash = "sha256-RN07birO0YzKfsBcRyLNeTO0gyc9OvRfD6Rxd9e/bGY=";
             };
           };
         in
