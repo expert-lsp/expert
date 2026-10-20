@@ -293,6 +293,104 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                entries
     end
 
+    test "stores the module reference of a call with the call and returns it like any other", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      range = fn line, from, to ->
+        %Range{
+          start: %Position{line: line, character: from},
+          end: %Position{line: line, character: to}
+        }
+      end
+
+      reference = fn fields ->
+        struct!(
+          %Entry{path: "/folded.ex", subtype: :reference, block_id: 5, application: :app},
+          fields
+        )
+      end
+
+      call =
+        reference.(
+          id: 10,
+          range: range.(3, 5, 25),
+          subject: "Folded.Target.run/1",
+          type: {:function, :usage},
+          caller: "Folded.Caller.go/0"
+        )
+
+      call_module =
+        reference.(id: 11, range: range.(3, 5, 18), subject: Folded.Target, type: :module)
+
+      plain_module =
+        reference.(
+          id: 12,
+          block_id: :root,
+          range: range.(4, 1, 14),
+          subject: Folded.Target,
+          type: :module
+        )
+
+      nested_call =
+        reference.(
+          id: 13,
+          range: range.(5, 5, 30),
+          subject: "Folded.Target.Inner.run/0",
+          type: {:function, :usage},
+          caller: "Folded.Caller.go/0"
+        )
+
+      nested_module =
+        reference.(id: 14, range: range.(5, 5, 24), subject: Folded.Target.Inner, type: :module)
+
+      entries = [call, call_module, plain_module, nested_call, nested_module]
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries(entries))
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+      result = Exqlite.Basic.exec(conn, "SELECT count(*) FROM refs")
+      assert {:ok, [[3]], _columns} = Exqlite.Basic.rows(result)
+      assert :ok = Exqlite.Basic.close(conn)
+
+      ids = fn found -> found |> Enum.map(& &1.id) |> Enum.sort() end
+
+      assert Enum.sort_by(Sqlite.find_by_paths(project, ["/folded.ex"], :_, :_), & &1.id) ==
+               entries
+
+      assert ids.(Sqlite.find_by_subject(project, Folded.Target, :module, :reference)) == [11, 12]
+      assert ids.(Sqlite.find_by_subject(project, Folded.Target, :_, :_)) == [11, 12]
+      assert ids.(Sqlite.find_by_subject(project, "Folded.Target.run/1", :_, :_)) == [10]
+      assert ids.(Sqlite.find_by_subject(project, :_, :module, :reference)) == [11, 12, 14]
+
+      assert ids.(Sqlite.find_by_prefix(project, "Folded.Target", :module, :reference)) == [
+               11,
+               12,
+               14
+             ]
+
+      assert ids.(Sqlite.find_by_prefix(project, "Folded.Target", :_, :_)) == [10, 11, 12, 13, 14]
+
+      assert ids.(
+               Sqlite.find_by_subjects(project, [Folded.Target, Folded.Target.Inner], :module, :_)
+             ) ==
+               [11, 12, 14]
+
+      assert ids.(Sqlite.find_by_caller(project, "Folded.Caller.go/0", "/folded.ex", :_, :_)) == [
+               10,
+               13
+             ]
+
+      assert Sqlite.path_to_ids(project) == %{"/folded.ex" => 14}
+    end
+
     test "restores entries and indexes when replacement fails", %{
       project: project,
       runtime_versions: runtime_versions
@@ -359,7 +457,8 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                  "entries_type_idx",
                  "refs_subject_idx",
                  "refs_caller_idx",
-                 "refs_file_idx"
+                 "refs_file_idx",
+                 "refs_module_idx"
                ]),
                index_names
              )
