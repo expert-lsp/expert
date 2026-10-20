@@ -39,6 +39,7 @@ defmodule Engine.Completion do
             timed_log("ES suggestions", fn ->
               ElixirSense.suggestions(doc_string, line, character)
             end),
+          suggestion <- expand_default_arguments(suggestion),
           candidate =
             timed_log("from_elixir_sense", fn ->
               from_elixir_sense(suggestion, locals_without_parens)
@@ -48,6 +49,17 @@ defmodule Engine.Completion do
       end
     end
   end
+
+  # ElixirSense groups default-argument variants into one full-arity suggestion.
+  # Expand them before conversion so argument names are selected for each arity.
+  defp expand_default_arguments(%{type: type, arity: arity, default_args: defaults} = suggestion)
+       when type in [:function, :macro] do
+    for variant_arity <- (arity - defaults)..arity do
+      %{suggestion | arity: variant_arity}
+    end
+  end
+
+  defp expand_default_arguments(suggestion), do: [suggestion]
 
   defp from_elixir_sense(suggestion, locals_without_parens) do
     suggestion

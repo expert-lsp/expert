@@ -15,6 +15,10 @@ defmodule Project.DefaultArgs do
     a + Keyword.get(opts, :b, 0)
   end
 
+  def multiple(a \\ 1, b \\ 2) do
+    {a, b}
+  end
+
   def struct_arg(a, b \\ %Project.Structs.User{}) do
     Map.put(b, :username, a)
   end

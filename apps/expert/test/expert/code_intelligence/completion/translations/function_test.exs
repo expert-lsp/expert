@@ -216,6 +216,30 @@ defmodule Expert.CodeIntelligence.Completion.Translations.FunctionTest do
   end
 
   describe "handling default arguments" do
+    test "includes every arity when all arguments have defaults", %{project: project} do
+      {:ok, completions} =
+        project
+        |> complete("Project.DefaultArgs.multiple|")
+        |> fetch_completion(kind: CompletionItemKind.function())
+
+      assert Enum.map(completions, &apply_completion/1) == [
+               "Project.DefaultArgs.multiple()",
+               "Project.DefaultArgs.multiple(${1:a})",
+               "Project.DefaultArgs.multiple(${1:a}, ${2:b})"
+             ]
+    end
+
+    test "captures include every supported arity", %{project: project} do
+      completions = complete(project, "&Project.DefaultArgs.options|")
+
+      captures = Enum.filter(completions, &(&1.detail == "(Capture)"))
+
+      assert Enum.map(captures, &apply_completion/1) == [
+               "&Project.DefaultArgs.options/1",
+               "&Project.DefaultArgs.options/2"
+             ]
+    end
+
     test "works with a first arg", %{project: project} do
       {:ok, [arity_1, arity_2]} =
         project
