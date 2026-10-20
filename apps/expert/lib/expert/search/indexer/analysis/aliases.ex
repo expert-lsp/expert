@@ -26,6 +26,48 @@ defmodule Expert.Search.Indexer.Analysis.Aliases do
   end
 
   @doc """
+  Returns a function that resolves one alias name, such as `[:Foo]`, the way
+  `at/2` would at `position`, without building the map of every alias in scope.
+  """
+  @spec lookup(Analysis.t(), Position.t()) :: ([atom()] -> {:ok, module()} | :error)
+  def lookup(%Analysis{} = analysis, %Position{} = position) do
+    case Analysis.scopes_at(analysis, position) do
+      [%Scope{aliases: aliases} | _] -> &resolve(aliases, &1, position.line)
+      [] -> fn _as -> :error end
+    end
+  end
+
+  # `Scope.alias_map/2` keeps, for each name, the alias on the latest line not
+  # after `line`, and of those on the same line the one declared first. Scope
+  # aliases are listed from the latest declared, so later list entries win ties.
+  defp resolve(aliases, as, line) do
+    case latest_alias(aliases, as, line, nil) do
+      %Alias{module: segments} = alias when is_list(segments) ->
+        if Enum.all?(segments, &is_atom/1), do: {:ok, Alias.to_module(alias)}, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  defp latest_alias([], _as, _line, found), do: found
+
+  defp latest_alias([%Alias{as: as, range: range} = alias | rest], as, line, found) do
+    alias_line = range.start.line
+
+    found =
+      cond do
+        alias_line > line -> found
+        found == nil or alias_line >= found.range.start.line -> alias
+        true -> found
+      end
+
+    latest_alias(rest, as, line, found)
+  end
+
+  defp latest_alias([_other | rest], as, line, found), do: latest_alias(rest, as, line, found)
+
+  @doc """
   Resolves an alias in the context of a line and a scope
   (used internally when calculating imports)
   """
