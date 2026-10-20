@@ -48,12 +48,27 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
   end
 
   # remote function OtherModule.foo(:arg), OtherModule.foo() or OtherModule.foo
+  #
+  # The module extractor visits the alias next and would expand it again, so
+  # the expansion is left on the alias for it to reuse.
   def extract(
-        {{:., _, [{:__aliases__, start_metadata, module}, fn_name]}, end_metadata, args},
+        {{:., dot_meta, [{:__aliases__, start_metadata, module}, fn_name]}, end_metadata, args},
         %Reducer{} = reducer
       )
       when is_atom(fn_name) do
-    entry(reducer, start_metadata, end_metadata, module, fn_name, args)
+    case resolved_entry(reducer, start_metadata, end_metadata, module, fn_name, args) do
+      {:ok, entry, expanded, %Position{} = at} ->
+        start_metadata =
+          Keyword.put(start_metadata, :expanded_alias, {{at.line, at.character}, expanded})
+
+        call =
+          {{:., dot_meta, [{:__aliases__, start_metadata, module}, fn_name]}, end_metadata, args}
+
+        {:ok, entry, call}
+
+      :ignored ->
+        :ignored
+    end
   end
 
   # local function capture &downcase/1
@@ -160,6 +175,20 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
          function_name,
          args_arity
        ) do
+    case resolved_entry(reducer, start_metadata, end_metadata, module, function_name, args_arity) do
+      {:ok, entry, _module, _at} -> {:ok, entry}
+      :ignored -> :ignored
+    end
+  end
+
+  defp resolved_entry(
+         %Reducer{} = reducer,
+         start_metadata,
+         end_metadata,
+         module,
+         function_name,
+         args_arity
+       ) do
     arity = call_arity(args_arity, end_metadata)
     block = Reducer.current_block(reducer)
 
@@ -180,15 +209,17 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
           {:ok, module} ->
             mfa = Subject.mfa(module, function_name, arity)
 
-            {:ok,
-             Entry.reference(
-               reducer.analysis.document.path,
-               block,
-               mfa,
-               {:function, :usage},
-               range,
-               Reducer.application(reducer, module)
-             )}
+            entry =
+              Entry.reference(
+                reducer.analysis.document.path,
+                block,
+                mfa,
+                {:function, :usage},
+                range,
+                Reducer.application(reducer, module)
+              )
+
+            {:ok, entry, module, range.start}
 
           _ ->
             human_location = Reducer.human_location(reducer)
