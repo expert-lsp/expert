@@ -141,7 +141,9 @@ defmodule Expert.Search.StoreTest do
     assert {:error, :busy} = Store.exact_many(project, ["Foo.Bar"], [])
   end
 
-  test "by_caller returns only matching occurrences using the caller index", %{project: project} do
+  test "by_caller returns only matching occurrences, reading the file's references", %{
+    project: project
+  } do
     first = %Entry{
       id: 1,
       block_id: :root,
@@ -159,18 +161,23 @@ defmodule Expert.Search.StoreTest do
     no_caller = %{first | id: 6, caller: nil}
     definition = %{first | id: 7, subtype: :definition}
     other_type = %{first | id: 8, type: :module}
+    # with references in many files, reading one file's is a seek
+    other_files = for id <- 100..199, do: %{first | id: id, path: "/other_#{id}.ex"}
 
     assert :ok =
-             Store.replace(project, [
-               first,
-               second,
-               repeated,
-               other_caller,
-               other_path,
-               no_caller,
-               definition,
-               other_type
-             ])
+             Store.replace(
+               project,
+               [
+                 first,
+                 second,
+                 repeated,
+                 other_caller,
+                 other_path,
+                 no_caller,
+                 definition,
+                 other_type
+               ] ++ other_files
+             )
 
     spy(Exqlite.Basic)
 
@@ -190,8 +197,8 @@ defmodule Expert.Search.StoreTest do
       assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
 
       assert Enum.any?(rows, fn [_id, _parent, _unused, detail] ->
-               String.contains?(detail, "SEARCH refs USING INDEX refs_caller_idx") and
-                 String.contains?(detail, "caller=? AND file_id=?")
+               String.contains?(detail, "SEARCH refs USING INDEX refs_file_idx") and
+                 String.contains?(detail, "file_id=?")
              end)
     after
       Exqlite.Basic.close(conn)

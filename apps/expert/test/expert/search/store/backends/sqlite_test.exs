@@ -456,7 +456,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
         Exqlite.Basic.exec(conn, "SELECT DISTINCT hex(substr(occurrences, 1, 1)) FROM refs")
 
       # only lines and columns are stored
-      assert {:ok, [["01"]], _columns} = Exqlite.Basic.rows(result)
+      assert {:ok, [["03"]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
 
       assert Enum.sort_by(Sqlite.find_by_paths(project, [path], :_, :_), & &1.id) == entries
@@ -530,12 +530,133 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                  "entries_file_block_idx",
                  "entries_type_idx",
                  "refs_subject_idx",
-                 "refs_caller_idx",
-                 "refs_file_idx",
-                 "refs_module_idx"
+                 "refs_file_idx"
                ]),
                index_names
              )
+    end
+  end
+
+  describe "replace_all/2 with references" do
+    setup %{project: project, runtime_versions: runtime_versions} do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      :ok
+    end
+
+    test "reads callers back from the definitions written with them", %{project: project} do
+      definition = fn id, subject, type ->
+        %Entry{
+          id: id,
+          path: "/callers.ex",
+          subject: subject,
+          type: type,
+          subtype: :definition,
+          block_id: :root
+        }
+      end
+
+      call = fn id, caller ->
+        %Entry{
+          id: id,
+          path: "/callers.ex",
+          subject: "Callee.run/0",
+          type: {:function, :usage},
+          subtype: :reference,
+          block_id: :root,
+          caller: caller
+        }
+      end
+
+      entries = [
+        definition.(1, Callers, :module),
+        definition.(2, "Callers.go/1", {:function, :public}),
+        # a function with a default argument: one id, one definition per arity
+        definition.(3, "Callers.defaults/1", {:function, :public}),
+        definition.(3, "Callers.defaults/2", {:function, :public}),
+        call.(10, "Callers"),
+        call.(11, "Callers.go/1"),
+        call.(12, "Callers.defaults/1"),
+        call.(13, "Callers.defaults/2"),
+        call.(14, "/callers.ex"),
+        call.(15, "Callers.undefined/0"),
+        call.(16, nil)
+      ]
+
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      callers =
+        project
+        |> Sqlite.find_by_subject("Callee.run/0", :_, :reference)
+        |> Map.new(&{&1.id, &1.caller})
+
+      assert callers == Map.new(Enum.drop(entries, 4), &{&1.id, &1.caller})
+
+      for caller <- [
+            "Callers",
+            "Callers.go/1",
+            "Callers.defaults/2",
+            "/callers.ex",
+            "Callers.undefined/0"
+          ] do
+        assert [%Entry{caller: ^caller}] =
+                 Sqlite.find_by_caller(project, caller, "/callers.ex", :_, :_)
+      end
+    end
+
+    test "finds subjects by any prefix, across their module and name", %{project: project} do
+      subjects = [
+        "Foo.Bar.baz/1",
+        "Foo.Barn.qux/0",
+        "Foo.bar/2",
+        "foo/1",
+        "Kernel.../2",
+        "Foo.Bar"
+      ]
+
+      entries =
+        for {subject, id} <- Enum.with_index(subjects, 1) do
+          %Entry{
+            id: id,
+            path: "/prefixes.ex",
+            subject: subject,
+            type: {:function, :usage},
+            subtype: :reference,
+            block_id: :root
+          }
+        end
+
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      for prefix <- [
+            "",
+            "F",
+            "Foo",
+            "Foo.",
+            "Foo.B",
+            "Foo.Bar",
+            "Foo.Bar.",
+            "Foo.Bar.b",
+            "Foo.b",
+            "foo",
+            "Kernel..",
+            "Kernel...",
+            "x"
+          ] do
+        found =
+          project
+          |> Sqlite.find_by_prefix(prefix, :_, :_)
+          |> Enum.map(& &1.subject)
+          |> Enum.sort()
+
+        assert found == subjects |> Enum.filter(&String.starts_with?(&1, prefix)) |> Enum.sort(),
+               prefix
+      end
     end
   end
 
@@ -693,7 +814,14 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       entries =
         for {path, id} <- Enum.with_index(paths, 1) do
-          %Entry{id: id, subject: "Many.function_#{id}/0", path: path, type: {:function, :public}, subtype: :definition, block_id: :root}
+          %Entry{
+            id: id,
+            subject: "Many.function_#{id}/0",
+            path: path,
+            type: {:function, :public},
+            subtype: :definition,
+            block_id: :root
+          }
         end
 
       pid =
