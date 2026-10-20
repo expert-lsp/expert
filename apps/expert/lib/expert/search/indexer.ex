@@ -436,24 +436,39 @@ defmodule Expert.Search.Indexer do
     result =
       stream
       |> Stream.chunk_every(@entry_chunk_size)
-      |> Enum.reduce_while(write_state, fn chunk, write_state ->
+      |> Enum.reduce_while({nil, write_state}, fn chunk, {writing, write_state} ->
         entries = consume_chunk(chunk, seen)
 
-        case write_batch.(entries, write_state) do
-          {:ok, write_state} -> {:cont, write_state}
-          {:error, _reason} = error -> {:halt, error}
+        case await_write(writing, write_state) do
+          {:ok, write_state} ->
+            {:cont, {Task.async(fn -> write_batch.(entries, write_state) end), write_state}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
         end
       end)
 
+    result =
+      case result do
+        {:error, _reason} = error -> error
+        {writing, write_state} -> await_write(writing, write_state)
+      end
+
     case result do
+      {:ok, write_state} ->
+        {:ok, close_seen(seen, state), write_state}
+
       {:error, _reason} = error ->
         close_seen(seen, state)
         error
-
-      write_state ->
-        {:ok, close_seen(seen, state), write_state}
     end
   end
+
+  # Each batch is written in a task of its own, so the next batch is read from
+  # the workers while it's written. Writes never overlap: the next starts once
+  # the previous one is awaited, with the state it returned.
+  defp await_write(nil, write_state), do: {:ok, write_state}
+  defp await_write(%Task{} = writing, _write_state), do: Task.await(writing, :infinity)
 
   # The keys of the definitions seen so far and the manifest entries, in
   # order, grow with the project. In ETS they stay out of this process's heap,
