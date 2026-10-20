@@ -1473,16 +1473,22 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp block_id(0), do: :root
   defp block_id(block_id) when is_integer(block_id), do: block_id
 
+  # Every position carries its whole source line, and an entry's four
+  # positions usually share one or two lines, so each line is stored once and
+  # positions refer to it by index.
   defp build_entry_blob(%Entry{} = entry), do: entry |> entry_term() |> blob()
 
   defp entry_term(%Entry{} = entry) do
     subject_override = if !is_binary(entry.subject), do: entry.subject
+    {lines, block_range} = compact_range(entry.block_range, [])
+    {lines, range} = compact_range(entry.range, lines)
 
     {
       subject_override,
       entry.application,
-      compact_range(entry.block_range),
-      compact_range(entry.range),
+      lines |> Enum.reverse() |> List.to_tuple(),
+      block_range,
+      range,
       entry.metadata
     }
   end
@@ -1509,9 +1515,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp decode_entry(id, path, subject_key, caller, type, subtype, block_id, entry_term) do
-    {subject_override, application, block_range, range, metadata} = entry_term
-    block_range = expand_range(block_range)
-    range = expand_range(range)
+    {subject_override, application, lines, block_range, range, metadata} = entry_term
+    block_range = expand_range(block_range, lines)
+    range = expand_range(range, lines)
 
     subject =
       case subject_override do
@@ -1534,37 +1540,56 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     }
   end
 
-  defp compact_range(nil), do: nil
+  defp compact_range(nil, lines), do: {lines, nil}
 
-  defp compact_range(%Range{start: start_position, end: end_position}) do
-    {compact_position(start_position), compact_position(end_position)}
+  defp compact_range(%Range{start: start_position, end: end_position}, lines) do
+    {lines, start_position} = compact_position(start_position, lines)
+    {lines, end_position} = compact_position(end_position, lines)
+    {lines, {start_position, end_position}}
   end
 
-  defp compact_position(%Position{} = position) do
-    {
-      position.line,
-      position.character,
-      position.valid?,
-      position.context_line,
-      position.document_line_count,
-      position.starting_index
+  # `lines` is in reverse order, so a line's index is counted from the end.
+  defp compact_position(%Position{} = position, lines) do
+    {lines, line_index} = line_index(lines, position.context_line)
+
+    {lines,
+     {
+       position.line,
+       position.character,
+       position.valid?,
+       line_index,
+       position.document_line_count,
+       position.starting_index
+     }}
+  end
+
+  defp line_index(lines, line) do
+    count = length(lines)
+
+    case Enum.find_index(lines, &(&1 == line)) do
+      nil -> {[line | lines], count}
+      reversed_index -> {lines, count - 1 - reversed_index}
+    end
+  end
+
+  defp expand_range(nil, _lines), do: nil
+
+  defp expand_range({start_position, end_position}, lines) do
+    %Range{
+      start: expand_position(start_position, lines),
+      end: expand_position(end_position, lines)
     }
   end
 
-  defp expand_range(nil), do: nil
-
-  defp expand_range({start_position, end_position}) do
-    %Range{start: expand_position(start_position), end: expand_position(end_position)}
-  end
-
   defp expand_position(
-         {line, character, valid?, context_line, document_line_count, starting_index}
+         {line, character, valid?, line_index, document_line_count, starting_index},
+         lines
        ) do
     %Position{
       line: line,
       character: character,
       valid?: valid?,
-      context_line: context_line,
+      context_line: elem(lines, line_index),
       document_line_count: document_line_count,
       starting_index: starting_index
     }

@@ -173,11 +173,13 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, [[entry_blob]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
 
+      # the positions' shared context line is stored once, and referenced by index
       assert {
                nil,
                :sample,
-               {{1, 1, false, nil, 0, 1}, {2, 1, false, nil, 0, 1}},
-               {{3, 1, false, nil, 0, 1}, {4, 1, false, nil, 0, 1}},
+               {nil},
+               {{1, 1, false, 0, 0, 1}, {2, 1, false, 0, 0, 1}},
+               {{3, 1, false, 0, 0, 1}, {4, 1, false, 0, 0, 1}},
                %{detail: :kept}
              } = :erlang.binary_to_term(entry_blob)
 
