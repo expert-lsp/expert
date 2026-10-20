@@ -40,8 +40,8 @@ defmodule Expert.Search.Indexer do
     try do
       paths = Keyword.get_lazy(opts, :paths, fn -> Paths.without_sources(project) end)
 
-      with {:ok, state} <- replace_store(paths, new_stream_state(), project, true) do
-        {:ok, Manifest.new(manifest_entries(state))}
+      with {:ok, manifest_entries} <- replace_store(paths, project, true) do
+        {:ok, Manifest.new(manifest_entries)}
       end
     after
       EngineApi.clear_application_cache_async(project)
@@ -72,8 +72,8 @@ defmodule Expert.Search.Indexer do
   defp replace_index(%Project{} = project, _path_to_ids, opts) do
     paths = paths_for_project(project, opts)
 
-    with {:ok, state} <- replace_store(paths, new_stream_state(), project, false) do
-      {:ok, Manifest.new(manifest_entries(state))}
+    with {:ok, manifest_entries} <- replace_store(paths, project, false) do
+      {:ok, Manifest.new(manifest_entries)}
     end
   end
 
@@ -125,10 +125,8 @@ defmodule Expert.Search.Indexer do
       |> tag_stream(:source)
       |> Stream.concat(tag_stream(beam_items, :beam))
 
-    with {:ok, state} <- refresh_store(stream, paths_to_clear, new_stream_state(), project) do
-      manifest = Manifest.apply_update(manifest, plan, manifest_entries(state))
-
-      {:ok, manifest}
+    with {:ok, manifest_entries} <- refresh_store(stream, paths_to_clear, project) do
+      {:ok, Manifest.apply_update(manifest, plan, manifest_entries)}
     end
   end
 
@@ -346,7 +344,7 @@ defmodule Expert.Search.Indexer do
   defp covered_beam?({_path, _stat, {module, source_file}}, project, source_keys, source_stats)
        when is_binary(source_file) do
     defined? = fn subject, kind ->
-      MapSet.member?(source_keys, {:entry, {source_file, subject, :definition, kind}})
+      :ets.member(source_keys, {:entry, {source_file, subject, :definition, kind}})
     end
 
     with %{^source_file => %File.Stat{}} <- source_stats,
@@ -395,60 +393,55 @@ defmodule Expert.Search.Indexer do
     Stream.map(stream, fn {entry, manifest_entries} -> {origin, entry, manifest_entries} end)
   end
 
-  defp new_stream_state do
-    %{
-      manifest_entries: [],
-      source_keys: MapSet.new()
-    }
-  end
-
-  defp replace_store(%Paths{} = paths, state, project, clear_cache?) do
+  defp replace_store(%Paths{} = paths, project, clear_cache?) do
     # The stream is pulled from the workers in a task of its own: pulled in
     # the store's process, the source phase takes a third longer.
     replacement = fn write_batch ->
       Task.async(fn ->
         {sources, beams} = index_streams(paths, project, clear_cache?)
+        seen = open_seen()
 
-        with {:ok, state} <- stream_into_store(sources, state, write_batch) do
-          state.source_keys |> beams.() |> stream_into_store(state, write_batch)
+        with :ok <- stream_into_store(sources, seen, write_batch),
+             :ok <- seen.source_keys |> beams.() |> stream_into_store(seen, write_batch) do
+          {:ok, close_seen(seen)}
         end
       end)
       |> Task.await(:infinity)
     end
 
     case Store.replace(project, replacement) do
-      {:ok, state} -> {:ok, state}
+      {:ok, manifest_entries} -> {:ok, manifest_entries}
       {:error, reason} -> {:error, {:store, reason}}
     end
   end
 
-  defp refresh_store(stream, paths_to_clear, state, project) do
+  defp refresh_store(stream, paths_to_clear, project) do
     update = fn write_batch, write_state ->
-      stream_into_store(stream, state, write_batch, write_state)
-    end
+      seen = open_seen()
 
-    case Store.apply_index_update(project, update, paths_to_clear) do
-      {:ok, state} -> {:ok, state}
-      {:error, reason} -> {:error, {:store, reason}}
-    end
-  end
+      case stream_into_store(stream, seen, write_batch, write_state) do
+        {:ok, write_state} ->
+          {:ok, close_seen(seen), write_state}
 
-  defp stream_into_store(stream, state, write_batch) do
-    write_batch_with_state = fn entries, write_state ->
-      with :ok <- write_batch.(entries) do
-        {:ok, write_state}
+        {:error, _reason} = error ->
+          delete_seen(seen)
+          error
       end
     end
 
-    case stream_into_store(stream, state, write_batch_with_state, nil) do
-      {:ok, state, nil} -> {:ok, state}
-      error -> error
+    case Store.apply_index_update(project, update, paths_to_clear) do
+      {:ok, manifest_entries} -> {:ok, manifest_entries}
+      {:error, reason} -> {:error, {:store, reason}}
     end
   end
 
-  defp stream_into_store(stream, state, write_batch, write_state) do
-    seen = open_seen(state)
+  defp stream_into_store(stream, seen, write_batch) do
+    write = fn entries, _write_state -> with :ok <- write_batch.(entries), do: {:ok, nil} end
 
+    with {:ok, nil} <- stream_into_store(stream, seen, write, nil), do: :ok
+  end
+
+  defp stream_into_store(stream, seen, write_batch, write_state) do
     result =
       stream
       |> chunk_by_entries()
@@ -464,19 +457,9 @@ defmodule Expert.Search.Indexer do
         end
       end)
 
-    result =
-      case result do
-        {:error, _reason} = error -> error
-        {writing, write_state} -> await_write(writing, write_state)
-      end
-
     case result do
-      {:ok, write_state} ->
-        {:ok, close_seen(seen, state), write_state}
-
-      {:error, _reason} = error ->
-        close_seen(seen, state)
-        error
+      {:error, _reason} = error -> error
+      {writing, write_state} -> await_write(writing, write_state)
     end
   end
 
@@ -489,27 +472,26 @@ defmodule Expert.Search.Indexer do
   # The keys of the definitions seen so far and the manifest entries, in
   # order, grow with the project. In ETS they stay out of this process's heap,
   # which every garbage collection would otherwise copy.
-  defp open_seen(state) do
-    seen = %{
+  defp open_seen do
+    %{
       source_keys: :ets.new(__MODULE__, [:set, :private]),
       manifest_entries: :ets.new(__MODULE__, [:ordered_set, :private])
     }
-
-    :ets.insert(seen.source_keys, Enum.map(state.source_keys, fn key -> {key} end))
-    remember_manifest_entries(seen, manifest_entries(state))
-    seen
   end
 
-  defp close_seen(seen, state) do
+  defp close_seen(seen) do
     manifest_entries =
       seen.manifest_entries
       |> :ets.tab2list()
       |> Enum.map(fn {_order, manifest_entry} -> manifest_entry end)
 
-    source_keys = seen.source_keys |> :ets.tab2list() |> MapSet.new(fn {key} -> key end)
+    delete_seen(seen)
+    manifest_entries
+  end
+
+  defp delete_seen(seen) do
     :ets.delete(seen.source_keys)
     :ets.delete(seen.manifest_entries)
-    %{state | manifest_entries: Enum.reverse(manifest_entries), source_keys: source_keys}
   end
 
   # Batches hold about @entry_chunk_size entries, however many files that is.
@@ -540,7 +522,7 @@ defmodule Expert.Search.Indexer do
     )
   end
 
-  defp item_size({_origin, {:file, _encoded, _keys, count}, _manifest_entries}), do: max(count, 1)
+  defp item_size({_origin, {:file, _encoded, _keys, count}, _manifest_entries}), do: count
   defp item_size(_item), do: 1
 
   defp consume_chunk(chunk, seen) do
@@ -573,6 +555,4 @@ defmodule Expert.Search.Indexer do
 
     :ok
   end
-
-  defp manifest_entries(state), do: Enum.reverse(state.manifest_entries)
 end
