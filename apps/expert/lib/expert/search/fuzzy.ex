@@ -48,6 +48,81 @@ defmodule Expert.Search.Fuzzy do
     new(entries, mapper, &stringify/1, build_filter_fn(project), true)
   end
 
+  @doc """
+  Starts building an index from the definitions a replace writes, batch by
+  batch, so it's ready when the store is. `finish/1` returns it.
+  """
+  @spec builder(Project.t()) :: pid()
+  def builder(%Project{} = project) do
+    filter = build_filter_fn(project)
+    {:ok, builder} = Agent.start_link(fn -> {filter, default_mapper(), %{}, %{}, %{}} end)
+    builder
+  end
+
+  @spec feed(pid(), [term()]) :: :ok
+  def feed(builder, items) when is_list(items) do
+    # Only the definitions are sent: a batch's other items, with their encoded
+    # rows, would be copied to the builder for nothing.
+    definitions = definition_entries(items, [])
+    Agent.cast(builder, &collect(&1, definitions))
+  end
+
+  @spec finish(pid()) :: t()
+  def finish(builder) do
+    fuzzy = Agent.get(builder, &built/1, :infinity)
+    Agent.stop(builder)
+    fuzzy
+  end
+
+  @spec abandon(pid()) :: :ok
+  def abandon(builder), do: Agent.stop(builder)
+
+  defp collect({filter, mapper, subjects, groups, preprocessed}, definitions) do
+    {subjects, groups, preprocessed} =
+      Enum.reduce(definitions, {subjects, groups, preprocessed}, fn entry,
+                                                                    {subjects, groups,
+                                                                     preprocessed} ->
+        mapped = mapper.(entry)
+
+        if filter.(mapped) do
+          subject = stringify(mapped)
+          mapped(grouping_key: grouping_key, value: value) = mapped
+
+          {Map.update(subjects, subject, [value], &[value | &1]),
+           Map.update(groups, grouping_key, [value], &[value | &1]),
+           Map.put_new_lazy(preprocessed, subject, fn -> Scorer.preprocess(subject) end)}
+        else
+          {subjects, groups, preprocessed}
+        end
+      end)
+
+    {filter, mapper, subjects, groups, preprocessed}
+  end
+
+  # the order of a key's values doesn't matter to matching
+  defp built({filter, mapper, subjects, groups, preprocessed}) do
+    %__MODULE__{
+      filter_fn: filter,
+      grouping_key_to_values: groups,
+      mapper: mapper,
+      preprocessed_subjects: preprocessed,
+      subject_converter: &stringify/1,
+      subject_to_values: subjects
+    }
+  end
+
+  defp definition_entries(
+         [{:encoded, %Entry{subtype: :definition} = entry, _row} | items],
+         entries
+       ),
+       do: definition_entries(items, [entry | entries])
+
+  defp definition_entries([%Entry{subtype: :definition} = entry | items], entries),
+    do: definition_entries(items, [entry | entries])
+
+  defp definition_entries([_item | items], entries), do: definition_entries(items, entries)
+  defp definition_entries([], entries), do: entries
+
   @spec from_backend(Project.t(), module()) :: {:ok, t()} | {:error, term()}
   def from_backend(%Project{} = project, backend) do
     mapper = default_mapper()

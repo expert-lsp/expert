@@ -70,8 +70,20 @@ defmodule Expert.Search.Store.State do
   end
 
   def replace(%__MODULE__{} = state, replacement) do
-    with {:ok, result} <- state.backend.replace_all(state.project, replacement),
-         {:ok, fuzzy} <- Fuzzy.from_backend(state.project, state.backend),
+    # The fuzzy index is built from the definitions as they're written, so
+    # it's ready when the backend is instead of being read back afterwards.
+    builder = Fuzzy.builder(state.project)
+
+    replacement = fn write_batch ->
+      replacement.(fn entries ->
+        Fuzzy.feed(builder, entries)
+        write_batch.(entries)
+      end)
+    end
+
+    with {:ok, result} <-
+           abandoning(builder, state.backend.replace_all(state.project, replacement)),
+         fuzzy = Fuzzy.finish(builder),
          :ok <- maybe_sync(state) do
       {:ok, result,
        %__MODULE__{
@@ -81,6 +93,13 @@ defmodule Expert.Search.Store.State do
            fuzzy: fuzzy
        }}
     end
+  end
+
+  defp abandoning(_builder, {:ok, _} = result), do: result
+
+  defp abandoning(builder, error) do
+    Fuzzy.abandon(builder)
+    error
   end
 
   def insert(%__MODULE__{} = state, entries) do
