@@ -1217,7 +1217,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       ON CONFLICT (path) DO UPDATE SET max_id = MAX(COALESCE(max_id, 0), excluded.max_id)
       """
 
-      case exec(state, sql, Enum.flat_map(batch, fn {path, max_id} -> [path, max_id] end)) do
+      case exec_rows(state, sql, Enum.flat_map(batch, fn {path, max_id} -> [path, max_id] end)) do
         :ok -> {:cont, :ok}
         {:error, _} = error -> {:halt, error}
       end
@@ -1289,7 +1289,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp insert_ref_batch(%State{} = state, rows) do
     with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
-         {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))) do
+         {:ok, type_ids} <- type_ids(state, Enum.map(rows, fn [_, _, _, type | _] -> type end)) do
       args =
         Enum.flat_map(rows, fn [path, module, name, type, _max_id, occurrences] ->
           [Map.fetch!(file_ids, path), module, name, Map.fetch!(type_ids, type), occurrences]
@@ -1300,7 +1300,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       VALUES #{row_placeholders(rows, 5)}
       """
 
-      exec(state, sql, args)
+      exec_rows(state, sql, args)
     end
   end
 
@@ -1323,7 +1323,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     paths = Enum.uniq(paths)
 
     with :ok <-
-           exec(
+           exec_rows(
              state,
              "INSERT OR IGNORE INTO files (path) VALUES #{row_placeholders(paths, 1)}",
              paths
@@ -1342,7 +1342,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     types = Enum.uniq(types)
 
     with :ok <-
-           exec(
+           exec_rows(
              state,
              "INSERT OR IGNORE INTO types (type) VALUES #{row_placeholders(types, 1)}",
              types
@@ -1366,14 +1366,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     args =
       Enum.flat_map(rows, fn {{entry_args, _blob}, entry_key} -> [entry_key | entry_args] end)
 
-    exec(state, sql, args)
+    exec_rows(state, sql, args)
   end
 
   defp insert_entry_blobs(%State{} = state, rows) do
     sql = "INSERT INTO entry_blobs (entry_key, entry) VALUES #{row_placeholders(rows, 2)}"
     args = Enum.flat_map(rows, fn {{_entry_args, blob}, entry_key} -> [entry_key, blob] end)
 
-    exec(state, sql, args)
+    exec_rows(state, sql, args)
   end
 
   defp entry_args(%Entry{} = entry) do
@@ -1697,6 +1697,46 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       end
     end)
   end
+
+  # Exqlite.Sqlite3.bind/2 converts every value and reads the application
+  # environment for type extensions on each one. Batch inserts bind tens of
+  # thousands of plain values per statement, so they're bound by type.
+  defp exec_rows(%State{} = state, statement, args) do
+    timed(state, statement, args, fn ->
+      with {:ok, prepared} <- Exqlite.Sqlite3.prepare(state.conn.db, statement) do
+        try do
+          bind_args(prepared, args, 1)
+
+          case Exqlite.Sqlite3.step(state.conn.db, prepared) do
+            :done -> :ok
+            {:row, _row} -> :ok
+            :busy -> {:error, :busy}
+            {:error, _reason} = error -> error
+          end
+        after
+          Exqlite.Sqlite3.release(state.conn.db, prepared)
+        end
+      end
+    end)
+  end
+
+  defp bind_args(_prepared, [], _index), do: :ok
+
+  defp bind_args(prepared, [arg | args], index) do
+    :ok = bind_arg(prepared, index, arg)
+    bind_args(prepared, args, index + 1)
+  end
+
+  defp bind_arg(prepared, index, value) when is_integer(value),
+    do: Exqlite.Sqlite3.bind_integer(prepared, index, value)
+
+  defp bind_arg(prepared, index, value) when is_binary(value),
+    do: Exqlite.Sqlite3.bind_text(prepared, index, value)
+
+  defp bind_arg(prepared, index, nil), do: Exqlite.Sqlite3.bind_null(prepared, index)
+
+  defp bind_arg(prepared, index, {:blob, value}) when is_binary(value),
+    do: Exqlite.Sqlite3.bind_blob(prepared, index, value)
 
   defp query(%State{} = state, statement, args \\ []) do
     timed(state, statement, args, fn ->
