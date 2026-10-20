@@ -5,6 +5,7 @@ defmodule Forge.Ast.Analysis.State do
   alias Forge.Ast.Analysis.Require
   alias Forge.Ast.Analysis.Scope
   alias Forge.Ast.Analysis.Use
+  alias Forge.Ast.EndPosition
   alias Forge.Document
   alias Forge.Document.Position
   alias Forge.Document.Range
@@ -127,7 +128,7 @@ defmodule Forge.Ast.Analysis.State do
   defp get_range({:->, _, _} = quoted, %Document{} = document) do
     start_pos = get_start_position(quoted)
 
-    case Sourceror.get_end_position(quoted, line: -1, column: -1) do
+    case EndPosition.of(quoted, line: -1, column: -1) do
       [line: -1, column: -1] ->
         nil
 
@@ -148,7 +149,7 @@ defmodule Forge.Ast.Analysis.State do
   defp get_range(quoted, %Document{} = document) do
     start_pos = get_start_position(quoted)
 
-    case Sourceror.get_end_position(quoted, line: -1, column: -1) do
+    case EndPosition.of(quoted, line: -1, column: -1) do
       [line: -1, column: -1] ->
         nil
 
