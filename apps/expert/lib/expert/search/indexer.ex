@@ -404,12 +404,17 @@ defmodule Expert.Search.Indexer do
   end
 
   defp replace_store(%Paths{} = paths, state, project, clear_cache?) do
+    # The stream is pulled from the workers in a task of its own: pulled in
+    # the store's process, the source phase takes a third longer.
     replacement = fn write_batch ->
-      {sources, beams} = index_streams(paths, project, clear_cache?)
+      Task.async(fn ->
+        {sources, beams} = index_streams(paths, project, clear_cache?)
 
-      with {:ok, state} <- stream_into_store(sources, state, write_batch) do
-        state.source_keys |> beams.() |> stream_into_store(state, write_batch)
-      end
+        with {:ok, state} <- stream_into_store(sources, state, write_batch) do
+          state.source_keys |> beams.() |> stream_into_store(state, write_batch)
+        end
+      end)
+      |> Task.await(:infinity)
     end
 
     case Store.replace(project, replacement) do
