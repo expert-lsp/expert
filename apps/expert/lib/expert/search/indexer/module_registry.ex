@@ -24,7 +24,21 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     %{id: {__MODULE__, Project.unique_name(project)}, start: {__MODULE__, :start_link, [project]}}
   end
 
-  def name(%Project{} = project), do: :"#{Project.unique_name(project)}::module_registry"
+  # Indexing looks the table up for every module reference, and building its
+  # name from the project costs more than the lookup.
+  def name(%Project{root_uri: root_uri} = project) do
+    key = {__MODULE__, root_uri}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        name = :"#{Project.unique_name(project)}::module_registry"
+        :persistent_term.put(key, name)
+        name
+
+      name ->
+        name
+    end
+  end
 
   def clear(%Project{} = project), do: GenServer.call(name(project), :clear)
 
