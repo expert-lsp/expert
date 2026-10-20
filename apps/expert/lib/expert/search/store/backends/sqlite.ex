@@ -37,9 +37,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   JOIN types ON types.id = entries.type_id
   """
   @refs_select """
-  SELECT files.path, refs.subject, refs.caller, types.type, ref_blobs.occurrences
+  SELECT files.path, refs.subject, refs.caller, types.type, refs.occurrences
   FROM refs
-  JOIN ref_blobs ON ref_blobs.ref_key = refs.ref_key
   JOIN files ON files.id = refs.file_id
   JOIN types ON types.id = refs.type_id
   """
@@ -376,7 +375,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with :ok <- drop_indexes(state),
          :ok <- exec(state, "DELETE FROM entry_blobs"),
          :ok <- exec(state, "DELETE FROM entries"),
-         :ok <- exec(state, "DELETE FROM ref_blobs"),
          :ok <- exec(state, "DELETE FROM refs"),
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
@@ -692,7 +690,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_entry_blobs_table(state),
-         :ok <- create_ref_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
          :ok <- exec(state, "INSERT INTO schema (version) VALUES (?)", [@schema_version]) do
@@ -720,7 +717,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_entry_blobs_table(state),
-         :ok <- create_ref_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
          {:ok, result} <-
@@ -746,9 +742,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     """)
   end
 
-  # References, one row per file, subject, type and caller. Their occurrences,
-  # with their ids, blocks and details, are stored together in `ref_blobs`:
-  # kept out of `refs`, they aren't read again by each index built on it.
+  # References, one row per file, subject, type and caller, with their
+  # occurrences: a few dozen bytes each, small enough to keep in the row.
   defp create_refs_table(%State{} = state) do
     exec(state, """
     CREATE TABLE IF NOT EXISTS refs (
@@ -757,15 +752,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       subject TEXT NOT NULL,
       caller TEXT,
       type_id INTEGER NOT NULL,
-      max_id INTEGER NOT NULL
-    )
-    """)
-  end
-
-  defp create_ref_blobs_table(%State{} = state) do
-    exec(state, """
-    CREATE TABLE IF NOT EXISTS ref_blobs (
-      ref_key INTEGER PRIMARY KEY,
+      max_id INTEGER NOT NULL,
       occurrences BLOB NOT NULL
     )
     """)
@@ -976,37 +963,26 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_ref_batch(%State{} = state, rows) do
-    with {:ok, ref_key} <- next_ref_key(state),
-         {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
+    with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
          {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))) do
-      rows = Enum.with_index(rows, ref_key)
-
-      ref_args =
-        Enum.flat_map(rows, fn {[path, subject, caller, type, max_id, _occurrences], key} ->
-          [key, Map.get(file_ids, path), subject, caller, Map.get(type_ids, type), max_id]
+      args =
+        Enum.flat_map(rows, fn [path, subject, caller, type, max_id, occurrences] ->
+          [
+            Map.fetch!(file_ids, path),
+            subject,
+            caller,
+            Map.fetch!(type_ids, type),
+            max_id,
+            occurrences
+          ]
         end)
 
-      blob_args =
-        Enum.flat_map(rows, fn {[_, _, _, _, _, occurrences], key} -> [key, occurrences] end)
-
-      ref_sql = """
-      INSERT INTO refs (ref_key, file_id, subject, caller, type_id, max_id)
+      sql = """
+      INSERT INTO refs (file_id, subject, caller, type_id, max_id, occurrences)
       VALUES #{row_placeholders(rows, 6)}
       """
 
-      blob_sql =
-        "INSERT INTO ref_blobs (ref_key, occurrences) VALUES #{row_placeholders(rows, 2)}"
-
-      with :ok <- exec(state, ref_sql, ref_args) do
-        exec(state, blob_sql, blob_args)
-      end
-    end
-  end
-
-  defp next_ref_key(%State{} = state) do
-    case query(state, "SELECT COALESCE(MAX(ref_key), 0) + 1 FROM refs") do
-      {:ok, [[ref_key]]} -> {:ok, ref_key}
-      {:error, _} = error -> error
+      exec(state, sql, args)
     end
   end
 
@@ -1135,12 +1111,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          {:ok, reference_rows} <-
            query(
              state,
-             """
-             SELECT ref_blobs.occurrences
-             FROM refs
-             JOIN ref_blobs ON ref_blobs.ref_key = refs.ref_key
-             WHERE refs.file_id IN (#{file_ids_of_paths(paths)})
-             """,
+             "SELECT occurrences FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})",
              paths
            ),
          :ok <- delete_entry_blobs_for_rows(state, rows),
@@ -1151,21 +1122,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              paths
            ),
          :ok <-
-           exec(
-             state,
-             """
-             DELETE FROM ref_blobs
-             WHERE ref_key IN (SELECT ref_key FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)}))
-             """,
-             paths
-           ),
-         :ok <-
            exec(state, "DELETE FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})", paths),
          :ok <- exec(state, "DELETE FROM files WHERE path IN (#{placeholders(paths)})", paths) do
       reference_ids =
-        Enum.flat_map(reference_rows, fn [occurrences] ->
-          for {id, _block_id, _blob} <- decode_term(occurrences), do: id
-        end)
+        Enum.flat_map(reference_rows, &occurrence_ids/1)
 
       deleted_ids =
         rows
@@ -1175,6 +1135,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
       {:ok, deleted_ids}
     end
+  end
+
+  defp occurrence_ids([occurrences]) do
+    for {id, _block_id, _term} <- decode_term(occurrences), do: id
   end
 
   defp delete_entry_blobs_for_rows(%State{}, []), do: :ok
@@ -1231,6 +1195,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp entries_result({:error, _} = error), do: error
 
   defp refs_result({:ok, rows}), do: Enum.flat_map(rows, &decode_references/1)
+
   defp refs_result({:error, _} = error), do: error
 
   defp file_ids_of_paths(paths), do: "SELECT id FROM files WHERE path IN (#{placeholders(paths)})"
