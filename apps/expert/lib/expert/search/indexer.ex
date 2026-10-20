@@ -121,7 +121,7 @@ defmodule Expert.Search.Indexer do
 
     stream =
       source_paths
-      |> Sources.stream(source_indexer(project), &Store.encode_entries/1)
+      |> Sources.stream(source_indexer(project), &encode_file/1)
       |> tag_stream(:source)
       |> Stream.concat(tag_stream(beam_items, :beam))
 
@@ -312,7 +312,7 @@ defmodule Expert.Search.Indexer do
 
     sources =
       source_paths
-      |> Sources.stream(source_indexer(project), &Store.encode_entries/1, stats)
+      |> Sources.stream(source_indexer(project), &encode_file/1, stats)
       |> tag_stream(:source)
 
     beams = fn source_keys ->
@@ -380,6 +380,18 @@ defmodule Expert.Search.Indexer do
     Enum.uniq(source_paths ++ beam_source_paths)
   end
 
+  # Encodes a file's entries in the indexing worker, with the keys beam
+  # entries are checked against, so the file reaches the store as one item.
+  defp encode_file(entries) do
+    keys =
+      for %{subtype: subtype} = entry <- entries,
+          subtype in [:definition, :block_structure],
+          do: {source_key(entry)}
+
+    encoded = Store.encode_entries(entries)
+    {:file, encoded, keys, length(encoded)}
+  end
+
   defp tag_stream(stream, origin) do
     Stream.map(stream, fn {entry, manifest_entries} -> {origin, entry, manifest_entries} end)
   end
@@ -435,7 +447,7 @@ defmodule Expert.Search.Indexer do
 
     result =
       stream
-      |> Stream.chunk_every(@entry_chunk_size)
+      |> chunk_by_entries()
       |> Enum.reduce_while({nil, write_state}, fn chunk, {writing, write_state} ->
         entries = consume_chunk(chunk, seen)
 
@@ -496,32 +508,54 @@ defmodule Expert.Search.Indexer do
     %{state | manifest_entries: Enum.reverse(manifest_entries), source_keys: source_keys}
   end
 
+  # Batches hold about @entry_chunk_size entries, however many files that is.
+  defp chunk_by_entries(stream) do
+    Stream.chunk_while(
+      stream,
+      {[], 0},
+      fn item, {items, count} ->
+        size = item_size(item)
+
+        # A file that would overflow the batch starts the next one, so only a
+        # file larger than a batch makes one larger.
+        cond do
+          items != [] and count + size > @entry_chunk_size ->
+            {:cont, Enum.reverse(items), {[item], size}}
+
+          count + size >= @entry_chunk_size ->
+            {:cont, Enum.reverse([item | items]), {[], 0}}
+
+          true ->
+            {:cont, {[item | items], count + size}}
+        end
+      end,
+      fn
+        {[], _count} -> {:cont, {[], 0}}
+        {items, _count} -> {:cont, Enum.reverse(items), {[], 0}}
+      end
+    )
+  end
+
+  defp item_size({_origin, {:file, _encoded, _keys, count}, _manifest_entries}), do: max(count, 1)
+  defp item_size(_item), do: 1
+
   defp consume_chunk(chunk, seen) do
     chunk
-    |> Enum.reduce([], fn {origin, entry, manifest_entries}, entries ->
+    |> Enum.reduce([], fn {origin, item, manifest_entries}, entries ->
       remember_manifest_entries(seen, manifest_entries)
-      consume_entry(origin, entry, entries, seen)
+      consume_item(origin, item, entries, seen)
     end)
     |> Enum.reverse()
   end
 
-  defp consume_entry(_origin, nil, entries, _seen), do: entries
+  defp consume_item(_origin, nil, entries, _seen), do: entries
 
-  defp consume_entry(
-         :source,
-         {:encoded, %{subtype: subtype} = entry, _row} = encoded,
-         entries,
-         seen
-       )
-       when subtype in [:definition, :block_structure] do
-    :ets.insert(seen.source_keys, {source_key(entry)})
-    [encoded | entries]
+  defp consume_item(:source, {:file, encoded, keys, _count}, entries, seen) do
+    :ets.insert(seen.source_keys, keys)
+    Enum.reverse(encoded, entries)
   end
 
-  defp consume_entry(:source, {:encoded, _entry, _row} = encoded, entries, _seen),
-    do: [encoded | entries]
-
-  defp consume_entry(:beam, entry, entries, seen) do
+  defp consume_item(:beam, entry, entries, seen) do
     if :ets.member(seen.source_keys, source_key(entry)), do: entries, else: [entry | entries]
   end
 

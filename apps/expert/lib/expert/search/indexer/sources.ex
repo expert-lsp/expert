@@ -64,9 +64,7 @@ defmodule Expert.Search.Indexer.Sources do
 
   defp stream_items([]), do: []
 
-  defp stream_items([{[entry | entries], manifest_entry}]) do
-    [{entry, [manifest_entry]} | Enum.map(entries, &{&1, []})]
-  end
+  defp stream_items([{item, manifest_entry}]), do: [{item, [manifest_entry]}]
 
   defp stat_paths(paths, stats) do
     sized_paths =

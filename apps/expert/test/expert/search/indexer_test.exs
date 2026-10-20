@@ -373,10 +373,12 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       tmp_dir: tmp_dir
     } do
+      # batches hold whole files, so these two make one batch each
       path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
+      small_path = write_file!(Path.join(tmp_dir, "small.ex"), "defmodule Small do\nend")
 
       entries =
-        for id <- 1..4_001 do
+        for id <- 1..4_000 do
           %Entry{
             id: id,
             path: path,
@@ -387,15 +389,30 @@ defmodule Expert.Search.IndexerTest do
           }
         end
 
-      patch(Source, :index, fn ^path, _source, nil, ^project ->
-        {:ok, entries}
+      small_entry = %Entry{
+        id: 4_001,
+        path: small_path,
+        subject: "Small.function/0",
+        type: {:function, :public},
+        subtype: :definition,
+        block_id: :root
+      }
+
+      patch(Source, :index, fn
+        ^path, _source, nil, ^project -> {:ok, entries}
+        ^small_path, _source, nil, ^project -> {:ok, [small_entry]}
       end)
+
+      # files finish in any order, so the second batch fails, whichever it is
+      writes = :counters.new(1, [])
 
       patch(Store, :replace, fn ^project, replacement ->
         FakeBackend.replace([])
 
         replacement.(fn chunk ->
-          if length(chunk) == 1 do
+          :counters.add(writes, 1, 1)
+
+          if :counters.get(writes, 1) == 2 do
             FakeBackend.record_call({:insert, chunk})
             {:error, :disk_full}
           else
@@ -405,7 +422,7 @@ defmodule Expert.Search.IndexerTest do
       end)
 
       assert {:error, {:store, :disk_full}} =
-               Indexer.create_index(project, paths: %Paths{source_paths: [path]})
+               Indexer.create_index(project, paths: %Paths{source_paths: [path, small_path]})
 
       registry = ModuleRegistry.name(project)
       assert :ets.info(registry, :owner) == Process.whereis(ModuleRegistry.name(project))
@@ -416,9 +433,8 @@ defmodule Expert.Search.IndexerTest do
         {:insert, final_chunk}
       ] = FakeBackend.calls()
 
-      assert length(first_chunk) == 4_000
-      assert [_entry] = final_chunk
-      assert length(FakeBackend.entries()) == 4_000
+      assert Enum.sort([length(first_chunk), length(final_chunk)]) == [1, 4_000]
+      assert length(FakeBackend.entries()) == length(first_chunk)
       assert :missing = ManifestStore.load(project)
     end
 
@@ -766,7 +782,11 @@ defmodule Expert.Search.IndexerTest do
       end
       """
 
-      %{beam_paths: [covered_beam, guarded_beam] = beam_paths, dep_file: dep_file, project: project} =
+      %{
+        beam_paths: [covered_beam, guarded_beam] = beam_paths,
+        dep_file: dep_file,
+        project: project
+      } =
         with_beam_dependency(tmp_dir,
           modules: [covered, guarded],
           dep_source: dep_source,
@@ -799,10 +819,15 @@ defmodule Expert.Search.IndexerTest do
       {beam_entries, beam_manifest_entries} = index_beams(beam_paths)
 
       # block structures carry ids made up per run
-      searchable = fn %Entry{path: path, subtype: subtype} -> path == dep_file and subtype != :block_structure end
+      searchable = fn %Entry{path: path, subtype: subtype} ->
+        path == dep_file and subtype != :block_structure
+      end
 
       assert entries |> Enum.filter(searchable) |> MapSet.new(identity) ==
-               source_entries |> Enum.concat(beam_entries) |> Enum.filter(searchable) |> MapSet.new(identity)
+               source_entries
+               |> Enum.concat(beam_entries)
+               |> Enum.filter(searchable)
+               |> MapSet.new(identity)
 
       assert Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(guarded, :is_small, 1)))
 
@@ -900,13 +925,20 @@ defmodule Expert.Search.IndexerTest do
   describe "update_index/1 persistence" do
     @tag :tmp_dir
     test "streams entries in bounded chunks during refresh", %{project: project, tmp_dir: tmp_dir} do
+      # batches hold whole files, so these two make one batch each
       path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
+      small_path = write_file!(Path.join(tmp_dir, "small.ex"), "defmodule Small do\nend")
       {:ok, manifest_entry} = ManifestEntry.source(path)
-      assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
+      {:ok, small_manifest_entry} = ManifestEntry.source(small_path)
+
+      assert :ok =
+               ManifestStore.commit(project, Manifest.new([manifest_entry, small_manifest_entry]))
+
       File.touch!(path, {{2100, 1, 1}, {0, 0, 0}})
+      File.touch!(small_path, {{2100, 1, 1}, {0, 0, 0}})
 
       entries =
-        for id <- 1..4_001 do
+        for id <- 1..4_000 do
           %Entry{
             id: id,
             path: path,
@@ -917,21 +949,32 @@ defmodule Expert.Search.IndexerTest do
           }
         end
 
-      patch(Source, :index, fn ^path, _source, nil, ^project ->
-        {:ok, entries}
+      small_entry = %Entry{
+        id: 4_001,
+        path: small_path,
+        subject: "Small.function/0",
+        type: {:function, :public},
+        subtype: :definition,
+        block_id: :root
+      }
+
+      patch(Source, :index, fn
+        ^path, _source, nil, ^project -> {:ok, entries}
+        ^small_path, _source, nil, ^project -> {:ok, [small_entry]}
       end)
 
       FakeBackend.set_entries([%Entry{id: 4_002, path: path}])
       FakeBackend.reset_calls()
 
       assert :ok =
-               Indexer.update_index(project, paths: %Paths{source_paths: [path]})
+               Indexer.update_index(project, paths: %Paths{source_paths: [path, small_path]})
 
-      [{:apply_index_update, [], [^path]}, {:insert, first_chunk}, {:insert, final_chunk}] =
+      [{:apply_index_update, [], cleared}, {:insert, first_chunk}, {:insert, final_chunk}] =
         FakeBackend.calls()
 
-      assert length(first_chunk) == 4_000
-      assert [_entry] = final_chunk
+      assert Enum.sort(cleared) == Enum.sort([path, small_path])
+
+      assert Enum.sort([length(first_chunk), length(final_chunk)]) == [1, 4_000]
       assert length(FakeBackend.entries()) == 4_001
     end
 
