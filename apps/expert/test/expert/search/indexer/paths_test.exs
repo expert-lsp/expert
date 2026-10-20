@@ -86,6 +86,35 @@ defmodule Expert.Search.Indexer.PathsTest do
     end
 
     @tag :tmp_dir
+    test "can leave listing source files for later", %{tmp_dir: root} do
+      project = root |> Forge.Document.Path.to_uri() |> Project.bare()
+      project = %{project | kind: :mix}
+      build = Path.join(root, "_build/dev")
+      source = native_join([root, "lib", "source.ex"])
+      beam = Path.join([build, "lib", "example", "ebin", "Example.beam"])
+      for path <- [source, beam], do: write_file!(path, "fixture")
+
+      info = %{
+        config: [app: :example],
+        project_config: [],
+        build_path: build,
+        deps_path: Path.join(root, "deps"),
+        apps_paths: nil,
+        dependency_apps: {:ok, []},
+        env: :dev,
+        target: :host,
+        build_root: nil
+      }
+
+      configuration = fn ^project -> {:ok, info} end
+      unlisted = Paths.without_sources(project, configuration)
+      assert unlisted.source_paths == []
+      assert unlisted.beam_paths == [beam]
+      assert Paths.list_sources(unlisted) == Paths.for_project(project, configuration)
+      assert Paths.list_sources(unlisted).source_paths == [source]
+    end
+
+    @tag :tmp_dir
     test "finds what a glob of the project finds, outside excluded directories", %{
       tmp_dir: root
     } do

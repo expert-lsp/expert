@@ -34,17 +34,16 @@ defmodule Expert.Search.Indexer do
   end
 
   defp build_index(%Project{} = project, opts) do
-    :ok = EngineApi.clear_application_cache(project)
     :ok = ModuleRegistry.clear(project)
 
     try do
-      paths = paths_for_project(project, opts)
+      paths = Keyword.get_lazy(opts, :paths, fn -> Paths.without_sources(project) end)
 
-      with {:ok, state} <- replace_store(paths, new_stream_state(), project) do
+      with {:ok, state} <- replace_store(paths, new_stream_state(), project, true) do
         {:ok, Manifest.new(manifest_entries(state))}
       end
     after
-      EngineApi.clear_application_cache(project)
+      EngineApi.clear_application_cache_async(project)
     end
   end
 
@@ -72,7 +71,7 @@ defmodule Expert.Search.Indexer do
   defp replace_index(%Project{} = project, _path_to_ids, opts) do
     paths = paths_for_project(project, opts)
 
-    with {:ok, state} <- replace_store(paths, new_stream_state(), project) do
+    with {:ok, state} <- replace_store(paths, new_stream_state(), project, false) do
       {:ok, Manifest.new(manifest_entries(state))}
     end
   end
@@ -285,38 +284,34 @@ defmodule Expert.Search.Indexer do
     |> MapSet.new()
   end
 
-  defp index_stream(%Paths{} = paths, project) do
-    index_stream(
-      project,
-      paths.source_paths,
-      paths.beam_paths,
-      paths.applications,
-      paths.source_paths,
-      paths.source_sizes
-    )
-  end
+  # Indexing beams needs neither the source files listed nor the engine's
+  # application cache cleared, and indexing sources needs both, so they're
+  # done while the beams are indexed. Updates clear the cache themselves
+  # before they look anything up.
+  defp index_stream(%Paths{} = paths, project, clear_cache?) do
+    cache_cleared =
+      Task.async(fn ->
+        if clear_cache?, do: EngineApi.clear_application_cache(project), else: :ok
+      end)
 
-  defp index_stream(
-         project,
-         source_paths,
-         beam_paths,
-         applications,
-         current_source_paths,
-         source_sizes
-       ) do
+    sources_listed = Task.async(fn -> Paths.list_sources(paths) end)
+
     beam_items =
-      beam_paths
-      |> Beams.stream(project: project, applications: applications)
+      paths.beam_paths
+      |> Beams.stream(project: project, applications: paths.applications)
       |> Enum.to_list()
+
+    %Paths{source_paths: source_paths, source_sizes: sizes} =
+      Task.await(sources_listed, :infinity)
+
+    :ok = Task.await(cache_cleared, :infinity)
 
     beam_manifest_entries =
       Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
 
-    source_paths =
-      include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
-
     source_paths
-    |> Sources.stream(source_indexer(project), &Store.encode_entries/1, source_sizes)
+    |> include_beam_sources(source_paths, beam_manifest_entries)
+    |> Sources.stream(source_indexer(project), &Store.encode_entries/1, sizes)
     |> tag_stream(:source)
     |> Stream.concat(tag_stream(beam_items, :beam))
   end
@@ -345,10 +340,10 @@ defmodule Expert.Search.Indexer do
     }
   end
 
-  defp replace_store(%Paths{} = paths, state, project) do
+  defp replace_store(%Paths{} = paths, state, project, clear_cache?) do
     replacement = fn write_batch ->
       paths
-      |> index_stream(project)
+      |> index_stream(project, clear_cache?)
       |> stream_into_store(state, write_batch)
     end
 

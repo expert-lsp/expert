@@ -166,6 +166,16 @@ defmodule Expert.EngineApi do
   def clear_application_cache(%Project{} = project),
     do: call(project, Engine.ApplicationCache, :clear, [])
 
+  @doc """
+  Clears the application cache without waiting for it, for callers that make
+  no lookups through it in the meantime.
+  """
+  def clear_application_cache_async(%Project{} = project) do
+    project
+    |> Project.node_name()
+    |> :erpc.cast(Engine.ApplicationCache, :clear, [])
+  end
+
   def resolve_local_call(target, %Analysis{} = analysis, %Position{} = position, name, arity) do
     runtime_call(target, Engine.Analyzer, :resolve_local_call, [analysis, position, name, arity])
   end

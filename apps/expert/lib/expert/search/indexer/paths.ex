@@ -3,25 +3,39 @@ defmodule Expert.Search.Indexer.Paths do
   alias Forge.Document
   alias Forge.Project
 
-  defstruct source_paths: [], source_sizes: %{}, beam_paths: [], applications: %{}
+  defstruct source_paths: [],
+            source_sizes: %{},
+            beam_paths: [],
+            applications: %{},
+            unlisted_sources: nil
 
   @type t :: %__MODULE__{
           source_paths: [Path.t()],
           source_sizes: %{optional(Path.t()) => non_neg_integer()},
           beam_paths: [Path.t()],
-          applications: %{optional(Path.t()) => atom()}
+          applications: %{optional(Path.t()) => atom()},
+          unlisted_sources: {Path.t(), [Path.t()]} | nil
         }
 
   def for_project(%Project{} = project) do
     for_project(project, &EngineApi.project_configuration(project, &1))
   end
 
-  def for_project(%Project{kind: :bare} = project, _configuration) do
-    {source_paths, source_sizes} = source_files(Project.root_path(project), [])
-    %__MODULE__{source_paths: source_paths, source_sizes: source_sizes}
+  def for_project(%Project{} = project, configuration) do
+    project
+    |> without_sources(configuration)
+    |> list_sources()
   end
 
-  def for_project(%Project{} = project, configuration) do
+  def without_sources(%Project{} = project) do
+    without_sources(project, &EngineApi.project_configuration(project, &1))
+  end
+
+  def without_sources(%Project{kind: :bare} = project, _configuration) do
+    %__MODULE__{unlisted_sources: {Project.root_path(project), []}}
+  end
+
+  def without_sources(%Project{} = project, configuration) do
     root = Project.root_path(project)
 
     case configuration.(project) do
@@ -54,15 +68,13 @@ defmodule Expert.Search.Indexer.Paths do
           build_root | dependency_roots ++ build_roots
         ]
 
-        {sources, sizes} = source_files(root, excluded)
         dependencies = application_beams(info.build_path, dependency_apps)
         project_beams = application_beams(info.build_path, project_apps)
         artifacts = Enum.uniq(dependencies ++ project_beams)
         applications = Map.new(artifacts, fn {path, app} -> {Path.dirname(path), app} end)
 
         %__MODULE__{
-          source_paths: sources,
-          source_sizes: sizes,
+          unlisted_sources: {root, excluded},
           beam_paths: Enum.map(artifacts, &elem(&1, 0)),
           applications: applications
         }
@@ -74,10 +86,22 @@ defmodule Expert.Search.Indexer.Paths do
           Path.join(root, "_build")
         ]
 
-        {sources, sizes} = source_files(root, excluded)
-        %__MODULE__{source_paths: sources, source_sizes: sizes}
+        %__MODULE__{unlisted_sources: {root, excluded}}
     end
   end
+
+  def list_sources(%__MODULE__{unlisted_sources: {root, excluded}} = paths) do
+    {source_paths, source_sizes} = source_files(root, excluded)
+
+    %__MODULE__{
+      paths
+      | source_paths: source_paths,
+        source_sizes: source_sizes,
+        unlisted_sources: nil
+    }
+  end
+
+  def list_sources(%__MODULE__{} = paths), do: paths
 
   # The files `Forge.Path.glob([root, "**", "*.{ex,exs}"])` finds outside
   # `excluded`, and their sizes, which the walk stats anyway. Like the glob,

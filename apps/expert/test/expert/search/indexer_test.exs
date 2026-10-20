@@ -257,6 +257,11 @@ defmodule Expert.Search.IndexerTest do
         :ok
       end)
 
+      patch(EngineApi, :clear_application_cache_async, fn ^project ->
+        send(test_pid, :application_cache_cleared)
+        :ok
+      end)
+
       assert :ok = Indexer.create_index(project, paths: %Paths{})
 
       assert_receive :application_cache_cleared
@@ -749,13 +754,14 @@ defmodule Expert.Search.IndexerTest do
 
       start_registry(project)
 
-      patch(Paths, :for_project, fn ^project ->
-        %Paths{
-          source_paths: [source_path],
-          beam_paths: [beam_path],
-          applications: %{Path.dirname(beam_path) => :beam_dep}
-        }
-      end)
+      paths = %Paths{
+        source_paths: [source_path],
+        beam_paths: [beam_path],
+        applications: %{Path.dirname(beam_path) => :beam_dep}
+      }
+
+      patch(Paths, :for_project, fn ^project -> paths end)
+      patch(Paths, :without_sources, fn ^project -> paths end)
 
       FakeBackend.set_entries(create_index(project))
       private_subject = Forge.Formats.mfa(module, :private_fun, 0)
