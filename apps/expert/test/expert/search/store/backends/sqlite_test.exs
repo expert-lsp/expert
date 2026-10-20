@@ -391,6 +391,80 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert Sqlite.path_to_ids(project) == %{"/folded.ex" => 14}
     end
 
+    test "rebuilds reference positions from the file when they're read", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      dir = Path.join(System.tmp_dir!(), "sqlite_test_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      path = Path.join(dir, "compact.ex")
+      text = "defmodule Compact do\n  def go, do: Target.run(:é)\nend\n"
+      File.write!(path, text)
+      document = Forge.Document.new(path, text, 1)
+
+      at = fn line, from, to ->
+        Range.new(Position.new(document, line, from), Position.new(document, line, to))
+      end
+
+      call = %Entry{
+        id: 1,
+        block_id: 7,
+        path: path,
+        range: at.(2, 15, 25),
+        subject: "Target.run/1",
+        type: {:function, :usage},
+        subtype: :reference,
+        caller: "Compact.go/0"
+      }
+
+      module = %Entry{
+        id: 2,
+        block_id: 7,
+        path: path,
+        range: at.(2, 15, 21),
+        subject: Target,
+        type: :module,
+        subtype: :reference
+      }
+
+      other = %Entry{
+        id: 3,
+        block_id: :root,
+        path: path,
+        range: at.(1, 11, 18),
+        subject: Compact,
+        type: :module,
+        subtype: :reference
+      }
+
+      entries = [call, module, other]
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries(entries))
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+
+      result =
+        Exqlite.Basic.exec(conn, "SELECT DISTINCT hex(substr(occurrences, 1, 1)) FROM refs")
+
+      # only lines and columns are stored
+      assert {:ok, [["01"]], _columns} = Exqlite.Basic.rows(result)
+      assert :ok = Exqlite.Basic.close(conn)
+
+      assert Enum.sort_by(Sqlite.find_by_paths(project, [path], :_, :_), & &1.id) == entries
+
+      assert [^module, ^other] =
+               Enum.sort_by(Sqlite.find_by_subject(project, :_, :module, :reference), & &1.id)
+    end
+
     test "restores entries and indexes when replacement fails", %{
       project: project,
       runtime_versions: runtime_versions

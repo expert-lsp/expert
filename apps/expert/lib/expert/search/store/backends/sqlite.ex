@@ -5,12 +5,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   alias Expert.EngineApi
   alias Expert.Search.Store.Backend
+  alias Forge.Document.Lines
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
   require Entry
+  require Forge.Document.Line
   require Logger
 
   @schema_version 7
@@ -1008,6 +1010,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     module =
       if Enum.any?(references, &Map.has_key?(folded, &1.id)), do: call_module_key(first.subject)
 
+    occurrences =
+      case compact_occurrences(references, folded) do
+        {:ok, compact} -> {:blob, compact}
+        :error -> blob(occurrences)
+      end
+
     [
       first.path,
       subject_key(first.subject),
@@ -1015,8 +1023,70 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       blob(first.type),
       max_id,
       module,
-      blob(occurrences)
+      occurrences
     ]
+  end
+
+  # A reference's positions are rebuilt from its file's lines when it's read,
+  # so only their lines and columns are stored: one fixed-size record per
+  # occurrence, after a header with what the group's occurrences share.
+  # Groups whose entries can't be rebuilt that way keep the term format.
+  @compact_references 1
+
+  defp compact_occurrences([%Entry{} = first | _] = references, folded) do
+    subject = if !is_binary(first.subject), do: first.subject
+
+    modules =
+      for %Entry{id: id} <- references, {:ok, module} <- [Map.fetch(folded, id)], do: module
+
+    module_subject = with [%Entry{subject: module} | _] <- modules, do: module
+
+    with true <- Enum.all?(references, &compact?(&1, first.application)),
+         true <- Enum.all?(modules, &(compact?(&1, first.application) and &1.caller == nil)),
+         true <- Enum.all?(modules, &(&1.subject == module_subject)) do
+      header = :erlang.term_to_binary({subject, first.application, module_subject})
+
+      records =
+        for %Entry{} = entry <- references, into: <<>> do
+          case Map.fetch(folded, entry.id) do
+            {:ok, module} -> <<1, compact_record(entry)::binary, compact_record(module)::binary>>
+            :error -> <<0, compact_record(entry)::binary>>
+          end
+        end
+
+      {:ok, <<@compact_references, byte_size(header)::32, header::binary, records::binary>>}
+    else
+      _ -> :error
+    end
+  end
+
+  defp compact?(
+         %Entry{block_range: nil, metadata: nil, application: application} = entry,
+         application
+       ) do
+    case entry.range do
+      %Range{start: start, end: finish} -> rebuildable?(start) and rebuildable?(finish)
+      _ -> false
+    end
+  end
+
+  defp compact?(%Entry{}, _application), do: false
+
+  defp rebuildable?(
+         %Position{valid?: true, starting_index: 1, line: line, character: character} = position
+       )
+       when is_integer(line) and line > 0 and is_integer(character) and character >= 0 and
+              character < 4_294_967_296 do
+    Forge.Document.Line.line(position.context_line, :line_number) == line
+  rescue
+    _ -> false
+  end
+
+  defp rebuildable?(_position), do: false
+
+  defp compact_record(%Entry{range: %Range{start: start, end: finish}} = entry) do
+    <<entry.id::64, block_id_key(entry.block_id)::64, start.line::32, start.character::32,
+      finish.line::32, finish.character::32>>
   end
 
   defp insert_entries(%State{} = state, entries) do
@@ -1277,12 +1347,28 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  defp occurrence_ids([
+         <<@compact_references, size::32, _header::binary-size(size), records::binary>>
+       ]),
+       do: record_ids(records, [])
+
   defp occurrence_ids([occurrences]) do
     Enum.flat_map(decode_term(occurrences), fn
       {id, _block_id, _term} -> [id]
       {id, _block_id, _term, {module_id, _, _, _}} -> [id, module_id]
     end)
   end
+
+  defp record_ids(<<>>, ids), do: ids
+
+  defp record_ids(<<0, id::64, _::binary-size(24), rest::binary>>, ids),
+    do: record_ids(rest, [id | ids])
+
+  defp record_ids(
+         <<1, id::64, _::binary-size(24), module_id::64, _::binary-size(24), rest::binary>>,
+         ids
+       ),
+       do: record_ids(rest, [id, module_id | ids])
 
   defp delete_entry_blobs_for_rows(%State{}, []), do: :ok
 
@@ -1338,7 +1424,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp entries_result({:error, _} = error), do: error
 
-  defp refs_result({:ok, rows}), do: Enum.flat_map(rows, &decode_references/1)
+  defp refs_result({:ok, rows}),
+    do: rows |> Enum.flat_map(&decode_references/1) |> with_positions()
 
   defp refs_result({:error, _} = error), do: error
 
@@ -1615,6 +1702,29 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     )
   end
 
+  defp decode_references([
+         path,
+         subject_key,
+         caller,
+         type_blob,
+         <<@compact_references, size::32, header::binary-size(size), records::binary>>
+       ]) do
+    {subject, application, module_subject} = decode_term(header)
+    type = decode_term(type_blob)
+
+    reference = %Entry{
+      path: path,
+      subject: subject || subject_key,
+      caller: caller,
+      type: type,
+      subtype: :reference,
+      application: application
+    }
+
+    module = %Entry{reference | subject: module_subject, caller: nil, type: :module}
+    decode_records(records, reference, module, [])
+  end
+
   defp decode_references([path, subject_key, caller, type_blob, occurrences]) do
     type = decode_term(type_blob)
 
@@ -1637,6 +1747,176 @@ defmodule Expert.Search.Store.Backends.Sqlite do
           )
         ]
     end)
+  end
+
+  defp decode_records(<<>>, _reference, _module, entries), do: Enum.reverse(entries)
+
+  defp decode_records(<<0, record::binary-size(32), rest::binary>>, reference, module, entries),
+    do: decode_records(rest, reference, module, [pending_entry(reference, record) | entries])
+
+  defp decode_records(
+         <<1, record::binary-size(32), module_record::binary-size(32), rest::binary>>,
+         reference,
+         module,
+         entries
+       ) do
+    entries = [pending_entry(module, module_record), pending_entry(reference, record) | entries]
+    decode_records(rest, reference, module, entries)
+  end
+
+  defp pending_entry(%Entry{} = entry, <<id::64, block_id::64, sl::32, sc::32, el::32, ec::32>>) do
+    %Entry{
+      entry
+      | id: id,
+        block_id: block_id(block_id),
+        range: %Range{start: {:pending, sl, sc}, end: {:pending, el, ec}}
+    }
+  end
+
+  defp with_positions(entries) do
+    wanted =
+      Enum.reduce(entries, %{}, fn
+        %Entry{range: %Range{start: {:pending, sl, _}, end: {:pending, el, _}}, path: path},
+        wanted ->
+          Map.update(wanted, path, [sl, el], &[sl, el | &1])
+
+        _entry, wanted ->
+          wanted
+      end)
+
+    if map_size(wanted) == 0 do
+      entries
+    else
+      non_ascii = :binary.compile_pattern([<<0>> | for(byte <- 128..255, do: <<byte>>)])
+      lines_by_path = lines_by_path(wanted, non_ascii)
+
+      Enum.map(entries, fn
+        %Entry{range: %Range{start: {:pending, sl, sc}, end: {:pending, el, ec}}} = entry ->
+          lines = Map.fetch!(lines_by_path, entry.path)
+
+          %Entry{
+            entry
+            | range: %Range{start: position(lines, sl, sc), end: position(lines, el, ec)}
+          }
+
+        entry ->
+          entry
+      end)
+    end
+  end
+
+  @files_per_task 16
+
+  # Few files are read here; many are read in parallel, a batch per task.
+  defp lines_by_path(wanted, non_ascii) when map_size(wanted) <= @files_per_task,
+    do: Map.new(wanted, fn {path, numbers} -> {path, file_lines(path, numbers, non_ascii)} end)
+
+  defp lines_by_path(wanted, non_ascii) do
+    wanted
+    |> Enum.chunk_every(@files_per_task)
+    |> Task.async_stream(
+      &Map.new(&1, fn {path, numbers} -> {path, file_lines(path, numbers, non_ascii)} end),
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Enum.reduce(%{}, fn {:ok, lines}, acc -> Map.merge(acc, lines) end)
+  end
+
+  # Open documents are indexed from their text in the editor, which can differ
+  # from the file on disk, so their lines come from there.
+  defp file_lines(path, numbers, non_ascii) do
+    case open_document(path) do
+      {:ok, %Forge.Document{lines: lines}} ->
+        {Lines.size(lines), Map.new(numbers, &{&1, fetched_line(lines, &1)})}
+
+      _ ->
+        case File.read(path) do
+          {:ok, text} -> text_lines(text, numbers, non_ascii)
+          {:error, _} -> nil
+        end
+    end
+  end
+
+  defp fetched_line(lines, number) do
+    case Lines.fetch_line(lines, number) do
+      {:ok, line} -> line
+      :error -> nil
+    end
+  end
+
+  # The lines Lines.new/1 would build for `numbers`, without building the rest:
+  # lines end at each "\r\n", "\r" or "\n", and an empty remainder after
+  # the last ending isn't a line.
+  defp text_lines(text, numbers, non_ascii) do
+    endings = :binary.matches(text, ["\r\n", "\r", "\n"])
+    ending_count = length(endings)
+
+    last_stop =
+      case List.last(endings) do
+        {at, size} -> at + size
+        nil -> 0
+      end
+
+    count = if last_stop < byte_size(text), do: ending_count + 1, else: ending_count
+    wanted = MapSet.new(numbers)
+
+    {lines, _start, _number} =
+      Enum.reduce(endings, {%{}, 0, 1}, fn {at, size}, {lines, start, number} ->
+        lines =
+          if MapSet.member?(wanted, number),
+            do:
+              Map.put(
+                lines,
+                number,
+                text_line(text, start, at - start, binary_part(text, at, size), number, non_ascii)
+              ),
+            else: lines
+
+        {lines, at + size, number + 1}
+      end)
+
+    lines =
+      if count > ending_count and MapSet.member?(wanted, count),
+        do:
+          Map.put(
+            lines,
+            count,
+            text_line(text, last_stop, byte_size(text) - last_stop, "", count, non_ascii)
+          ),
+        else: lines
+
+    {count, lines}
+  end
+
+  defp text_line(text, start, length, ending, number, non_ascii) do
+    line_text = binary_part(text, start, length)
+    ascii? = :binary.match(line_text, non_ascii) == :nomatch
+    Forge.Document.Line.line(line_number: number, text: line_text, ascii?: ascii?, ending: ending)
+  end
+
+  defp open_document(path) do
+    path |> Forge.Document.Path.to_uri() |> Forge.Document.Store.fetch()
+  catch
+    :exit, _ -> :error
+  end
+
+  defp position(nil, line, character), do: %Position{line: line, character: character}
+
+  defp position({count, lines}, line, character) do
+    case Map.get(lines, line) do
+      nil ->
+        %Position{line: line, character: character, document_line_count: count, starting_index: 1}
+
+      context_line ->
+        %Position{
+          line: line,
+          character: character,
+          context_line: context_line,
+          document_line_count: count,
+          starting_index: 1,
+          valid?: true
+        }
+    end
   end
 
   defp decode_entry(id, path, subject_key, caller, type, subtype, block_id, entry_term) do
