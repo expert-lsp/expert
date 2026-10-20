@@ -867,5 +867,89 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert [^foo_bar] = Sqlite.find_by_prefix(project, "Foo_", :_, :_)
       assert [] = Sqlite.find_by_prefix(project, "NonExistent", :_, :_)
     end
+
+    test "matches ASCII and Unicode function names by their exact prefixes", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      entries =
+        ["wien", "wieża", "wieść", "wiesz", "więcej", "Wieża"]
+        |> Enum.with_index(1)
+        |> Enum.map(fn {name, id} ->
+          %Entry{
+            id: id,
+            path: "/lib/unicode.ex",
+            subject: "Unicode.#{name}/0",
+            type: {:function, :public},
+            subtype: :definition,
+            block_id: :root
+          }
+        end)
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      for {prefix, names} <- [
+            {"wie", ["wien", "wieża", "wieść", "wiesz"]},
+            {"wież", ["wieża"]},
+            {"wieś", ["wieść"]},
+            {"wien", ["wien"]},
+            {"wieża", ["wieża"]},
+            {"wieść", ["wieść"]},
+            {"wieź", []}
+          ] do
+        subjects = Enum.map(names, &"Unicode.#{&1}/0")
+        expected = Enum.filter(entries, &(&1.subject in subjects))
+
+        actual =
+          Sqlite.find_by_prefix(project, "Unicode.#{prefix}", {:function, :public}, :definition)
+
+        assert Enum.sort_by(actual, & &1.id) == Enum.sort_by(expected, & &1.id),
+               "unexpected matches for prefix #{inspect(prefix)}"
+      end
+    end
+
+    test "matches Unicode prefixes whose byte successor is not valid UTF-8", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      entries =
+        ["żółć", "ÿield", "þield", "żółty"]
+        |> Enum.with_index(1)
+        |> Enum.map(fn {name, id} ->
+          %Entry{
+            id: id,
+            path: "/lib/unicode.ex",
+            subject: "Unicode.#{name}/0",
+            type: {:function, :public},
+            subtype: :definition,
+            block_id: :root
+          }
+        end)
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, entries)
+
+      for {prefix, names} <- [{"ż", ["żółć", "żółty"]}, {"ÿ", ["ÿield"]}] do
+        # ż and ÿ end in 0xBF, so incrementing the last byte yields an invalid UTF-8 bound.
+        subjects = Enum.map(names, &"Unicode.#{&1}/0")
+        expected = Enum.filter(entries, &(&1.subject in subjects))
+
+        actual = Sqlite.find_by_prefix(project, "Unicode.#{prefix}", :_, :_)
+        assert Enum.sort_by(actual, & &1.id) == Enum.sort_by(expected, & &1.id)
+      end
+    end
   end
 end
