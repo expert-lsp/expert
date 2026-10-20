@@ -4,6 +4,7 @@ defmodule Expert.Search.Indexer.Beams do
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
+  alias Expert.Search.Indexer.RawFile
   alias Expert.Search.Subject
   alias Forge.Document.Position
   alias Forge.Document.Range
@@ -40,7 +41,7 @@ defmodule Expert.Search.Indexer.Beams do
     |> Enum.chunk_every(@register_chunk_size)
     |> Task.async_stream(
       fn chunk ->
-        for path <- chunk, {:ok, %File.Stat{} = stat} <- [File.stat(path)] do
+        for path <- chunk, {:ok, %File.Stat{} = stat} <- [RawFile.stat(path)] do
           {path, stat, register_beam(path, project, application.(path))}
         end
       end,
@@ -61,7 +62,7 @@ defmodule Expert.Search.Indexer.Beams do
   # info chunk has; the debug info, decoded only when a beam is indexed, is
   # the module's whole abstract code.
   defp register_beam(path, project, application) do
-    with {:ok, beam} <- File.read(path),
+    with {:ok, beam} <- RawFile.read(path),
          {:ok, {module, chunks}} <- :beam_lib.chunks(beam, [:compile_info, :exports]) do
       register_modules(project, [{module, path, application, chunks[:exports] || []}])
 
@@ -144,7 +145,7 @@ defmodule Expert.Search.Indexer.Beams do
         {[{path, stat} | beams], total_bytes + stat.size}
 
       path, {beams, total_bytes} ->
-        case File.stat(path) do
+        case RawFile.stat(path) do
           {:ok, %File.Stat{} = stat} ->
             {[{path, stat} | beams], total_bytes + stat.size}
 
@@ -295,7 +296,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp metadata_from_beam({beam_path, beam_stat}, opts) do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
 
-    with {:ok, beam} <- File.read(beam_path),
+    with {:ok, beam} <- RawFile.read(beam_path),
          {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
       results =
         case debug_metadata_result do
@@ -340,7 +341,7 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp stat_source(source_path) when is_binary(source_path) do
-    case File.stat(source_path) do
+    case RawFile.stat(source_path) do
       {:ok, %File.Stat{} = stat} -> {:ok, stat}
       _ -> :error
     end

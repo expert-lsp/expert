@@ -1,5 +1,6 @@
 defmodule Expert.Search.Indexer.Paths do
   alias Expert.EngineApi
+  alias Expert.Search.Indexer.RawFile
   alias Forge.Document
   alias Forge.Project
 
@@ -138,7 +139,7 @@ defmodule Expert.Search.Indexer.Paths do
 
   defp visit(directory, name, excluded?, found) do
     path = Path.join(directory, name)
-    stat = File.stat(path)
+    stat = RawFile.stat(path)
 
     found =
       if source_name?(name) do

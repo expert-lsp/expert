@@ -1,6 +1,7 @@
 defmodule Expert.Search.Indexer.Sources do
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
+  alias Expert.Search.Indexer.RawFile
   alias Expert.Search.Indexer.Source
 
   require Logger
@@ -44,7 +45,7 @@ defmodule Expert.Search.Indexer.Sources do
   end
 
   defp index_path(path, stat, source_indexer, encode) do
-    with {:ok, contents} <- File.read(path),
+    with {:ok, contents} <- RawFile.read(path),
          {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
          true <- has_search_entries?(entries),
          {:ok, manifest_entry} <- manifest_entry(path, stat) do
@@ -82,7 +83,7 @@ defmodule Expert.Search.Indexer.Sources do
   end
 
   defp file_size(path) do
-    case File.stat(path) do
+    case RawFile.stat(path) do
       {:ok, %File.Stat{size: size}} -> size
       _ -> 0
     end

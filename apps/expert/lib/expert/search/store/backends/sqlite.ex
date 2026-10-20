@@ -4,6 +4,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   use GenServer
 
   alias Expert.EngineApi
+  alias Expert.Search.Indexer.RawFile
   alias Expert.Search.Store.Backend
   alias Forge.Document.Lines
   alias Forge.Document.Position
@@ -1959,7 +1960,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         {Lines.size(lines), Map.new(numbers, &{&1, fetched_line(lines, &1)})}
 
       _ ->
-        case File.read(path) do
+        case RawFile.read(path) do
           {:ok, text} -> text_lines(text, numbers, non_ascii)
           {:error, _} -> nil
         end
