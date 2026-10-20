@@ -337,30 +337,23 @@ defmodule Forge.Ast.Analysis do
 
   @skip :skipped?
 
-  defp skip_leading_do({_, meta, _} = root_ast) do
-    # Marks the first do block after the passed in node. This is because
-    # that do block doesn't have accurate ending information, and if we build
-    # a scope around it, it won't end properly, which will cause information
-    # contained in scopes to leak out of them.
+  defp skip_leading_do({form, meta, args} = root_ast) when is_list(args) do
+    # Marks the do block of the passed in node, the `do` pair of its last
+    # argument. This is because that do block doesn't have accurate ending
+    # information, and if we build a scope around it, it won't end properly,
+    # which will cause information contained in scopes to leak out of them.
 
-    case Keyword.fetch(meta, :do) do
-      {:ok, [line: line, column: column]} ->
-        Macro.prewalk(root_ast, fn
-          {:__block__, _meta, [:do]} = block_ast ->
-            case Sourceror.get_start_position(block_ast) do
-              [line: ^line, column: ^column] ->
-                skip(block_ast)
-
-              _ ->
-                block_ast
-            end
-
-          other ->
-            other
+    with true <- Keyword.has_key?(meta, :do),
+         {leading, [pairs]} when is_list(pairs) <- Enum.split(args, -1) do
+      pairs =
+        Enum.map(pairs, fn
+          {{:__block__, _, [:do]} = key, body} -> {skip(key), body}
+          pair -> pair
         end)
 
-      _ ->
-        root_ast
+      {form, meta, leading ++ [pairs]}
+    else
+      _ -> root_ast
     end
   end
 
