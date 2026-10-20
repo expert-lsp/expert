@@ -53,24 +53,23 @@ defmodule Expert.Search.Indexer.SourceTest do
   test "caches Engine lookups in the module registry", %{project: project} do
     test_pid = self()
 
-    patch(EngineApi, :application, fn ^project, module ->
-      send(test_pid, {:application, module})
-      :example
+    patch(EngineApi, :available_module?, fn ^project, module ->
+      send(test_pid, {:available_module?, module})
+      true
     end)
-
-    patch(EngineApi, :available_module?, fn ^project, _module -> false end)
 
     source = """
     defmodule Example do
-      Example
+      :example_dep
+      :example_dep
     end
     """
 
     assert {:ok, entries} = Source.index("example.ex", source, nil, project)
-    assert Enum.any?(entries, &(&1.application == :example))
+    assert Enum.count(entries, &(&1.subject == :example_dep and &1.subtype == :reference)) == 2
 
-    assert_received {:application, Example}
-    refute_received {:application, Example}
+    assert_received {:available_module?, :example_dep}
+    refute_received {:available_module?, :example_dep}
   end
 
   test "resolves imported calls with registered Engine exports", %{project: project} do

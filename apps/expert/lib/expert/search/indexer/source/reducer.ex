@@ -66,8 +66,8 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     [hierarchy(reducer) | Enum.reverse(reducer.entries)]
   end
 
-  def application(%__MODULE__{project: project}, module),
-    do: ModuleRegistry.application(project, module)
+  # Nothing reads an entry's application, so it isn't looked up.
+  def application(%__MODULE__{}, _module), do: nil
 
   def available_module?(%__MODULE__{project: project}, module),
     do: ModuleRegistry.available_module?(project, module)

@@ -333,7 +333,6 @@ defmodule Expert.Search.IndexerTest do
         end)
 
       assert Enum.sort(Enum.map(references, & &1.subject)) == Enum.sort(imported_subjects)
-      assert Enum.all?(references, &(&1.application == :registry_dependency))
       refute Code.loaded?(module)
     end
 
