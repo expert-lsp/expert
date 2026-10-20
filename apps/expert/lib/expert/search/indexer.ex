@@ -289,25 +289,24 @@ defmodule Expert.Search.Indexer do
   # looks modules up in the registry, then indexes the source files, and then
   # indexes only the beams their sources don't cover (see covered_beam?/4):
   # registering a beam costs far less than indexing it, and most are
-  # covered. Registering doesn't need the sources listed or the engine's
-  # application cache cleared, and indexing sources needs both, so they're
-  # done while beams are registered.
+  # covered. Listing the sources, registering the beams and clearing the
+  # engine's application cache all walk the disk, and take longer together
+  # than one after the other, so the sources are listed first; the cache is
+  # only needed once sources are indexed, so it's cleared while beams are
+  # registered.
   #
   # Returns the source stream, and a function making the beam stream from
   # the keys of the definitions the sources produced.
   defp index_streams(%Paths{} = paths, project, clear_cache?) do
+    %Paths{source_paths: source_paths, source_stats: stats} = Paths.list_sources(paths)
+
     cache_cleared =
       Task.async(fn ->
         if clear_cache?, do: EngineApi.clear_application_cache(project), else: :ok
       end)
 
-    sources_listed = Task.async(fn -> Paths.list_sources(paths) end)
     beam_opts = [project: project, applications: paths.applications]
     registered = Beams.register(paths.beam_paths, beam_opts)
-
-    %Paths{source_paths: source_paths, source_stats: stats} =
-      Task.await(sources_listed, :infinity)
-
     :ok = Task.await(cache_cleared, :infinity)
 
     sources =
