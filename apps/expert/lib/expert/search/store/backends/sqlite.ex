@@ -19,9 +19,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @schema_version 7
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
-  # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
-  # per entry. 4000 entries per batch is 28000 params per batch, below SQLite's
-  # limit.
+  # SQLite binds at most 32766 variables per statement, and ids are looked
+  # up for a batch's files and types in one.
   @sqlite_variable_limit 32_766
   @insert_batch_size 4_000
   @file_id_of_path "(SELECT id FROM files WHERE path = ?)"
@@ -930,34 +929,42 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     {entries, folded} = fold_module_references(entries)
     blobs = shared_blobs(entries)
 
-    {order, groups} =
-      Enum.reduce(entries, {[], %{}}, fn
-        # a file's block structure isn't stored: nothing reads it back
-        %Entry{} = entry, {order, groups} when Entry.is_structure(entry) ->
-          {order, groups}
+    # a file's block structure isn't stored: nothing reads it back
+    {references, definitions} =
+      entries
+      |> Enum.reject(fn entry -> Entry.is_structure(entry) end)
+      |> Enum.split_with(&(&1.subtype == :reference))
 
-        %Entry{subtype: :reference} = entry, {order, groups} ->
-          group = {entry.subject, entry.caller, entry.type, entry.path}
+    Enum.map(definitions, &{:encoded, &1, encode_row(&1)}) ++
+      for {path, references} <- Enum.group_by(references, & &1.path) do
+        groups = references |> Enum.group_by(&{&1.subject, &1.caller, &1.type}) |> Map.values()
+        ref_rows(path, groups, folded, callers, blobs)
+      end
+  end
 
-          case groups do
-            %{^group => references} -> {order, %{groups | group => [entry | references]}}
-            %{} -> {[{:refs, group} | order], Map.put(groups, group, [entry])}
+  # A file's reference rows are one binary, with the types they use listed
+  # once: the writer binds each row's fields straight out of it, and the rows
+  # are copied between processes as one term.
+  defp ref_rows(path, groups, folded, callers, blobs) do
+    {rows, types, max_id} =
+      Enum.reduce(groups, {[], [], 0}, fn references, {rows, types, max_id} ->
+        {module, name, type, group_max_id, {:blob, occurrences}} =
+          refs_args(references, folded, callers, blobs)
+
+        {types, index} =
+          case Enum.find_index(types, &(&1 == type)) do
+            nil -> {types ++ [type], length(types)}
+            index -> {types, index}
           end
 
-        %Entry{} = entry, {order, groups} ->
-          {[entry | order], groups}
+        row =
+          <<index::16, byte_size(module)::32, module::binary, byte_size(name)::32, name::binary,
+            byte_size(occurrences)::32, occurrences::binary>>
+
+        {[row | rows], types, max(max_id, group_max_id)}
       end)
 
-    order
-    |> Enum.reverse()
-    |> Enum.map(fn
-      {:refs, group} ->
-        [first | _] = references = groups |> Map.fetch!(group) |> Enum.reverse()
-        {:encoded, first, {:refs, refs_args(references, folded, callers, blobs)}}
-
-      %Entry{} = entry ->
-        {:encoded, entry, encode_row(entry)}
-    end)
+    {:refs, path, types, length(groups), max_id, rows |> Enum.reverse() |> IO.iodata_to_binary()}
   end
 
   # The `Mod` of a `Mod.fun()` call is a reference to `Mod` that starts where
@@ -1039,14 +1046,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
           {blob({first.caller, term_occurrences(references, folded)}), max_id}
       end
 
-    [
-      first.path,
-      module,
-      name,
-      Map.fetch!(blobs, {:type, first.type}),
-      max_id,
-      occurrences
-    ]
+    {module, name, Map.fetch!(blobs, {:type, first.type}), max_id, occurrences}
   end
 
   # A subject is stored as the module of a call it names, with the dot after
@@ -1232,12 +1232,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_entries(%State{} = state, entries) do
-    %{refs: refs, definitions: definitions} =
-      entries
-      |> Enum.group_by(&row_kind/1)
-      |> Map.merge(%{refs: [], definitions: []}, fn _kind, rows, [] -> rows end)
-      |> Map.delete(:structures)
-
+    kinds = Enum.group_by(entries, &row_kind/1)
+    definitions = Map.get(kinds, :definitions, [])
+    refs = Map.get(kinds, :refs, [])
     callers = caller_ids(for %Entry{} = definition <- definitions, do: definition)
     {plain_refs, encoded_refs} = Enum.split_with(refs, &match?(%Entry{}, &1))
     refs = encoded_refs ++ encode_entries(plain_refs, callers)
@@ -1263,8 +1260,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
           max_ids
       end)
 
-    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _]}},
-                                  max_ids ->
+    Enum.reduce(refs, max_ids, fn {:refs, path, _types, _count, max_id, _rows}, max_ids ->
       Map.update(max_ids, path, max_id, &max(&1, max_id))
     end)
   end
@@ -1275,7 +1271,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     insert_rows(state, :max_ids, Enum.map(max_ids, fn {path, max_id} -> [path, max_id] end))
   end
 
-  defp row_kind({:encoded, _entry, {:refs, _args}}), do: :refs
+  defp row_kind({:refs, _path, _types, _count, _max_id, _rows}), do: :refs
   defp row_kind({:encoded, entry, _row}), do: row_kind(entry)
   defp row_kind(%Entry{} = entry) when Entry.is_structure(entry), do: :structures
   defp row_kind(%Entry{subtype: :reference}), do: :refs
@@ -1288,13 +1284,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         "entries can only be definitions or references, got #{inspect(subtype)}"
       )
 
-  defp insert_entry_batches(%State{}, []), do: :ok
+  defp insert_entry_batches(%State{} = state, entries),
+    do: each_batch(entries, &insert_entry_batch(state, &1))
 
-  defp insert_entry_batches(%State{} = state, entries) do
-    entries
+  defp insert_ref_batches(%State{} = state, ref_files),
+    do: each_batch(ref_files, &insert_ref_batch(state, &1))
+
+  defp each_batch(items, insert) do
+    items
     |> Stream.chunk_every(@insert_batch_size)
     |> Enum.reduce_while(:ok, fn batch, :ok ->
-      case insert_entry_batch(state, batch) do
+      case insert.(batch) do
         :ok -> {:cont, :ok}
         {:error, _} = error -> {:halt, error}
       end
@@ -1302,7 +1302,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_entry_batch(%State{} = state, batch) do
-    rows = encode_rows(batch)
+    rows = Enum.map(batch, &encode_row/1)
 
     with {:ok, entry_key} <- next_entry_key(state),
          {:ok, file_ids} <- file_ids(state, Enum.map(rows, fn {[_id, path | _], _} -> path end)),
@@ -1322,35 +1322,62 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  defp insert_ref_batches(%State{}, []), do: :ok
+  defp insert_ref_batch(%State{} = state, ref_files) do
+    paths = for {:refs, path, _types, _count, _max_id, _rows} <- ref_files, do: path
 
-  defp insert_ref_batches(%State{} = state, refs) do
-    refs
-    |> Stream.chunk_every(@insert_batch_size)
-    |> Enum.reduce_while(:ok, fn batch, :ok ->
-      case insert_ref_batch(
-             state,
-             Enum.map(batch, fn {:encoded, _entry, {:refs, args}} -> args end)
-           ) do
-        :ok -> {:cont, :ok}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
+    types =
+      for {:refs, _path, types, _count, _max_id, _rows} <- ref_files, type <- types, do: type
 
-  defp insert_ref_batch(%State{} = state, rows) do
-    with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
-         {:ok, type_ids} <- type_ids(state, Enum.map(rows, fn [_, _, _, type | _] -> type end)) do
-      rows =
-        Enum.map(rows, fn [path, module, name, type, _max_id, occurrences] ->
-          [Map.fetch!(file_ids, path), module, name, Map.fetch!(type_ids, type), occurrences]
-        end)
+    with {:ok, file_ids} <- file_ids(state, paths),
+         {:ok, type_ids} <- type_ids(state, types) do
+      files =
+        for {:refs, path, types, _count, _max_id, rows} <- ref_files do
+          type_ids = types |> Enum.map(&Map.fetch!(type_ids, &1)) |> List.to_tuple()
+          {Map.fetch!(file_ids, path), type_ids, rows}
+        end
 
-      insert_rows(state, :refs, rows)
+      count =
+        Enum.sum_by(ref_files, fn {:refs, _path, _types, count, _max_id, _rows} -> count end)
+
+      insert_ref_rows(state, files, count)
     end
   end
 
-  defp encode_rows(batch), do: Enum.map(batch, &encode_row/1)
+  defp insert_ref_rows(%State{}, _files, 0), do: :ok
+
+  defp insert_ref_rows(%State{} = state, files, count) do
+    size = Enum.find(@chunk_sizes, &(&1 <= count))
+
+    result =
+      with_statement(state, :refs, size, fn prepared ->
+        rest = bind_ref_rows(prepared, files, size, 1)
+        with :ok <- step(state, prepared), do: {:ok, rest}
+      end)
+
+    with {:ok, rest} <- result do
+      insert_ref_rows(state, rest, count - size)
+    end
+  end
+
+  # Binds the next `left` rows out of the files' binaries, and returns the
+  # files with those rows consumed.
+  defp bind_ref_rows(_prepared, files, 0, _index), do: files
+
+  defp bind_ref_rows(prepared, [{_file_id, _types, <<>>} | files], left, index),
+    do: bind_ref_rows(prepared, files, left, index)
+
+  defp bind_ref_rows(prepared, [{file_id, types, rows} | files], left, index) do
+    <<type::16, module_size::32, module::binary-size(module_size), name_size::32,
+      name::binary-size(name_size), occurrences_size::32,
+      occurrences::binary-size(occurrences_size), rows::binary>> = rows
+
+    :ok = Exqlite.Sqlite3.bind_integer(prepared, index, file_id)
+    :ok = Exqlite.Sqlite3.bind_text(prepared, index + 1, module)
+    :ok = Exqlite.Sqlite3.bind_text(prepared, index + 2, name)
+    :ok = Exqlite.Sqlite3.bind_integer(prepared, index + 3, elem(types, type))
+    :ok = Exqlite.Sqlite3.bind_blob(prepared, index + 4, occurrences)
+    bind_ref_rows(prepared, [{file_id, types, rows} | files], left - 1, index + 5)
+  end
 
   defp encode_row({:encoded, _entry, row}), do: row
 
@@ -1737,15 +1764,22 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   # Exqlite.Sqlite3.bind/2 converts every value and reads the application
   # environment for type extensions on each one. Batch inserts bind tens of
   # thousands of plain values per statement, so they're bound by type.
-  defp exec_rows(%State{statements: statements} = state, insert, size, args) do
+  defp exec_rows(%State{} = state, insert, size, args) do
+    with_statement(state, insert, size, fn prepared ->
+      bind_args(prepared, args, 1)
+      step(state, prepared)
+    end)
+  end
+
+  defp with_statement(%State{statements: statements} = state, insert, size, fun) do
     case Map.fetch(statements, {insert, size}) do
       {:ok, prepared} ->
-        step_rows(state, prepared, args)
+        fun.(prepared)
 
       :error ->
         with {:ok, prepared} <- Exqlite.Sqlite3.prepare(state.conn.db, insert_sql(insert, size)) do
           try do
-            step_rows(state, prepared, args)
+            fun.(prepared)
           after
             Exqlite.Sqlite3.release(state.conn.db, prepared)
           end
@@ -1753,8 +1787,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  defp step_rows(%State{} = state, prepared, args) do
-    bind_args(prepared, args, 1)
+  defp step(%State{} = state, prepared) do
     result = Exqlite.Sqlite3.step(state.conn.db, prepared)
     :ok = Exqlite.Sqlite3.reset(prepared)
 

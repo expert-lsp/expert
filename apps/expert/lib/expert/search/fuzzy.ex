@@ -186,7 +186,9 @@ defmodule Expert.Search.Fuzzy do
 
   @spec add(t(), term() | [term()]) :: t()
   def add(%__MODULE__{} = fuzzy, items) when is_list(items) do
-    Enum.reduce(items, fuzzy, fn entry, fuzzy -> add(fuzzy, entry) end)
+    items
+    |> definition_entries([])
+    |> Enum.reduce(fuzzy, fn entry, fuzzy -> add(fuzzy, entry) end)
   end
 
   def add(%__MODULE__{} = fuzzy, item) do

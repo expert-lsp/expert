@@ -53,7 +53,7 @@ defmodule Expert.Search.Store.Backend do
   @callback find_by_paths(Project.t(), [Path.t()], type_query(), subtype_query()) ::
               [Entry.t()] | {:error, any()}
 
-  @callback encode_entries([Entry.t()]) :: [{:encoded, Entry.t(), term()}]
+  @callback encode_entries([Entry.t()]) :: [term()]
 
   @optional_callbacks sync: 1
 end

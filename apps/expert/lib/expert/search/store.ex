@@ -332,7 +332,7 @@ defmodule Expert.Search.Store do
 
   def backend, do: @backend
 
-  @spec encode_entries([Entry.t()]) :: [{:encoded, Entry.t(), term()}]
+  @spec encode_entries([Entry.t()]) :: [term()]
   def encode_entries(entries), do: @backend.encode_entries(entries)
 
   defp do_update(state, old_ref, path, entries) do

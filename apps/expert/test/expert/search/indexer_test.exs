@@ -49,12 +49,6 @@ defmodule Expert.Search.IndexerTest do
     end
 
     def insert(entries) do
-      entries =
-        Enum.map(entries, fn
-          {:encoded, entry, _row} -> entry
-          entry -> entry
-        end)
-
       record_call({:insert, entries})
       set_entries(entries() ++ entries)
       :ok
@@ -155,6 +149,12 @@ defmodule Expert.Search.IndexerTest do
     end)
 
     patch(Store, :path_to_ids, fn _project -> FakeBackend.path_to_ids() end)
+
+    # The fake backend takes entries as they are, except the block structures
+    # no backend stores.
+    patch(Store, :encode_entries, fn entries ->
+      Enum.reject(entries, &match?(%Entry{subtype: :block_structure}, &1))
+    end)
 
     ManifestStore.invalidate(project)
     {:ok, project: project}
