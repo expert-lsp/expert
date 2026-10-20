@@ -431,65 +431,94 @@ defmodule Expert.Search.Indexer do
   end
 
   defp stream_into_store(stream, state, write_batch, write_state) do
+    seen = open_seen(state)
+
     result =
       stream
       |> Stream.chunk_every(@entry_chunk_size)
-      |> Enum.reduce_while({state, write_state}, fn chunk, {state, write_state} ->
-        {entries, state} = consume_chunk(chunk, state)
+      |> Enum.reduce_while(write_state, fn chunk, write_state ->
+        entries = consume_chunk(chunk, seen)
 
         case write_batch.(entries, write_state) do
-          {:ok, write_state} -> {:cont, {state, write_state}}
+          {:ok, write_state} -> {:cont, write_state}
           {:error, _reason} = error -> {:halt, error}
         end
       end)
 
     case result do
-      {:error, _reason} = error -> error
-      {state, write_state} -> {:ok, state, write_state}
+      {:error, _reason} = error ->
+        close_seen(seen, state)
+        error
+
+      write_state ->
+        {:ok, close_seen(seen, state), write_state}
     end
   end
 
-  defp consume_chunk(chunk, state) do
-    {entries, state} =
-      Enum.reduce(chunk, {[], state}, fn {origin, entry, manifest_entries}, {entries, state} ->
-        state = remember_manifest_entries(state, manifest_entries)
-        consume_entry(origin, entry, entries, state)
-      end)
+  # The keys of the definitions seen so far and the manifest entries, in
+  # order, grow with the project. In ETS they stay out of this process's heap,
+  # which every garbage collection would otherwise copy.
+  defp open_seen(state) do
+    seen = %{
+      source_keys: :ets.new(__MODULE__, [:set, :private]),
+      manifest_entries: :ets.new(__MODULE__, [:ordered_set, :private])
+    }
 
-    {Enum.reverse(entries), state}
+    :ets.insert(seen.source_keys, Enum.map(state.source_keys, fn key -> {key} end))
+    remember_manifest_entries(seen, manifest_entries(state))
+    seen
   end
 
-  defp consume_entry(_origin, nil, entries, state), do: {entries, state}
+  defp close_seen(seen, state) do
+    manifest_entries =
+      seen.manifest_entries
+      |> :ets.tab2list()
+      |> Enum.map(fn {_order, manifest_entry} -> manifest_entry end)
+
+    source_keys = seen.source_keys |> :ets.tab2list() |> MapSet.new(fn {key} -> key end)
+    :ets.delete(seen.source_keys)
+    :ets.delete(seen.manifest_entries)
+    %{state | manifest_entries: Enum.reverse(manifest_entries), source_keys: source_keys}
+  end
+
+  defp consume_chunk(chunk, seen) do
+    chunk
+    |> Enum.reduce([], fn {origin, entry, manifest_entries}, entries ->
+      remember_manifest_entries(seen, manifest_entries)
+      consume_entry(origin, entry, entries, seen)
+    end)
+    |> Enum.reverse()
+  end
+
+  defp consume_entry(_origin, nil, entries, _seen), do: entries
 
   defp consume_entry(
          :source,
          {:encoded, %{subtype: subtype} = entry, _row} = encoded,
          entries,
-         state
+         seen
        )
        when subtype in [:definition, :block_structure] do
-    state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
-
-    {[encoded | entries], state}
+    :ets.insert(seen.source_keys, {source_key(entry)})
+    [encoded | entries]
   end
 
-  defp consume_entry(:source, {:encoded, _entry, _row} = encoded, entries, state) do
-    {[encoded | entries], state}
-  end
+  defp consume_entry(:source, {:encoded, _entry, _row} = encoded, entries, _seen),
+    do: [encoded | entries]
 
-  defp consume_entry(:beam, entry, entries, state) do
-    if MapSet.member?(state.source_keys, source_key(entry)) do
-      {entries, state}
-    else
-      {[entry | entries], state}
-    end
+  defp consume_entry(:beam, entry, entries, seen) do
+    if :ets.member(seen.source_keys, source_key(entry)), do: entries, else: [entry | entries]
   end
 
   defp source_key(%{path: path, subtype: :block_structure}), do: {:block_structure, path}
   defp source_key(entry), do: {:entry, entry_identity(entry)}
 
-  defp remember_manifest_entries(state, manifest_entries) do
-    %{state | manifest_entries: Enum.reverse(manifest_entries, state.manifest_entries)}
+  defp remember_manifest_entries(seen, manifest_entries) do
+    for manifest_entry <- manifest_entries do
+      :ets.insert(seen.manifest_entries, {System.unique_integer([:monotonic]), manifest_entry})
+    end
+
+    :ok
   end
 
   defp manifest_entries(state), do: Enum.reverse(state.manifest_entries)
