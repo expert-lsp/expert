@@ -44,7 +44,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
           SELECT entry_blobs.entry
           FROM entries
           JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
-          WHERE type = ? AND subtype = ?
+          WHERE type_id = (SELECT id FROM types WHERE type = ?) AND subtype = ?
           """,
           [{:blob, :erlang.term_to_binary(:module)}, "definition"]
         )
@@ -56,7 +56,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                plan = row |> List.last() |> to_string()
 
                String.contains?(plan, "entries_type_subtype_idx") and
-                 String.contains?(plan, "type=?") and
+                 String.contains?(plan, "type_id=?") and
                  String.contains?(plan, "subtype=?")
              end)
     end
@@ -355,7 +355,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                  "entries_caller_idx",
                  "entries_block_idx",
                  "entries_id_idx",
-                 "entries_path_id_idx",
+                 "entries_file_id_idx",
                  "entries_type_subtype_idx",
                  "entries_definitions_idx"
                ]),

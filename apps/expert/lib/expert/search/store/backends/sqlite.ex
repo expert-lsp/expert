@@ -21,6 +21,22 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   # limit.
   @sqlite_variable_limit 32_766
   @insert_batch_size 4_000
+  @file_id_of_path "(SELECT id FROM files WHERE path = ?)"
+  @entries_select """
+  SELECT
+    entries.id,
+    files.path,
+    entries.subject,
+    entries.caller,
+    types.type,
+    entries.subtype,
+    entries.block_id,
+    entry_blobs.entry
+  FROM entries
+  JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
+  JOIN files ON files.id = entries.file_id
+  JOIN types ON types.id = entries.type_id
+  """
   @busy_timeout_ms Application.compile_env(:expert, :search_store_sqlite_busy_timeout_ms, 5_000)
 
   defmodule State do
@@ -299,35 +315,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_path_to_ids(%State{} = state) do
-    # Used to be:
-    #   SELECT path, MAX(id) FROM entries WHERE id IS NOT NULL GROUP BY path
-    #
-    # However, even though it had high index coverage, it turned out to be inefficient,
-    # as GROUP BY forced it to scan the whole index.
+    # One index seek per file, rather than a GROUP BY over every entry.
     sql = """
-    WITH RECURSIVE paths(path) AS (
-      SELECT MIN(path)
-      FROM entries
-
-      UNION ALL
-
-      SELECT (
-        SELECT MIN(path)
-        FROM entries
-        WHERE path > paths.path
-      )
-      FROM paths
-      WHERE path IS NOT NULL
+    SELECT path, max_id
+    FROM (
+      SELECT path, (SELECT MAX(id) FROM entries WHERE entries.file_id = files.id) AS max_id
+      FROM files
     )
-    SELECT
-      path,
-      (
-        SELECT MAX(id)
-        FROM entries
-        WHERE entries.path = paths.path
-      )
-    FROM paths
-    WHERE path IS NOT NULL
+    WHERE max_id IS NOT NULL
     """
 
     case query(state, sql) do
@@ -337,7 +332,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_find_definitions_for_fuzzy(%State{} = state) do
-    sql = "SELECT id, path, subject, type, subtype FROM entries WHERE subtype = 'definition'"
+    sql = """
+    SELECT entries.id, files.path, entries.subject, types.type, entries.subtype
+    FROM entries
+    JOIN files ON files.id = entries.file_id
+    JOIN types ON types.id = entries.type_id
+    WHERE entries.subtype = 'definition'
+    """
 
     case query(state, sql) do
       {:ok, rows} ->
@@ -367,6 +368,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with :ok <- drop_indexes(state),
          :ok <- exec(state, "DELETE FROM entry_blobs"),
          :ok <- exec(state, "DELETE FROM entries"),
+         :ok <- exec(state, "DELETE FROM files"),
+         :ok <- exec(state, "DELETE FROM types"),
          :ok <- exec(state, "DELETE FROM structures"),
          {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
          :ok <- create_indexes(state) do
@@ -450,7 +453,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_find_by_caller(%State{} = state, caller, path, type, subtype) do
-    {where, args} = constraints(["caller = ? AND path = ?"], [caller, path], type, subtype)
+    {where, args} =
+      constraints(["caller = ? AND file_id = #{@file_id_of_path}"], [caller, path], type, subtype)
 
     state
     |> query_entries(where_clause(where), args)
@@ -472,23 +476,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         []
 
       [_ | _] ->
-        {where, args} = constraints(["id IN (#{placeholders(ids)})"], ids, type, subtype)
+        {where, args} = constraints(["entries.id IN (#{placeholders(ids)})"], ids, type, subtype)
 
         with {:ok, rows} <-
                query(
                  state,
                  """
-                 SELECT
-                   entries.id,
-                   entries.path,
-                   entries.subject,
-                   entries.caller,
-                   entries.type,
-                   entries.subtype,
-                   entries.block_id,
-                   entry_blobs.entry
-                 FROM entries
-                 JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
+                 #{@entries_select}
                  #{where_clause(where)}
                  ORDER BY entries.entry_key
                  """,
@@ -538,19 +532,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     case query(
            state,
            """
-           SELECT
-             entries.id,
-             entries.path,
-             entries.subject,
-             entries.caller,
-             entries.type,
-             entries.subtype,
-             entries.block_id,
-             entry_blobs.entry
-           FROM entries
-            JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
-           WHERE block_id = ? AND path = ?
-           ORDER BY id
+           #{@entries_select}
+           WHERE entries.block_id = ? AND entries.file_id = #{@file_id_of_path}
+           ORDER BY entries.id
            """,
            [block_id_key(entry.block_id), entry.path]
          ) do
@@ -659,8 +643,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp reset_schema(%State{} = state) do
     with :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS files"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- create_entries_table(state),
+         :ok <- create_files_table(state),
+         :ok <- create_types_table(state),
          :ok <- create_entry_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
@@ -673,6 +661,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with :ok <- exec(state, "DROP TABLE IF EXISTS schema"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS files"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- create_schema_table(state) do
       reset_schema(state)
@@ -681,6 +671,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp load_status(%State{} = state) do
     with :ok <- create_entries_table(state),
+         :ok <- create_files_table(state),
+         :ok <- create_types_table(state),
          :ok <- create_entry_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
@@ -697,12 +689,32 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     CREATE TABLE IF NOT EXISTS entries (
       entry_key INTEGER PRIMARY KEY,
       id INTEGER NOT NULL,
-      path TEXT NOT NULL,
+      file_id INTEGER NOT NULL,
       subject TEXT NOT NULL,
       caller TEXT,
-      type BLOB NOT NULL,
+      type_id INTEGER NOT NULL,
       subtype TEXT NOT NULL,
       block_id INTEGER NOT NULL
+    )
+    """)
+  end
+
+  # Each file's path is stored once, and entries refer to it by id: the path
+  # would otherwise be repeated in every entry and in four of its indexes.
+  defp create_files_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS files (
+      id INTEGER PRIMARY KEY,
+      path TEXT NOT NULL UNIQUE
+    )
+    """)
+  end
+
+  defp create_types_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS types (
+      id INTEGER PRIMARY KEY,
+      type BLOB NOT NULL UNIQUE
     )
     """)
   end
@@ -725,50 +737,37 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     """)
   end
 
+  @indexes [
+    "entries_subject_idx ON entries (subject, type_id, subtype)",
+    "entries_caller_idx ON entries (caller, file_id, type_id, subtype) WHERE caller IS NOT NULL",
+    "entries_block_idx ON entries (block_id, file_id)",
+    "entries_id_idx ON entries (id, type_id, subtype)",
+    "entries_file_id_idx ON entries (file_id, id)",
+    "entries_type_subtype_idx ON entries (type_id, subtype)",
+    # We only ever use subtype column by filtering it to definitions, so partial index makes it smaller
+    # (without references), while also making inserting references faster and being able to query
+    # for fuzzy definitions using index only.
+    "entries_definitions_idx ON entries (subject, id, file_id, type_id) WHERE subtype = 'definition'"
+  ]
+
   defp create_indexes(%State{} = state) do
-    with :ok <-
-           exec(
-             state,
-             "CREATE INDEX IF NOT EXISTS entries_subject_idx ON entries (subject, type, subtype)"
-           ),
-         :ok <-
-           exec(
-             state,
-             "CREATE INDEX IF NOT EXISTS entries_caller_idx ON entries (caller, path, type, subtype) WHERE caller IS NOT NULL"
-           ),
-         :ok <-
-           exec(state, "CREATE INDEX IF NOT EXISTS entries_block_idx ON entries (block_id, path)"),
-         :ok <-
-           exec(state, "CREATE INDEX IF NOT EXISTS entries_id_idx ON entries (id, type, subtype)"),
-         :ok <-
-           exec(
-             state,
-             "CREATE INDEX IF NOT EXISTS entries_path_id_idx ON entries (path, id)"
-           ),
-         :ok <-
-           exec(
-             state,
-             "CREATE INDEX IF NOT EXISTS entries_type_subtype_idx ON entries (type, subtype)"
-           ) do
-      # We only ever use subtype column by filtering it to definitions, so partial index makes it smaller
-      # (without references), while also making inserting references faster and being able to query
-      # for fuzzy definitions using index only.
-      exec(
-        state,
-        "CREATE INDEX IF NOT EXISTS entries_definitions_idx ON entries (subject, id, path, type) WHERE subtype = 'definition'"
-      )
-    end
+    Enum.reduce_while(@indexes, :ok, fn index, :ok ->
+      case exec(state, "CREATE INDEX IF NOT EXISTS " <> index) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp drop_indexes(%State{} = state) do
-    with :ok <- exec(state, "DROP INDEX IF EXISTS entries_subject_idx"),
-         :ok <- exec(state, "DROP INDEX IF EXISTS entries_caller_idx"),
-         :ok <- exec(state, "DROP INDEX IF EXISTS entries_block_idx"),
-         :ok <- exec(state, "DROP INDEX IF EXISTS entries_id_idx"),
-         :ok <- exec(state, "DROP INDEX IF EXISTS entries_path_id_idx"),
-         :ok <- exec(state, "DROP INDEX IF EXISTS entries_type_subtype_idx") do
-      exec(state, "DROP INDEX IF EXISTS entries_definitions_idx")
-    end
+    Enum.reduce_while(@indexes, :ok, fn index, :ok ->
+      [name | _] = String.split(index, " ", parts: 2)
+
+      case exec(state, "DROP INDEX IF EXISTS " <> name) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   @impl Backend
@@ -804,8 +803,26 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_entry_batch(%State{} = state, batch) do
-    with {:ok, entry_key} <- next_entry_key(state) do
-      rows = batch |> encode_rows() |> Enum.with_index(entry_key)
+    rows = encode_rows(batch)
+
+    with {:ok, entry_key} <- next_entry_key(state),
+         {:ok, file_ids} <- file_ids(state, Enum.map(rows, fn {[_id, path | _], _} -> path end)),
+         {:ok, type_ids} <-
+           type_ids(state, Enum.map(rows, fn {[_, _, _, _, type | _], _} -> type end)) do
+      rows =
+        rows
+        |> Enum.map(fn {[id, path, subject, caller, type, subtype, block_id], blob} ->
+          {[
+             id,
+             Map.get(file_ids, path),
+             subject,
+             caller,
+             Map.get(type_ids, type),
+             subtype,
+             block_id
+           ], blob}
+        end)
+        |> Enum.with_index(entry_key)
 
       with :ok <- insert_entry_rows(state, rows) do
         insert_entry_blobs(state, rows)
@@ -831,9 +848,47 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  defp file_ids(%State{} = state, paths) do
+    paths = Enum.uniq(paths)
+
+    with :ok <-
+           exec(
+             state,
+             "INSERT OR IGNORE INTO files (path) VALUES #{row_placeholders(paths, 1)}",
+             paths
+           ),
+         {:ok, found} <-
+           query(
+             state,
+             "SELECT path, id FROM files WHERE path IN (#{placeholders(paths)})",
+             paths
+           ) do
+      {:ok, Map.new(found, fn [path, id] -> {path, id} end)}
+    end
+  end
+
+  defp type_ids(%State{} = state, types) do
+    types = Enum.uniq(types)
+
+    with :ok <-
+           exec(
+             state,
+             "INSERT OR IGNORE INTO types (type) VALUES #{row_placeholders(types, 1)}",
+             types
+           ),
+         {:ok, found} <-
+           query(
+             state,
+             "SELECT type, id FROM types WHERE type IN (#{placeholders(types)})",
+             types
+           ) do
+      {:ok, Map.new(found, fn [type, id] -> {{:blob, type}, id} end)}
+    end
+  end
+
   defp insert_entry_rows(%State{} = state, rows) do
     sql = """
-    INSERT INTO entries (entry_key, id, path, subject, caller, type, subtype, block_id)
+    INSERT INTO entries (entry_key, id, file_id, subject, caller, type_id, subtype, block_id)
     VALUES #{row_placeholders(rows, 8)}
     """
 
@@ -910,11 +965,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with {:ok, rows} <-
            query(
              state,
-             "SELECT entry_key, id FROM entries WHERE path IN (#{placeholders(paths)})",
+             "SELECT entry_key, id FROM entries WHERE file_id IN (#{file_ids_of_paths(paths)})",
              paths
            ),
          :ok <- delete_entry_blobs_for_rows(state, rows),
-         :ok <- exec(state, "DELETE FROM entries WHERE path IN (#{placeholders(paths)})", paths) do
+         :ok <-
+           exec(
+             state,
+             "DELETE FROM entries WHERE file_id IN (#{file_ids_of_paths(paths)})",
+             paths
+           ),
+         :ok <- exec(state, "DELETE FROM files WHERE path IN (#{placeholders(paths)})", paths) do
       deleted_ids =
         rows
         |> Enum.map(fn [_entry_key, id] -> id end)
@@ -957,29 +1018,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp query_entries(%State{} = state, where, args) do
-    query(
-      state,
-      """
-      SELECT
-        entries.id,
-        entries.path,
-        entries.subject,
-        entries.caller,
-        entries.type,
-        entries.subtype,
-        entries.block_id,
-        entry_blobs.entry
-      FROM entries
-      JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
-      #{where}
-      """,
-      args
-    )
+    query(state, @entries_select <> where, args)
   end
 
   defp find_by_path_chunk(%State{} = state, paths, type, subtype) do
     {where, args} =
-      constraints(["entries.path IN (#{placeholders(paths)})"], paths, type, subtype)
+      constraints(["file_id IN (#{file_ids_of_paths(paths)})"], paths, type, subtype)
 
     state
     |> query_entries(where_clause(where), args)
@@ -1001,6 +1045,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     {clauses, args} = add_subtype_constraint(clauses, args, subtype)
     {Enum.join(Enum.reverse(clauses), " AND "), args}
   end
+
+  defp file_ids_of_paths(paths), do: "SELECT id FROM files WHERE path IN (#{placeholders(paths)})"
 
   defp where_clause(""), do: ""
   defp where_clause(where), do: "WHERE #{where}"
@@ -1048,7 +1094,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp add_type_constraint(clauses, args, :_), do: {clauses, args}
 
   defp add_type_constraint(clauses, args, value),
-    do: {["type = ?" | clauses], args ++ [blob(value)]}
+    do: {["type_id = (SELECT id FROM types WHERE type = ?)" | clauses], args ++ [blob(value)]}
 
   defp add_subtype_constraint(clauses, args, :_), do: {clauses, args}
 
