@@ -93,12 +93,10 @@ defmodule Expert.Search.StoreTest do
     one = definition(id: 1, subject: Foo.Bar)
     two = definition(id: 2, subject: Other.Module)
 
-    entries = [
-      one,
-      two,
-      reference(id: 3, subject: Foo.Bar),
-      definition(id: 4, subject: Unrelated)
-    ]
+    # enough other definitions that the planner prefers the index to a scan
+    unrelated = for id <- 4..500, do: definition(id: id, subject: :"Elixir.Unrelated#{id}")
+
+    entries = [one, two, reference(id: 3, subject: Foo.Bar) | unrelated]
 
     assert :ok = Store.replace(project, entries)
     spy(Exqlite.Basic)
@@ -122,7 +120,7 @@ defmodule Expert.Search.StoreTest do
       assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
 
       assert Enum.any?(rows, fn [_id, _parent, _unused, detail] ->
-               String.contains?(detail, "SEARCH entries USING INDEX entries_subject_idx") and
+               String.contains?(detail, "SEARCH entries USING INDEX entries_definitions_idx") and
                  String.contains?(detail, "subject=?")
              end)
     after
@@ -192,7 +190,7 @@ defmodule Expert.Search.StoreTest do
       assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
 
       assert Enum.any?(rows, fn [_id, _parent, _unused, detail] ->
-               String.contains?(detail, "SEARCH entries USING INDEX entries_caller_idx") and
+               String.contains?(detail, "SEARCH refs USING INDEX refs_caller_idx") and
                  String.contains?(detail, "caller=? AND file_id=?")
              end)
     after

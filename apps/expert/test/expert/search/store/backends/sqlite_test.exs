@@ -44,9 +44,9 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
           SELECT entry_blobs.entry
           FROM entries
           JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
-          WHERE type_id = (SELECT id FROM types WHERE type = ?) AND subtype = ?
+          WHERE type_id = (SELECT id FROM types WHERE type = ?)
           """,
-          [{:blob, :erlang.term_to_binary(:module)}, "definition"]
+          [{:blob, :erlang.term_to_binary(:module)}]
         )
 
       assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
@@ -55,9 +55,8 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert Enum.any?(rows, fn row ->
                plan = row |> List.last() |> to_string()
 
-               String.contains?(plan, "entries_type_subtype_idx") and
-                 String.contains?(plan, "type_id=?") and
-                 String.contains?(plan, "subtype=?")
+               String.contains?(plan, "entries_type_idx") and
+                 String.contains?(plan, "type_id=?")
              end)
     end
 
@@ -351,13 +350,14 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert MapSet.subset?(
                MapSet.new([
-                 "entries_subject_idx",
+                 "entries_definitions_idx",
                  "entries_caller_idx",
-                 "entries_block_idx",
                  "entries_id_idx",
-                 "entries_file_id_idx",
-                 "entries_type_subtype_idx",
-                 "entries_definitions_idx"
+                 "entries_file_block_idx",
+                 "entries_type_idx",
+                 "refs_subject_idx",
+                 "refs_caller_idx",
+                 "refs_file_idx"
                ]),
                index_names
              )

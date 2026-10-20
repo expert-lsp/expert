@@ -29,13 +29,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     entries.subject,
     entries.caller,
     types.type,
-    entries.subtype,
     entries.block_id,
     entry_blobs.entry
   FROM entries
   JOIN entry_blobs ON entry_blobs.entry_key = entries.entry_key
   JOIN files ON files.id = entries.file_id
   JOIN types ON types.id = entries.type_id
+  """
+  @refs_select """
+  SELECT files.path, refs.subject, refs.caller, types.type, ref_blobs.occurrences
+  FROM refs
+  JOIN ref_blobs ON ref_blobs.ref_key = refs.ref_key
+  JOIN files ON files.id = refs.file_id
+  JOIN types ON types.id = refs.type_id
   """
   @busy_timeout_ms Application.compile_env(:expert, :search_store_sqlite_busy_timeout_ms, 5_000)
 
@@ -315,14 +321,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_path_to_ids(%State{} = state) do
-    # One index seek per file, rather than a GROUP BY over every entry.
+    # One index seek per file and table, rather than a GROUP BY over every entry.
     sql = """
-    SELECT path, max_id
+    SELECT path, MAX(COALESCE(definition_id, 0), COALESCE(reference_id, 0))
     FROM (
-      SELECT path, (SELECT MAX(id) FROM entries WHERE entries.file_id = files.id) AS max_id
+      SELECT
+        files.path,
+        (SELECT MAX(id) FROM entries WHERE entries.file_id = files.id) AS definition_id,
+        (SELECT MAX(max_id) FROM refs WHERE refs.file_id = files.id) AS reference_id
       FROM files
     )
-    WHERE max_id IS NOT NULL
+    WHERE definition_id IS NOT NULL OR reference_id IS NOT NULL
     """
 
     case query(state, sql) do
@@ -333,22 +342,21 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   def do_find_definitions_for_fuzzy(%State{} = state) do
     sql = """
-    SELECT entries.id, files.path, entries.subject, types.type, entries.subtype
+    SELECT entries.id, files.path, entries.subject, types.type
     FROM entries
     JOIN files ON files.id = entries.file_id
     JOIN types ON types.id = entries.type_id
-    WHERE entries.subtype = 'definition'
     """
 
     case query(state, sql) do
       {:ok, rows} ->
-        Enum.map(rows, fn [id, path, subject, type_blob, subtype] ->
+        Enum.map(rows, fn [id, path, subject, type_blob] ->
           %Entry{
             id: id,
             path: path,
             subject: subject,
             type: decode_term(type_blob),
-            subtype: String.to_existing_atom(subtype)
+            subtype: :definition
           }
         end)
 
@@ -368,6 +376,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with :ok <- drop_indexes(state),
          :ok <- exec(state, "DELETE FROM entry_blobs"),
          :ok <- exec(state, "DELETE FROM entries"),
+         :ok <- exec(state, "DELETE FROM ref_blobs"),
+         :ok <- exec(state, "DELETE FROM refs"),
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
          :ok <- exec(state, "DELETE FROM structures"),
@@ -420,11 +430,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   def do_find_by_subject(%State{} = state, subject, type, subtype) do
     {clauses, args} = subject_constraint(subject)
-    {where, args} = constraints(clauses, args, type, subtype)
-
-    state
-    |> query_entries(where_clause(where), args)
-    |> entries_result()
+    find(state, clauses, args, type, subtype)
   end
 
   def do_find_by_subjects(%State{} = state, subjects, type, subtype) when is_list(subjects) do
@@ -434,13 +440,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       |> Enum.uniq()
       |> Stream.chunk_every(query_chunk_size(type, subtype))
       |> Enum.reduce_while([], fn subjects, batches ->
-        {where, args} =
-          constraints(["subject IN (#{placeholders(subjects)})"], subjects, type, subtype)
-
-        state
-        |> query_entries(where_clause(where), args)
-        |> entries_result()
-        |> case do
+        case find(state, ["subject IN (#{placeholders(subjects)})"], subjects, type, subtype) do
           entries when is_list(entries) -> {:cont, [entries | batches]}
           {:error, _} = error -> {:halt, error}
         end
@@ -453,30 +453,50 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_find_by_caller(%State{} = state, caller, path, type, subtype) do
-    {where, args} =
-      constraints(["caller = ? AND file_id = #{@file_id_of_path}"], [caller, path], type, subtype)
-
-    state
-    |> query_entries(where_clause(where), args)
-    |> entries_result()
+    find(state, ["caller = ? AND file_id = #{@file_id_of_path}"], [caller, path], type, subtype)
   end
 
   def do_find_by_prefix(%State{} = state, prefix, type, subtype) do
     {clauses, args} = prefix_constraint(prefix)
-    {where, args} = constraints(clauses, args, type, subtype)
-
-    state
-    |> query_entries(where_clause(where), args)
-    |> entries_result()
+    find(state, clauses, args, type, subtype)
   end
 
+  # Definitions are kept in `entries` and references, grouped, in `refs`.
+  defp find(%State{} = state, clauses, args, type, subtype) do
+    {clauses, args} = add_type_constraint(clauses, args, type)
+    where = where_clause(Enum.join(clauses, " AND "))
+
+    Enum.reduce_while(tables_for(subtype), [], fn table, found ->
+      case table_entries(state, table, where, args) do
+        entries when is_list(entries) -> {:cont, found ++ entries}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp tables_for(:_), do: [:entries, :refs]
+  defp tables_for(:definition), do: [:entries]
+  defp tables_for(:reference), do: [:refs]
+  defp tables_for(_other), do: []
+
+  defp table_entries(%State{} = state, :entries, where, args),
+    do: state |> query_entries(where, args) |> entries_result()
+
+  defp table_entries(%State{} = state, :refs, where, args),
+    do: state |> query_refs(where, args) |> refs_result()
+
+  # Only definitions are looked up by id, so references are not indexed by it.
   def do_find_by_ids(%State{} = state, ids, type, subtype) when is_list(ids) do
     case ids do
       [] ->
         []
 
+      [_ | _] when subtype not in [:_, :definition] ->
+        []
+
       [_ | _] ->
-        {where, args} = constraints(["entries.id IN (#{placeholders(ids)})"], ids, type, subtype)
+        {clauses, args} = add_type_constraint(["entries.id IN (#{placeholders(ids)})"], ids, type)
+        where = Enum.join(clauses, " AND ")
 
         with {:ok, rows} <-
                query(
@@ -529,21 +549,40 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_siblings(%State{} = state, %Entry{} = entry) do
-    case query(
-           state,
-           """
-           #{@entries_select}
-           WHERE entries.block_id = ? AND entries.file_id = #{@file_id_of_path}
-           ORDER BY entries.id
-           """,
-           [block_id_key(entry.block_id), entry.path]
-         ) do
-      {:ok, rows} ->
-        rows
-        |> Enum.map(&decode_entry/1)
-        |> Enum.filter(&same_block_type?(entry, &1))
-        |> Enum.uniq()
-        |> then(&{:ok, &1})
+    block_id = block_id_key(entry.block_id)
+
+    with {:ok, rows} <-
+           query(
+             state,
+             """
+             #{@entries_select}
+             WHERE entries.block_id = ? AND entries.file_id = #{@file_id_of_path}
+             ORDER BY entries.id
+             """,
+             [block_id, entry.path]
+           ),
+         {:ok, references} <- block_references(state, entry, block_id) do
+      rows
+      |> Enum.map(&decode_entry/1)
+      |> Enum.concat(references)
+      |> Enum.sort_by(& &1.id)
+      |> Enum.filter(&same_block_type?(entry, &1))
+      |> Enum.uniq()
+      |> then(&{:ok, &1})
+    end
+  end
+
+  # References are never blocks, so blocks have none as siblings.
+  defp block_references(%State{}, %Entry{} = entry, _block_id) when Entry.is_block(entry),
+    do: {:ok, []}
+
+  defp block_references(%State{} = state, %Entry{} = entry, block_id) do
+    state
+    |> query_refs("WHERE refs.file_id = #{@file_id_of_path}", [entry.path])
+    |> refs_result()
+    |> case do
+      references when is_list(references) ->
+        {:ok, Enum.filter(references, &(block_id_key(&1.block_id) == block_id))}
 
       {:error, _} = error ->
         error
@@ -643,13 +682,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp reset_schema(%State{} = state) do
     with :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS refs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS ref_blobs"),
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- create_entries_table(state),
+         :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_entry_blobs_table(state),
+         :ok <- create_ref_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
          :ok <- exec(state, "INSERT INTO schema (version) VALUES (?)", [@schema_version]) do
@@ -661,6 +704,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with :ok <- exec(state, "DROP TABLE IF EXISTS schema"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS refs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS ref_blobs"),
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
@@ -671,12 +716,15 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp load_status(%State{} = state) do
     with :ok <- create_entries_table(state),
+         :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_entry_blobs_table(state),
+         :ok <- create_ref_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
-         {:ok, result} <- query(state, "SELECT 1 FROM entries LIMIT 1") do
+         {:ok, result} <-
+           query(state, "SELECT 1 FROM entries UNION ALL SELECT 1 FROM refs LIMIT 1") do
       case result do
         [] -> {:ok, :empty}
         [[1]] -> {:ok, :stale}
@@ -693,8 +741,41 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       subject TEXT NOT NULL,
       caller TEXT,
       type_id INTEGER NOT NULL,
-      subtype TEXT NOT NULL,
       block_id INTEGER NOT NULL
+    )
+    """)
+  end
+
+  # References, one row per file, subject, type and caller. Their occurrences,
+  # with their ids, blocks and details, are stored together in `ref_blobs`:
+  # kept out of `refs`, they aren't read again by each index built on it.
+  defp create_refs_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS refs (
+      ref_key INTEGER PRIMARY KEY,
+      file_id INTEGER NOT NULL,
+      subject TEXT NOT NULL,
+      caller TEXT,
+      type_id INTEGER NOT NULL,
+      max_id INTEGER NOT NULL
+    )
+    """)
+  end
+
+  defp create_ref_blobs_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS ref_blobs (
+      ref_key INTEGER PRIMARY KEY,
+      occurrences BLOB NOT NULL
+    )
+    """)
+  end
+
+  defp create_types_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS types (
+      id INTEGER PRIMARY KEY,
+      type BLOB NOT NULL UNIQUE
     )
     """)
   end
@@ -706,15 +787,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     CREATE TABLE IF NOT EXISTS files (
       id INTEGER PRIMARY KEY,
       path TEXT NOT NULL UNIQUE
-    )
-    """)
-  end
-
-  defp create_types_table(%State{} = state) do
-    exec(state, """
-    CREATE TABLE IF NOT EXISTS types (
-      id INTEGER PRIMARY KEY,
-      type BLOB NOT NULL UNIQUE
     )
     """)
   end
@@ -738,16 +810,15 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @indexes [
-    "entries_subject_idx ON entries (subject, type_id, subtype)",
-    "entries_caller_idx ON entries (caller, file_id, type_id, subtype) WHERE caller IS NOT NULL",
-    "entries_block_idx ON entries (block_id, file_id)",
-    "entries_id_idx ON entries (id, type_id, subtype)",
-    "entries_file_id_idx ON entries (file_id, id)",
-    "entries_type_subtype_idx ON entries (type_id, subtype)",
-    # We only ever use subtype column by filtering it to definitions, so partial index makes it smaller
-    # (without references), while also making inserting references faster and being able to query
-    # for fuzzy definitions using index only.
-    "entries_definitions_idx ON entries (subject, id, file_id, type_id) WHERE subtype = 'definition'"
+    # covers looking definitions up by subject, and listing them for fuzzy search
+    "entries_definitions_idx ON entries (subject, id, file_id, type_id)",
+    "entries_caller_idx ON entries (caller, file_id, type_id) WHERE caller IS NOT NULL",
+    "entries_id_idx ON entries (id, type_id)",
+    "entries_file_block_idx ON entries (file_id, block_id, id)",
+    "entries_type_idx ON entries (type_id)",
+    "refs_subject_idx ON refs (subject, type_id)",
+    "refs_caller_idx ON refs (caller, file_id, type_id) WHERE caller IS NOT NULL",
+    "refs_file_idx ON refs (file_id, max_id)"
   ]
 
   defp create_indexes(%State{} = state) do
@@ -772,22 +843,84 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   @impl Backend
   def encode_entries(entries) do
-    Enum.map(entries, fn
-      %Entry{} = entry when Entry.is_structure(entry) -> {:encoded, entry, nil}
-      %Entry{} = entry -> {:encoded, entry, encode_row(entry)}
+    {order, groups} =
+      Enum.reduce(entries, {[], %{}}, fn
+        %Entry{} = entry, {order, groups} when Entry.is_structure(entry) ->
+          {[entry | order], groups}
+
+        %Entry{subtype: :reference} = entry, {order, groups} ->
+          group = {entry.subject, entry.caller, entry.type, entry.path}
+
+          case groups do
+            %{^group => references} -> {order, %{groups | group => [entry | references]}}
+            %{} -> {[{:refs, group} | order], Map.put(groups, group, [entry])}
+          end
+
+        %Entry{} = entry, {order, groups} ->
+          {[entry | order], groups}
+      end)
+
+    order
+    |> Enum.reverse()
+    |> Enum.map(fn
+      {:refs, group} ->
+        [first | _] = references = groups |> Map.fetch!(group) |> Enum.reverse()
+        {:encoded, first, {:refs, refs_args(references)}}
+
+      %Entry{} = entry when Entry.is_structure(entry) ->
+        {:encoded, entry, nil}
+
+      %Entry{} = entry ->
+        {:encoded, entry, encode_row(entry)}
     end)
   end
 
+  # Occurrences are stored as terms inside the row's blob rather than as blobs
+  # of their own, so they are encoded and decoded once.
+  defp refs_args([%Entry{} = first | _] = references) do
+    {occurrences, max_id} =
+      Enum.map_reduce(references, first.id, fn %Entry{} = entry, max_id ->
+        {{entry.id, block_id_key(entry.block_id), entry_term(entry)}, max(entry.id, max_id)}
+      end)
+
+    [
+      first.path,
+      subject_key(first.subject),
+      first.caller,
+      blob(first.type),
+      max_id,
+      blob(occurrences)
+    ]
+  end
+
   defp insert_entries(%State{} = state, entries) do
-    {structures, entries} =
-      Enum.split_with(entries, fn item -> Entry.is_structure(entry_of(item)) end)
+    %{structures: structures, refs: refs, definitions: definitions} =
+      entries
+      |> Enum.group_by(&row_kind/1)
+      |> Map.merge(%{structures: [], refs: [], definitions: []}, fn _kind, rows, [] -> rows end)
 
     structures = Enum.map(structures, &entry_of/1)
+    {plain_refs, encoded_refs} = Enum.split_with(refs, &match?(%Entry{}, &1))
+    refs = encoded_refs ++ encode_entries(plain_refs)
 
-    with :ok <- insert_entry_batches(state, entries) do
+    with :ok <- insert_entry_batches(state, definitions),
+         :ok <- insert_ref_batches(state, refs) do
       insert_structures(state, structures)
     end
   end
+
+  defp row_kind({:encoded, _entry, {:refs, _args}}), do: :refs
+  defp row_kind({:encoded, entry, _row}), do: row_kind(entry)
+  defp row_kind(%Entry{} = entry) when Entry.is_structure(entry), do: :structures
+  defp row_kind(%Entry{subtype: :reference}), do: :refs
+  defp row_kind(%Entry{subtype: :definition}), do: :definitions
+
+  defp row_kind(%Entry{subtype: subtype}),
+    do:
+      raise(
+        ArgumentError,
+        "entries can only be definitions or references, got #{inspect(subtype)}"
+      )
 
   defp insert_entry_batches(%State{}, []), do: :ok
 
@@ -811,16 +944,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
            type_ids(state, Enum.map(rows, fn {[_, _, _, _, type | _], _} -> type end)) do
       rows =
         rows
-        |> Enum.map(fn {[id, path, subject, caller, type, subtype, block_id], blob} ->
-          {[
-             id,
-             Map.get(file_ids, path),
-             subject,
-             caller,
-             Map.get(type_ids, type),
-             subtype,
-             block_id
-           ], blob}
+        |> Enum.map(fn {[id, path, subject, caller, type, block_id], blob} ->
+          {[id, Map.get(file_ids, path), subject, caller, Map.get(type_ids, type), block_id],
+           blob}
         end)
         |> Enum.with_index(entry_key)
 
@@ -832,6 +958,57 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp entry_of({:encoded, entry, _row}), do: entry
   defp entry_of(%Entry{} = entry), do: entry
+
+  defp insert_ref_batches(%State{}, []), do: :ok
+
+  defp insert_ref_batches(%State{} = state, refs) do
+    refs
+    |> Stream.chunk_every(@insert_batch_size)
+    |> Enum.reduce_while(:ok, fn batch, :ok ->
+      case insert_ref_batch(
+             state,
+             Enum.map(batch, fn {:encoded, _entry, {:refs, args}} -> args end)
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp insert_ref_batch(%State{} = state, rows) do
+    with {:ok, ref_key} <- next_ref_key(state),
+         {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
+         {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))) do
+      rows = Enum.with_index(rows, ref_key)
+
+      ref_args =
+        Enum.flat_map(rows, fn {[path, subject, caller, type, max_id, _occurrences], key} ->
+          [key, Map.get(file_ids, path), subject, caller, Map.get(type_ids, type), max_id]
+        end)
+
+      blob_args =
+        Enum.flat_map(rows, fn {[_, _, _, _, _, occurrences], key} -> [key, occurrences] end)
+
+      ref_sql = """
+      INSERT INTO refs (ref_key, file_id, subject, caller, type_id, max_id)
+      VALUES #{row_placeholders(rows, 6)}
+      """
+
+      blob_sql =
+        "INSERT INTO ref_blobs (ref_key, occurrences) VALUES #{row_placeholders(rows, 2)}"
+
+      with :ok <- exec(state, ref_sql, ref_args) do
+        exec(state, blob_sql, blob_args)
+      end
+    end
+  end
+
+  defp next_ref_key(%State{} = state) do
+    case query(state, "SELECT COALESCE(MAX(ref_key), 0) + 1 FROM refs") do
+      {:ok, [[ref_key]]} -> {:ok, ref_key}
+      {:error, _} = error -> error
+    end
+  end
 
   defp encode_rows(batch), do: Enum.map(batch, &encode_row/1)
 
@@ -888,8 +1065,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp insert_entry_rows(%State{} = state, rows) do
     sql = """
-    INSERT INTO entries (entry_key, id, file_id, subject, caller, type_id, subtype, block_id)
-    VALUES #{row_placeholders(rows, 8)}
+    INSERT INTO entries (entry_key, id, file_id, subject, caller, type_id, block_id)
+    VALUES #{row_placeholders(rows, 7)}
     """
 
     args =
@@ -934,7 +1111,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       subject_key(entry.subject),
       entry.caller,
       blob(entry.type),
-      subtype_key(entry.subtype),
       block_id_key(entry.block_id)
     ]
   end
@@ -956,6 +1132,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              "SELECT entry_key, id FROM entries WHERE file_id IN (#{file_ids_of_paths(paths)})",
              paths
            ),
+         {:ok, reference_rows} <-
+           query(
+             state,
+             """
+             SELECT ref_blobs.occurrences
+             FROM refs
+             JOIN ref_blobs ON ref_blobs.ref_key = refs.ref_key
+             WHERE refs.file_id IN (#{file_ids_of_paths(paths)})
+             """,
+             paths
+           ),
          :ok <- delete_entry_blobs_for_rows(state, rows),
          :ok <-
            exec(
@@ -963,10 +1150,27 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              "DELETE FROM entries WHERE file_id IN (#{file_ids_of_paths(paths)})",
              paths
            ),
+         :ok <-
+           exec(
+             state,
+             """
+             DELETE FROM ref_blobs
+             WHERE ref_key IN (SELECT ref_key FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)}))
+             """,
+             paths
+           ),
+         :ok <-
+           exec(state, "DELETE FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})", paths),
          :ok <- exec(state, "DELETE FROM files WHERE path IN (#{placeholders(paths)})", paths) do
+      reference_ids =
+        Enum.flat_map(reference_rows, fn [occurrences] ->
+          for {id, _block_id, _blob} <- decode_term(occurrences), do: id
+        end)
+
       deleted_ids =
         rows
         |> Enum.map(fn [_entry_key, id] -> id end)
+        |> Enum.concat(reference_ids)
         |> Enum.reject(&is_nil/1)
 
       {:ok, deleted_ids}
@@ -1002,13 +1206,18 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     query(state, @entries_select <> where, args)
   end
 
-  defp find_by_path_chunk(%State{} = state, paths, type, subtype) do
-    {where, args} =
-      constraints(["file_id IN (#{file_ids_of_paths(paths)})"], paths, type, subtype)
+  defp query_refs(%State{} = state, where, args) do
+    query(state, @refs_select <> where, args)
+  end
 
-    state
-    |> query_entries(where_clause(where), args)
-    |> entries_result()
+  defp find_by_path_chunk(%State{} = state, paths, type, subtype) do
+    find(
+      state,
+      ["file_id IN (SELECT id FROM files WHERE path IN (#{placeholders(paths)}))"],
+      paths,
+      type,
+      subtype
+    )
   end
 
   defp query_chunk_size(type, subtype) do
@@ -1021,11 +1230,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp entries_result({:error, _} = error), do: error
 
-  defp constraints(initial_clauses, initial_args, type, subtype) do
-    {clauses, args} = add_type_constraint(initial_clauses, initial_args, type)
-    {clauses, args} = add_subtype_constraint(clauses, args, subtype)
-    {Enum.join(Enum.reverse(clauses), " AND "), args}
-  end
+  defp refs_result({:ok, rows}), do: Enum.flat_map(rows, &decode_references/1)
+  defp refs_result({:error, _} = error), do: error
 
   defp file_ids_of_paths(paths), do: "SELECT id FROM files WHERE path IN (#{placeholders(paths)})"
 
@@ -1051,12 +1257,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp add_type_constraint(clauses, args, :_), do: {clauses, args}
 
   defp add_type_constraint(clauses, args, value),
-    do: {["type_id = (SELECT id FROM types WHERE type = ?)" | clauses], args ++ [blob(value)]}
-
-  defp add_subtype_constraint(clauses, args, :_), do: {clauses, args}
-
-  defp add_subtype_constraint(clauses, args, value),
-    do: {["subtype = ?" | clauses], args ++ [subtype_key(value)]}
+    do: {clauses ++ ["type_id = (SELECT id FROM types WHERE type = ?)"], args ++ [blob(value)]}
 
   defp transaction(%State{} = state, fun) do
     with :ok <- exec(state, "BEGIN IMMEDIATE") do
@@ -1265,8 +1466,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp subject_key(subject) when is_list(subject), do: List.to_string(subject)
   defp subject_key(subject), do: inspect(subject)
 
-  defp subtype_key(subtype), do: Atom.to_string(subtype)
-
   defp block_id_key(:root), do: 0
   defp block_id_key(nil), do: 0
   defp block_id_key(block_id) when is_integer(block_id), do: block_id
@@ -1274,20 +1473,45 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp block_id(0), do: :root
   defp block_id(block_id) when is_integer(block_id), do: block_id
 
-  defp build_entry_blob(%Entry{} = entry) do
+  defp build_entry_blob(%Entry{} = entry), do: entry |> entry_term() |> blob()
+
+  defp entry_term(%Entry{} = entry) do
     subject_override = if !is_binary(entry.subject), do: entry.subject
 
-    blob({
+    {
       subject_override,
       entry.application,
       compact_range(entry.block_range),
       compact_range(entry.range),
       entry.metadata
-    })
+    }
   end
 
-  defp decode_entry([id, path, subject_key, caller, type_blob, subtype, block_id, entry_blob]) do
-    {subject_override, application, block_range, range, metadata} = decode_term(entry_blob)
+  defp decode_entry([id, path, subject_key, caller, type_blob, block_id, entry_blob]) do
+    decode_entry(
+      id,
+      path,
+      subject_key,
+      caller,
+      decode_term(type_blob),
+      :definition,
+      block_id,
+      decode_term(entry_blob)
+    )
+  end
+
+  defp decode_references([path, subject_key, caller, type_blob, occurrences]) do
+    type = decode_term(type_blob)
+
+    for {id, block_id, entry_term} <- decode_term(occurrences) do
+      decode_entry(id, path, subject_key, caller, type, :reference, block_id, entry_term)
+    end
+  end
+
+  defp decode_entry(id, path, subject_key, caller, type, subtype, block_id, entry_term) do
+    {subject_override, application, block_range, range, metadata} = entry_term
+    block_range = expand_range(block_range)
+    range = expand_range(range)
 
     subject =
       case subject_override do
@@ -1299,13 +1523,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       application: application,
       id: id,
       block_id: block_id(block_id),
-      block_range: expand_range(block_range),
+      block_range: block_range,
       path: path,
-      range: expand_range(range),
+      range: range,
       subject: subject,
       caller: caller,
-      subtype: String.to_existing_atom(subtype),
-      type: decode_term(type_blob),
+      subtype: subtype,
+      type: type,
       metadata: metadata
     }
   end
