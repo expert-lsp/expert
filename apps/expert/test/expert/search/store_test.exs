@@ -193,7 +193,7 @@ defmodule Expert.Search.StoreTest do
 
       assert Enum.any?(rows, fn [_id, _parent, _unused, detail] ->
                String.contains?(detail, "SEARCH entries USING INDEX entries_caller_idx") and
-                 String.contains?(detail, "caller=? AND path=?")
+                 String.contains?(detail, "caller=? AND file_id=?")
              end)
     after
       Exqlite.Basic.close(conn)
