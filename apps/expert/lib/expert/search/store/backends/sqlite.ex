@@ -51,7 +51,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @busy_timeout_ms Application.compile_env(:expert, :search_store_sqlite_busy_timeout_ms, 5_000)
 
   defmodule State do
-    defstruct [:conn, :database_path, :project, :runtime_versions]
+    defstruct [:conn, :database_path, :project, :runtime_versions, statements: %{}]
   end
 
   @impl Backend
@@ -347,9 +347,72 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DELETE FROM refs"),
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
-         {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
+         {:ok, result} <-
+           with_batch_statements(state, fn state ->
+             replacement.(fn entries -> insert_entries(state, entries) end)
+           end),
          :ok <- create_indexes(state) do
       {:ok, result}
+    end
+  end
+
+  # A replace writes hundreds of batches with the same few statements, and
+  # preparing one with thousands of placeholders costs as much as running
+  # it, so they're prepared up front for the replace and rows are written
+  # in chunks of their sizes.
+  @chunk_sizes [256, 64, 16, 4, 1]
+  @batch_inserts [:files, :types, :entries, :blobs, :refs, :max_ids]
+
+  defp with_batch_statements(%State{} = state, fun) do
+    statements =
+      for key <- @batch_inserts, size <- @chunk_sizes, into: %{} do
+        {:ok, prepared} = Exqlite.Sqlite3.prepare(state.conn.db, insert_sql(key, size))
+        {{key, size}, prepared}
+      end
+
+    try do
+      fun.(%State{state | statements: statements})
+    after
+      Enum.each(statements, fn {_key, prepared} ->
+        Exqlite.Sqlite3.release(state.conn.db, prepared)
+      end)
+    end
+  end
+
+  defp insert_sql(:files, size),
+    do: "INSERT OR IGNORE INTO files (path) VALUES #{row_placeholders(1..size, 1)}"
+
+  defp insert_sql(:types, size),
+    do: "INSERT OR IGNORE INTO types (type) VALUES #{row_placeholders(1..size, 1)}"
+
+  defp insert_sql(:entries, size) do
+    "INSERT INTO entries (entry_key, id, file_id, subject, caller, type_id, block_id) " <>
+      "VALUES #{row_placeholders(1..size, 7)}"
+  end
+
+  defp insert_sql(:blobs, size),
+    do: "INSERT INTO entry_blobs (entry_key, entry) VALUES #{row_placeholders(1..size, 2)}"
+
+  defp insert_sql(:refs, size) do
+    "INSERT INTO refs (file_id, module, name, type_id, occurrences) " <>
+      "VALUES #{row_placeholders(1..size, 5)}"
+  end
+
+  defp insert_sql(:max_ids, size) do
+    "INSERT INTO files (path, max_id) VALUES #{row_placeholders(1..size, 2)} " <>
+      "ON CONFLICT (path) DO UPDATE SET max_id = MAX(COALESCE(max_id, 0), excluded.max_id)"
+  end
+
+  defp insert_rows(%State{} = state, key, rows), do: insert_rows(state, key, rows, length(rows))
+
+  defp insert_rows(%State{}, _key, [], 0), do: :ok
+
+  defp insert_rows(%State{} = state, key, rows, count) do
+    size = Enum.find(@chunk_sizes, &(&1 <= count))
+    {chunk, rest} = Enum.split(rows, size)
+
+    with :ok <- exec_rows(state, key, size, Enum.concat(chunk)) do
+      insert_rows(state, key, rest, count - size)
     end
   end
 
@@ -1209,19 +1272,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp update_max_ids(%State{}, max_ids) when map_size(max_ids) == 0, do: :ok
 
   defp update_max_ids(%State{} = state, max_ids) do
-    max_ids
-    |> Enum.chunk_every(div(@sqlite_variable_limit, 2))
-    |> Enum.reduce_while(:ok, fn batch, :ok ->
-      sql = """
-      INSERT INTO files (path, max_id) VALUES #{row_placeholders(batch, 2)}
-      ON CONFLICT (path) DO UPDATE SET max_id = MAX(COALESCE(max_id, 0), excluded.max_id)
-      """
-
-      case exec_rows(state, sql, Enum.flat_map(batch, fn {path, max_id} -> [path, max_id] end)) do
-        :ok -> {:cont, :ok}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
+    insert_rows(state, :max_ids, Enum.map(max_ids, fn {path, max_id} -> [path, max_id] end))
   end
 
   defp row_kind({:encoded, _entry, {:refs, _args}}), do: :refs
@@ -1290,17 +1341,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp insert_ref_batch(%State{} = state, rows) do
     with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
          {:ok, type_ids} <- type_ids(state, Enum.map(rows, fn [_, _, _, type | _] -> type end)) do
-      args =
-        Enum.flat_map(rows, fn [path, module, name, type, _max_id, occurrences] ->
+      rows =
+        Enum.map(rows, fn [path, module, name, type, _max_id, occurrences] ->
           [Map.fetch!(file_ids, path), module, name, Map.fetch!(type_ids, type), occurrences]
         end)
 
-      sql = """
-      INSERT INTO refs (file_id, module, name, type_id, occurrences)
-      VALUES #{row_placeholders(rows, 5)}
-      """
-
-      exec_rows(state, sql, args)
+      insert_rows(state, :refs, rows)
     end
   end
 
@@ -1312,6 +1358,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     {entry_args(entry), build_entry_blob(entry)}
   end
 
+  # Counter-intuitive, but this is faster and takes less space than keying
+  # rows with Forge identifiers: those are sparse 52-bit numbers, and every
+  # index of the table stores the key.
   defp next_entry_key(%State{} = state) do
     case query(state, "SELECT COALESCE(MAX(entry_key), 0) + 1 FROM entries") do
       {:ok, [[entry_key]]} -> {:ok, entry_key}
@@ -1322,12 +1371,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp file_ids(%State{} = state, paths) do
     paths = Enum.uniq(paths)
 
-    with :ok <-
-           exec_rows(
-             state,
-             "INSERT OR IGNORE INTO files (path) VALUES #{row_placeholders(paths, 1)}",
-             paths
-           ),
+    with :ok <- insert_rows(state, :files, Enum.map(paths, &[&1])),
          {:ok, found} <-
            query(
              state,
@@ -1341,12 +1385,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp type_ids(%State{} = state, types) do
     types = Enum.uniq(types)
 
-    with :ok <-
-           exec_rows(
-             state,
-             "INSERT OR IGNORE INTO types (type) VALUES #{row_placeholders(types, 1)}",
-             types
-           ),
+    with :ok <- insert_rows(state, :types, Enum.map(types, &[&1])),
          {:ok, found} <-
            query(
              state,
@@ -1358,22 +1397,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_entry_rows(%State{} = state, rows) do
-    sql = """
-    INSERT INTO entries (entry_key, id, file_id, subject, caller, type_id, block_id)
-    VALUES #{row_placeholders(rows, 7)}
-    """
-
-    args =
-      Enum.flat_map(rows, fn {{entry_args, _blob}, entry_key} -> [entry_key | entry_args] end)
-
-    exec_rows(state, sql, args)
+    insert_rows(
+      state,
+      :entries,
+      Enum.map(rows, fn {{entry_args, _blob}, entry_key} -> [entry_key | entry_args] end)
+    )
   end
 
   defp insert_entry_blobs(%State{} = state, rows) do
-    sql = "INSERT INTO entry_blobs (entry_key, entry) VALUES #{row_placeholders(rows, 2)}"
-    args = Enum.flat_map(rows, fn {{_entry_args, blob}, entry_key} -> [entry_key, blob] end)
-
-    exec_rows(state, sql, args)
+    insert_rows(
+      state,
+      :blobs,
+      Enum.map(rows, fn {{_entry_args, blob}, entry_key} -> [entry_key, blob] end)
+    )
   end
 
   defp entry_args(%Entry{} = entry) do
@@ -1701,23 +1737,33 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   # Exqlite.Sqlite3.bind/2 converts every value and reads the application
   # environment for type extensions on each one. Batch inserts bind tens of
   # thousands of plain values per statement, so they're bound by type.
-  defp exec_rows(%State{} = state, statement, args) do
-    timed(state, statement, args, fn ->
-      with {:ok, prepared} <- Exqlite.Sqlite3.prepare(state.conn.db, statement) do
-        try do
-          bind_args(prepared, args, 1)
+  defp exec_rows(%State{statements: statements} = state, insert, size, args) do
+    case Map.fetch(statements, {insert, size}) do
+      {:ok, prepared} ->
+        step_rows(state, prepared, args)
 
-          case Exqlite.Sqlite3.step(state.conn.db, prepared) do
-            :done -> :ok
-            {:row, _row} -> :ok
-            :busy -> {:error, :busy}
-            {:error, _reason} = error -> error
+      :error ->
+        with {:ok, prepared} <- Exqlite.Sqlite3.prepare(state.conn.db, insert_sql(insert, size)) do
+          try do
+            step_rows(state, prepared, args)
+          after
+            Exqlite.Sqlite3.release(state.conn.db, prepared)
           end
-        after
-          Exqlite.Sqlite3.release(state.conn.db, prepared)
         end
-      end
-    end)
+    end
+  end
+
+  defp step_rows(%State{} = state, prepared, args) do
+    bind_args(prepared, args, 1)
+    result = Exqlite.Sqlite3.step(state.conn.db, prepared)
+    :ok = Exqlite.Sqlite3.reset(prepared)
+
+    case result do
+      :done -> :ok
+      {:row, _row} -> :ok
+      :busy -> {:error, :busy}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp bind_args(_prepared, [], _index), do: :ok
