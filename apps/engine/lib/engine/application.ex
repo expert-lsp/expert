@@ -14,6 +14,7 @@ defmodule Engine.Application do
           Engine.CodeMod.Format.Cache,
           Engine.Api.Proxy,
           Engine.Module.Loader,
+          {Task.Supervisor, name: Engine.ExtensionHandlers.Supervisor},
           Engine.Dispatch,
           Engine.ModuleMappings,
           Engine.Build,

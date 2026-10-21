@@ -7,6 +7,7 @@ defmodule Expert.Project.NodeTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Project.Indexer
   alias Expert.Project.Node, as: EngineNode
 
@@ -47,6 +48,18 @@ defmodule Expert.Project.NodeTest do
     apps = EngineApi.call(project, Application, :started_applications)
     app_names = Enum.map(apps, &elem(&1, 0))
     assert :engine in app_names
+  end
+
+  test "bundled metadata is removed when the project stops", %{project: project} do
+    documents = EngineApi.bundled_metadata(project)
+    assert documents != []
+    assert {:ok, records} = SemanticMetadata.records(project)
+    assert Enum.all?(documents, &(&1 in records))
+
+    assert :ok = stop_supervised(Expert.Project.Supervisor)
+
+    assert {:ok, records} = SemanticMetadata.records(project)
+    refute Enum.any?(documents, &(&1 in records))
   end
 
   test "the node is restarted when it goes down", %{project: project} do

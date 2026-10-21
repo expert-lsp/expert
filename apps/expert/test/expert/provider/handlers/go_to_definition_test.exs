@@ -9,12 +9,15 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
   alias Expert.EngineApi
   alias Expert.EngineNode
   alias Expert.EngineSupervisor
+  alias Expert.Integrations.SemanticMetadata
   alias Expert.Project.Indexer
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
   alias Expert.Search.Store
   alias Forge.Document
   alias Forge.Document.Location
+  alias Forge.Document.Position
+  alias Forge.Document.Range
   alias GenLSP.Requests.TextDocumentDefinition
   alias GenLSP.Structures
 
@@ -36,7 +39,6 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
     start_supervised!({backend, project})
     start_supervised!({Store, [project, backend]})
     start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
-    start_supervised!({Expert.Integrations.Cache, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 
@@ -104,6 +106,58 @@ defmodule Expert.Provider.Handlers.GoToDefinitionTest do
 
       assert {:ok, %Location{} = location} = handle(request, project)
       assert Location.uri(location) == referenced_uri
+    end
+
+    test "answers with the locations that integrations give", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      {:ok, referenced} = Document.Store.open_temporary(referenced_uri)
+      position = Position.new(referenced, 1, 1)
+      location = Location.new(Range.new(position, position), referenced_uri)
+      patch(SemanticMetadata, :definition, [location])
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 4, 17)
+
+      assert {:ok, [^location]} = handle(request, project)
+    end
+
+    test "finds the definition of the entity that integrations resolve", %{
+      project: project,
+      uri: referenced_uri
+    } do
+      {:ok, referenced} = Document.Store.open_temporary(referenced_uri)
+      position = Position.new(referenced, 1, 1)
+      location = Location.new(Range.new(position, position), referenced_uri)
+      patch(SemanticMetadata, :definition, [])
+      patch(SemanticMetadata, :resolve, {:entity, %{kind: :module, module: MyDefinition}, nil})
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      patch(EngineApi, :entity_definition, fn ^project, _analysis, _position, entity ->
+        assert {:module, MyDefinition} == entity
+        {:ok, location}
+      end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 4, 17)
+
+      assert {:ok, ^location} = handle(request, project)
+    end
+
+    test "resolves the alias of a struct literal to the struct definition", %{project: project} do
+      patch(EngineApi, :definition, fn _, _, _ -> flunk("called the Engine") end)
+
+      uses_file_path = file_path(project, Path.join("lib", "uses.ex"))
+      {:ok, request} = build_request(uses_file_path, 12, 7)
+
+      assert {:ok, %Location{range: range} = location} = handle(request, project)
+
+      assert Location.uri(location) ==
+               Document.Path.ensure_uri(file_path(project, "lib/struct.ex"))
+
+      assert range.start.line == 2
     end
 
     test "resolves local variables in the manager", %{project: project} do

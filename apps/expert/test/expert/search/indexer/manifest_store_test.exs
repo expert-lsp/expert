@@ -181,6 +181,15 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
       assert ManifestStore.integrations_changed?(project, ["New.Indexer"])
     end
 
+    test "reports changes when a recorded indexer version differs", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+
+      :ok = ManifestStore.commit(project, manifest(tmp_dir))
+      :ok = ManifestStore.record_integrations(project, [{"Indexer", 1}])
+
+      assert ManifestStore.integrations_changed?(project, [{"Indexer", 2}])
+    end
+
     test "reports changes when the manifest is missing", %{tmp_dir: tmp_dir} do
       project = project(tmp_dir)
       :ok = ManifestStore.record_integrations(project, ["Expert.Integrations.Spark.Indexer"])

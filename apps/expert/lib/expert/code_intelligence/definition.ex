@@ -66,16 +66,23 @@ defmodule Expert.CodeIntelligence.Definition do
   defp reference_at(references, analysis, position) do
     function = function_at(analysis, position)
 
-    references
-    |> Enum.filter(fn
-      %Entry{type: {:function, :usage}, subject: subject, range: range} ->
-        Range.contains?(range, position) and
-          match?({_module, ^function, _arity}, Forge.Code.parse_mfa(subject))
+    candidates =
+      Enum.filter(references, fn
+        %Entry{type: {:function, :usage}, subject: subject, range: range} ->
+          Range.contains?(range, position) and
+            match?({_module, ^function, _arity}, Forge.Code.parse_mfa(subject))
 
-      %Entry{range: range} ->
-        Range.contains?(range, position)
-    end)
-    |> Enum.min_by(&range_size/1, fn -> nil end)
+        %Entry{range: range} ->
+          Range.contains?(range, position)
+      end)
+
+    case Enum.min_by(candidates, &range_size/1, fn -> nil end) do
+      %Entry{type: :module, subject: subject} = reference ->
+        Enum.find(candidates, reference, &match?(%Entry{type: :struct, subject: ^subject}, &1))
+
+      reference ->
+        reference
+    end
   end
 
   defp range_size(%Entry{range: range}) do

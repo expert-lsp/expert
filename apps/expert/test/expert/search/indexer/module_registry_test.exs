@@ -112,6 +112,38 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert_received :engine_lookup
   end
 
+  test "finds the BEAM path of a module from the pruned paths" do
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+    beam_path = Forge.Path.native("/project/ebin/Elixir.Example.beam")
+
+    assert :ok = ModuleRegistry.prune(project, [beam_path])
+
+    assert beam_path == ModuleRegistry.beam_path(project, Example)
+  end
+
+  test "keeps an indexed BEAM path ahead of the pruned paths" do
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+    indexed_path = Forge.Path.native("/indexed/Elixir.Example.beam")
+    ModuleRegistry.put(project, Example, indexed_path, :example, run: 0)
+
+    assert :ok =
+             ModuleRegistry.prune(project, [
+               indexed_path,
+               Forge.Path.native("/other/Elixir.Example.beam")
+             ])
+
+    assert indexed_path == ModuleRegistry.beam_path(project, Example)
+  end
+
+  test "returns nil for modules without a BEAM file" do
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+
+    assert nil == ModuleRegistry.beam_path(project, Missing)
+  end
+
   test "prunes deleted modules and cached Engine lookups" do
     project = project()
     start_supervised!({ModuleRegistry, project})

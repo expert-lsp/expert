@@ -70,6 +70,20 @@ defmodule ImportsViaUse.Throwing do
   defmacro __using__(_opts), do: throw(:expected_use_failure)
 end
 
+defmodule ImportsViaUse.Selecting do
+  defmacro __using__(which) when is_atom(which), do: apply(__MODULE__, which, [])
+
+  def imported, do: quote(do: import(ImportsViaUse.Imported))
+end
+
+defmodule ImportsViaUse.Options do
+  defmacro __using__(opts) do
+    if Keyword.fetch!(opts, :import) do
+      quote(do: import(ImportsViaUse.Imported))
+    end
+  end
+end
+
 defmodule Engine.Ast.Analysis.ImportsTest do
   use ExUnit.Case
 
@@ -265,6 +279,19 @@ defmodule Engine.Ast.Analysis.ImportsTest do
 
       assert_imported(imports, ImportedModule)
     end
+
+    test "does not apply a later import on the same line" do
+      imports = imports_at_cursor("import Enum; | import Stream")
+
+      assert_imported(imports, Enum, :map, 2)
+      refute_imported(imports, Stream, :map, 2)
+    end
+
+    test "does not apply a later alias to an earlier import on the same line" do
+      imports = imports_at_cursor("import ImportedModule; alias Parent.Child.ImportedModule; |")
+
+      refute_imported(imports, ImportedModule)
+    end
   end
 
   describe "nested modules" do
@@ -454,6 +481,24 @@ defmodule Engine.Ast.Analysis.ImportsTest do
           |
         end
       ], :injected_macro, 0, expand_uses: true)
+    end
+
+    test "passes literal arguments to __using__" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Selecting, :imported
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "passes keyword options to __using__" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Options, import: true
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
     end
 
     test "does not expose use imports before the use" do

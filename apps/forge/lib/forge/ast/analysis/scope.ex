@@ -50,26 +50,25 @@ defmodule Forge.Ast.Analysis.Scope do
     %__MODULE__{id: :global, range: range}
   end
 
-  @spec alias_map(t(), scope_position()) :: %{[module()] => t()}
+  @spec alias_map(t(), scope_position()) :: %{[module()] => Alias.t()}
   def alias_map(%__MODULE__{} = scope, position \\ :end) do
     scope.aliases
-    # sorting by line ensures that aliases on later lines
-    # override aliases on earlier lines
-    |> Enum.sort_by(& &1.range.start.line)
-    |> Enum.take_while(fn %Alias{range: alias_range} ->
-      case position do
-        %Position{} = pos ->
-          pos.line >= alias_range.start.line
-
-        line when is_integer(line) ->
-          line >= alias_range.start.line
-
-        :end ->
-          true
-      end
-    end)
+    |> Enum.sort_by(&{&1.range.start.line, &1.range.start.character})
+    |> Enum.filter(&visible?(&1, position))
     |> Map.new(&{&1.as, &1})
   end
+
+  # `defmodule` adds an implicit alias for a nested module. Its range starts at
+  # the end of the `defmodule` line, but it applies to the whole line. An
+  # explicit alias applies from where it's written.
+  defp visible?(_alias, :end), do: true
+  defp visible?(%Alias{range: range}, line) when is_integer(line), do: line >= range.start.line
+
+  defp visible?(%Alias{explicit?: false, range: range}, %Position{} = position),
+    do: position.line >= range.start.line
+
+  defp visible?(%Alias{range: range}, %Position{} = position),
+    do: Position.compare(range.start, position) in [:lt, :eq]
 
   def fetch_alias_with_prefix(%__MODULE__{} = scope, prefix) do
     case Enum.find(scope.aliases, fn %Alias{} = alias -> alias.as == List.wrap(prefix) end) do

@@ -53,6 +53,13 @@ defmodule Expert.Release do
 
     File.rm_rf!(Path.join([dest, "apps", "forge", "lib", "test"]))
 
+    # The engine depends on the EEx extension by its path in the repository.
+    for source <- ["lib", "mix.exs"] do
+      dest_path = Path.join([dest, "extensions", "eex", source])
+      File.mkdir_p!(Path.dirname(dest_path))
+      File.cp_r!(Path.join([expert_root, "extensions", "eex", source]), dest_path)
+    end
+
     for exs_file <- Path.wildcard(root_exs) do
       dest_path = Path.join([dest, Path.basename(exs_file)])
       File.cp_r!(exs_file, dest_path)
