@@ -5,6 +5,8 @@ defmodule Expert.Search.IndexerTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
+  alias Expert.Integrations
+  alias Expert.Integrations.Cache
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.Manifest
@@ -79,6 +81,7 @@ defmodule Expert.Search.IndexerTest do
     project = project()
     start_supervised!({Expert.Project.Store, []})
     start_supervised!({ModuleRegistry, project})
+    start_supervised!({Cache, project})
     start_supervised!(Engine.ApplicationCache)
 
     patch(Engine.Api.Proxy, :broadcast, fn _ -> :ok end)
@@ -97,6 +100,12 @@ defmodule Expert.Search.IndexerTest do
     patch(EngineApi, :analyze, fn _project, document, opts ->
       Forge.Ast.analyze(document, opts)
     end)
+
+    patch(Integrations, :indexer_module_names, fn ->
+      ["Expert.Integrations.Spark.Indexer"]
+    end)
+
+    patch(Integrations, :index_beam, fn _project, _binary, _metadata, _source_path -> [] end)
 
     patch(EngineApi, :call, fn
       _project, Engine.ApplicationCache, :clear, [] ->
@@ -153,6 +162,7 @@ defmodule Expert.Search.IndexerTest do
   defp create_index(project) do
     FakeBackend.reset_calls()
     assert :ok = Indexer.create_index(project)
+    assert :ok = Indexer.record_integrations(project)
     inserted_entries(FakeBackend.calls())
   end
 
@@ -160,6 +170,7 @@ defmodule Expert.Search.IndexerTest do
     previous_paths = FakeBackend.entries() |> Enum.map(& &1.path) |> Enum.uniq()
     FakeBackend.reset_calls()
     assert :ok = Indexer.update_index(project)
+    assert :ok = Indexer.record_integrations(project)
     calls = FakeBackend.calls()
     entries = inserted_entries(calls)
     paths_to_clear = cleared_paths(calls, previous_paths)
@@ -177,6 +188,7 @@ defmodule Expert.Search.IndexerTest do
 
   defp start_registry(project) do
     start_supervised!({ModuleRegistry, project})
+    start_supervised!({Cache, project})
     Expert.Project.Store.add_projects([project])
     Expert.Project.Store.transition(project, :ready)
   end
@@ -239,6 +251,12 @@ defmodule Expert.Search.IndexerTest do
   end
 
   describe "create_index/1" do
+    test "clears the integration cache after a successful index", %{project: project} do
+      assert :old = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :old end)
+      assert :ok = Indexer.create_index(project, paths: %Paths{})
+      assert :new = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :new end)
+    end
+
     test "clears Engine application metadata before and after indexing", %{project: project} do
       test_pid = self()
 
@@ -815,11 +833,36 @@ defmodule Expert.Search.IndexerTest do
   end
 
   describe "update_index/1 persistence" do
+    test "keeps the old cache until a successful update commits", %{project: project} do
+      assert :old = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :old end)
+
+      patch(Store, :apply_index_update, fn ^project, entries, paths_to_clear ->
+        assert :old =
+                 Cache.fetch(project, __MODULE__, :lifecycle, fn -> :missing end)
+
+        FakeBackend.apply_index_update(entries, paths_to_clear)
+      end)
+
+      assert :ok = Indexer.update_index(project, paths: %Paths{})
+      assert :new = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :new end)
+    end
+
+    test "keeps the old cache when an update commit fails", %{project: project} do
+      assert :old = Cache.fetch(project, __MODULE__, :lifecycle, fn -> :old end)
+      patch(ManifestStore, :commit, fn ^project, _manifest -> {:error, :commit_failed} end)
+
+      assert {:error, :commit_failed} = Indexer.update_index(project, paths: %Paths{})
+
+      assert :old =
+               Cache.fetch(project, __MODULE__, :lifecycle, fn -> :missing end)
+    end
+
     @tag :tmp_dir
     test "streams entries in bounded chunks during refresh", %{project: project, tmp_dir: tmp_dir} do
       path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
       {:ok, manifest_entry} = ManifestEntry.source(path)
       assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
+      assert :ok = Indexer.record_integrations(project)
       File.touch!(path, {{2100, 1, 1}, {0, 0, 0}})
 
       entries =
@@ -857,6 +900,7 @@ defmodule Expert.Search.IndexerTest do
       path = write_file!(Path.join(tmp_dir, "changed.ex"), "defmodule Changed do\nend")
       {:ok, manifest_entry} = ManifestEntry.source(path)
       assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
+      assert :ok = Indexer.record_integrations(project)
       File.touch!(path, {{2100, 1, 1}, {0, 0, 0}})
 
       old_entry = %Entry{
@@ -1080,6 +1124,29 @@ defmodule Expert.Search.IndexerTest do
 
     test "sees the ephemeral file", %{entries: entries} do
       assert Enum.any?(entries, fn entry -> Path.basename(entry.path) == @ephemeral_file_name end)
+    end
+
+    test "replaces the full index when enabled integrations change", %{
+      project: project,
+      entries: previous_entries
+    } do
+      patch(Integrations, :indexer_module_names, fn -> ["New.Indexer"] end)
+
+      assert {entries, _paths_to_clear} = update_index(project)
+
+      identity = &{&1.path, &1.subject, &1.type, &1.subtype}
+
+      previous =
+        previous_entries
+        |> Enum.reject(&(&1.subtype == :block_structure))
+        |> MapSet.new(identity)
+
+      updated =
+        entries
+        |> Enum.reject(&(&1.subtype == :block_structure))
+        |> MapSet.new(identity)
+
+      assert MapSet.subset?(previous, updated)
     end
 
     test "returns the file paths of deleted files", %{project: project, file_path: file_path} do
@@ -1460,5 +1527,14 @@ defmodule Expert.Search.IndexerTest do
     path_segments
     |> Path.join()
     |> Forge.Path.native()
+  end
+
+  test "integration state uses the local indexer registry", %{project: project} do
+    names = ["Custom.Indexer"]
+    patch(Integrations, :indexer_module_names, fn -> names end)
+
+    assert :ok = ManifestStore.commit(project, Manifest.new([]))
+    assert :ok = Indexer.record_integrations(project)
+    refute Indexer.integrations_changed?(project)
   end
 end

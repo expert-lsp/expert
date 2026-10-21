@@ -34,6 +34,7 @@ defmodule Expert.Provider.Handlers.CodeActionTest do
     start_supervised!({backend, project})
     start_supervised!({Store, [project, backend]})
     start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
+    start_supervised!({Expert.Integrations.Cache, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 

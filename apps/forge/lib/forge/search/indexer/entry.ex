@@ -10,6 +10,7 @@ defmodule Forge.Search.Indexer.Entry do
   @type entry_type ::
           :ex_unit_describe
           | :ex_unit_test
+          | :metadata
           | :module
           | :module_attribute
           | :struct
@@ -19,7 +20,7 @@ defmodule Forge.Search.Indexer.Entry do
 
   @type subject :: String.t()
   @type caller :: String.t()
-  @type entry_subtype :: :reference | :definition
+  @type entry_subtype :: :reference | :definition | :integration | :block_structure
   @type version :: String.t()
   @type entry_id :: pos_integer() | nil
   @type block_id :: pos_integer() | :root
@@ -81,6 +82,45 @@ defmodule Forge.Search.Indexer.Entry do
       type: :metadata,
       subtype: :block_structure
     }
+  end
+
+  @doc """
+  Creates portable metadata owned by an integration.
+
+  The payload must not contain dependency structs.
+  """
+  def integration(path, provider, kind, owner_module, payload) when is_binary(path) do
+    %__MODULE__{
+      block_id: :root,
+      id: Identifier.next_global!(),
+      metadata: %{
+        owner_module: module_name(owner_module),
+        payload: payload
+      },
+      path: path,
+      subject: integration_subject(provider, kind, owner_module),
+      subtype: :integration,
+      type: :metadata
+    }
+  end
+
+  def integration_subject(provider, kind, owner_module) do
+    integration_subject_prefix(provider, kind) <> module_name(owner_module)
+  end
+
+  @doc """
+  Returns the search subject prefix for integration metadata.
+
+  An owner can be provided to match metadata nested below that owner.
+  """
+  @spec integration_subject_prefix(String.t(), atom()) :: String.t()
+  @spec integration_subject_prefix(String.t(), atom(), module() | String.t()) :: String.t()
+  def integration_subject_prefix(provider, kind) do
+    "$integration/#{provider}/#{kind}/"
+  end
+
+  def integration_subject_prefix(provider, kind, owner_module) do
+    integration_subject(provider, kind, owner_module) <> "/"
   end
 
   def reference(path, %Block{} = block, subject, type, range, application) do
@@ -154,4 +194,7 @@ defmodule Forge.Search.Indexer.Entry do
   def put_metadata(%__MODULE__{} = entry, metadata) do
     %__MODULE__{entry | metadata: metadata}
   end
+
+  defp module_name(module) when is_atom(module), do: Atom.to_string(module)
+  defp module_name(module) when is_binary(module), do: module
 end

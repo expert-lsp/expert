@@ -112,6 +112,7 @@ defmodule Expert.Project.ReindexTest do
     @tag reindex_fun: :default
     test "broadcasts success when refreshing the search index succeeds", %{project: project} do
       patch(Indexer, :create_index, fn ^project -> :ok end)
+      patch(Indexer, :record_integrations, fn ^project -> :ok end)
 
       test_pid = self()
 
@@ -124,11 +125,13 @@ defmodule Expert.Project.ReindexTest do
 
       assert_receive {:broadcast, project_reindex_requested(project: ^project)}
       assert_receive {:broadcast, project_reindexed(project: ^project, status: :success)}
+      assert_called(Indexer.record_integrations(project))
     end
 
     @tag reindex_fun: :default
     test "broadcasts the error when refreshing the search index fails", %{project: project} do
       patch(Indexer, :create_index, fn ^project -> {:error, :refresh_failed} end)
+      patch(Indexer, :record_integrations, fn ^project -> :ok end)
 
       test_pid = self()
 
@@ -143,6 +146,8 @@ defmodule Expert.Project.ReindexTest do
 
       assert_receive {:broadcast,
                       project_reindexed(project: ^project, status: {:error, :refresh_failed})}
+
+      refute_called(Indexer.record_integrations(project))
     end
   end
 
