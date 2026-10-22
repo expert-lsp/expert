@@ -607,50 +607,64 @@ defmodule Forge.Ast do
   var or pinned var.
 
   Returns a tuple where the first element is the potentially modified
-  expression and the second is the accumulator.
+  expression and the second is the accumulator. The result of `fun` is not
+  walked further.
   """
   # Adapted from `ExUnit.Assertions.collect_vars_from_pattern/1`,
   # licensed under Apache License 2.0:
   # https://github.com/elixir-lang/elixir/blob/1e914b04b46125b3b9b251b64ee04380e523afc4/lib/ex_unit/lib/ex_unit/assertions.ex#L657
   @spec prewalk_vars(Macro.t(), acc, (Macro.t(), acc -> {Macro.t(), acc})) :: {Macro.t(), acc}
         when acc: term()
-  def prewalk_vars(ast, acc, fun) do
-    {ast, {acc, _}} =
-      Macro.prewalk(ast, {acc, false}, fn
-        # <<foo::binary, ...>>
-        #   ^^^^^^^^^^^
-        {:"::", meta, [left, right]}, {acc, _prev_pinned?} ->
-          {right, acc} = prewalk_vars_in_binary(right, acc, fun)
-          {{:"::", meta, [left, right]}, {acc, false}}
+  def prewalk_vars(ast, acc, fun)
 
-        # skip vars inside quote or @
-        {skip, _, [_]} = node, {acc, _prev_pinned?} when skip in [:@, :quote] ->
-          {node, {acc, false}}
-
-        # skip _
-        {:_, _, context} = node, {acc, _prev_pinned?} when is_atom(context) ->
-          {node, {acc, false}}
-
-        # ^pinned
-        # emit the pinned var and set prev_pinned? so the var isn't omitted
-        # immediately after
-        {:^, _, [{name, _, context}]} = pinned, {acc, _prev_pinned?}
-        when is_atom(name) and is_atom(context) ->
-          {pinned, acc} = fun.(pinned, acc)
-          {pinned, {acc, true}}
-
-        # var
-        {name, _, context} = var, {acc, false} when is_atom(name) and is_atom(context) ->
-          {var, acc} = fun.(var, acc)
-          {var, {acc, false}}
-
-        # skip everything else
-        node, {acc, _prev_pinned?} ->
-          {node, {acc, false}}
-      end)
-
-    {ast, acc}
+  # <<foo::binary, ...>>
+  #   ^^^^^^^^^^^
+  # The right side holds the segment's type and modifiers, whose only
+  # variables are the ones in sizes.
+  def prewalk_vars({:"::", meta, [left, right]}, acc, fun) do
+    {left, acc} = prewalk_vars(left, acc, fun)
+    {right, acc} = prewalk_vars_in_binary(right, acc, fun)
+    {{:"::", meta, [left, right]}, acc}
   end
+
+  # skip vars inside quote or @
+  def prewalk_vars({skip, _, [_]} = node, acc, _fun) when skip in [:@, :quote] do
+    {node, acc}
+  end
+
+  # skip _
+  def prewalk_vars({:_, _, context} = node, acc, _fun) when is_atom(context) do
+    {node, acc}
+  end
+
+  # ^pinned
+  def prewalk_vars({:^, _, [{name, _, context}]} = pinned, acc, fun)
+      when is_atom(name) and is_atom(context) do
+    fun.(pinned, acc)
+  end
+
+  # var
+  def prewalk_vars({name, _, context} = var, acc, fun) when is_atom(name) and is_atom(context) do
+    fun.(var, acc)
+  end
+
+  def prewalk_vars({form, meta, args}, acc, fun) when is_list(args) do
+    {form, acc} = prewalk_vars(form, acc, fun)
+    {args, acc} = prewalk_vars(args, acc, fun)
+    {{form, meta, args}, acc}
+  end
+
+  def prewalk_vars({left, right}, acc, fun) do
+    {left, acc} = prewalk_vars(left, acc, fun)
+    {right, acc} = prewalk_vars(right, acc, fun)
+    {{left, right}, acc}
+  end
+
+  def prewalk_vars(list, acc, fun) when is_list(list) do
+    Enum.map_reduce(list, acc, &prewalk_vars(&1, &2, fun))
+  end
+
+  def prewalk_vars(other, acc, _fun), do: {other, acc}
 
   defp prewalk_vars_in_binary(right, acc, fun) do
     Macro.prewalk(right, acc, fn
