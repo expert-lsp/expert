@@ -50,8 +50,8 @@ jobs:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "27.3.4.1"
-          elixir-version: "1.17.3"
+          otp-version: "29.0.1"
+          elixir-version: "1.20.0"
           version-type: strict
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
