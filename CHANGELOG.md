@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/expert-lsp/expert/compare/v0.2.0...v0.2.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **expert:** clear more files than SQLite binds at once ([#963](https://github.com/expert-lsp/expert/issues/963)) ([0747a8c](https://github.com/expert-lsp/expert/commit/0747a8ccc031217da1ee8c14c7e85b1ad97b2b2e))
+
 ## [0.2.0](https://github.com/expert-lsp/expert/compare/v0.1.0...v0.2.0) (2026-10-20)
 
 
