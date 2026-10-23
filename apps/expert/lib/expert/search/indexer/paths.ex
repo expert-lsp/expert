@@ -83,6 +83,7 @@ defmodule Expert.Search.Indexer.Paths do
     root
     |> Forge.Path.normalize()
     |> source_files_in(excluded)
+    |> Enum.reject(&Forge.Path.template_path?/1)
     |> Enum.sort()
     |> Forge.Path.native_paths()
     |> Enum.uniq()

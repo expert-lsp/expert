@@ -167,18 +167,25 @@ defmodule Forge.Ast do
           | {:error, Macro.t(), parse_error(), comment_metadata()}
           | {:error, parse_error()}
   def from(%Document{} = document) do
-    document
-    |> Document.to_string()
-    |> from()
-    |> case do
-      {:error, :crashed, exception, stacktrace} ->
-        log_parser_crash(exception, stacktrace, document.path)
+    source = Document.to_string(document)
 
-        {:error,
-         {[line: 1, column: 1], "parser crashed: #{Exception.format_banner(:error, exception)}"}}
+    if Forge.Path.template_path?(document.path) or eex_template?(source) do
+      {:error,
+       {[line: 1, column: 1],
+        "template files are not valid Elixir source: #{document.path || "fragment"}"}}
+    else
+      source
+      |> from()
+      |> case do
+        {:error, :crashed, exception, stacktrace} ->
+          log_parser_crash(exception, stacktrace, document.path)
 
-      other ->
-        other
+          {:error,
+           {[line: 1, column: 1], "parser crashed: #{Exception.format_banner(:error, exception)}"}}
+
+        other ->
+          other
+      end
     end
   end
 
@@ -195,6 +202,42 @@ defmodule Forge.Ast do
 
   def from(s) when is_binary(s) do
     do_string_to_quoted(s)
+  end
+
+  @doc """
+  Checks if `source` contains top-level EEx template tags (`<%= ... %>`),
+  indicating that the source is an EEx template rather than valid Elixir code.
+
+  ## Examples
+
+      iex> Forge.Ast.eex_template?("defmodule <%= mod %> do end")
+      true
+
+      iex> Forge.Ast.eex_template?("defmodule Foo do def bar, do: 1 end")
+      false
+
+  """
+  def eex_template?(source) when is_binary(source) do
+    String.contains?(source, "<%") and top_level_eex?(source)
+  end
+
+  def eex_template?(_), do: false
+
+  defp top_level_eex?(source) do
+    case :elixir_tokenizer.tokenize(String.to_charlist(source), 1, []) do
+      {:ok, _, _, _, tokens, _} ->
+        tokens
+        |> Enum.chunk_every(2, 1, :discard)
+        |> Enum.any?(fn
+          [{:%, {line, col2, _}}, {:rel_op, {line, col1, _}, :<}] -> col2 == col1 + 1
+          _ -> false
+        end)
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
   end
 
   @doc """

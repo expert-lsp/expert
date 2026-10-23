@@ -124,4 +124,32 @@ defmodule Expert.Search.Indexer.SourceTest do
     refute Enum.any?(second_entries, &(&1.subject == Forge.Formats.mfa(Imported, :missing, 0)))
     assert Enum.any?(second_entries, &(&1.subject == Forge.Formats.mfa(Example, :missing, 0)))
   end
+
+  test "returns empty entries for template paths without analyzing", %{project: project} do
+    patch(EngineApi, :analyze, fn _, _, _ ->
+      flunk("Template paths must not be analyzed")
+    end)
+
+    template_code = "defmodule <%= mod %> do end"
+    template_path = "priv/templates/phx.gen.auth/settings_live.ex"
+
+    assert {:ok, []} = Source.index(template_path, template_code, nil, project)
+    assert {:ok, []} = Source.index(template_path, template_code)
+  end
+
+  test "returns empty entries for source containing top-level EEx templates", %{project: project} do
+    patch(EngineApi, :analyze, fn _, _, _ ->
+      flunk("EEx templates must not be analyzed")
+    end)
+
+    eex_code = """
+    defmodule <%= inspect context.web_module %>.<%= inspect Module.concat(schema.web_namespace, schema.alias) %>SettingsLive do
+      use <%= inspect context.web_module %>, :live_view
+      alias <%= inspect context.module %>
+    end
+    """
+
+    assert {:ok, []} = Source.index("lib/templated.ex", eex_code, nil, project)
+    assert {:ok, []} = Source.index("lib/templated.ex", eex_code)
+  end
 end
