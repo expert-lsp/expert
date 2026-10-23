@@ -25,6 +25,10 @@ defmodule Elixir.Features do
     Versions.current_elixir_matches?(">= 1.19.0")
   end
 
+  def interpreted_module_definition? do
+    Versions.current_elixir_matches?(">= 1.20.0")
+  end
+
   def formatter_has_plugin_loader? do
     Versions.current_elixir_matches?(">= 1.18.0")
   end
