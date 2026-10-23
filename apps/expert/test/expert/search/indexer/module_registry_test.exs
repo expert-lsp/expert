@@ -60,6 +60,55 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     refute Code.loaded?(module)
   end
 
+  @tag :tmp_dir
+  test "registers the imported functions a module calls", %{tmp_dir: tmp_dir} do
+    suffix = System.unique_integer([:positive])
+    imported = Module.concat(__MODULE__, "Imported#{suffix}")
+    module = Module.concat(__MODULE__, "Importing#{suffix}")
+    source_path = Path.join(tmp_dir, "importing.ex")
+    beam_dir = Path.join(tmp_dir, "ebin")
+
+    File.mkdir_p!(beam_dir)
+
+    File.write!(source_path, """
+    defmodule #{inspect(imported)} do
+      def helper(value), do: value
+    end
+
+    defmodule #{inspect(module)} do
+      import #{inspect(imported)}
+
+      def run(value) do
+        helper(value)
+        #{inspect(imported)}.helper(value)
+      end
+    end
+    """)
+
+    compiler_options = Code.compiler_options()
+    Code.compiler_options(debug_info: true, parser_options: [columns: true])
+    on_exit(fn -> Code.compiler_options(compiler_options) end)
+
+    assert {:ok, _modules, _diagnostics} =
+             Kernel.ParallelCompiler.compile_to_path([source_path], beam_dir,
+               return_diagnostics: true
+             )
+
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+
+    beam_dir
+    |> Path.join("*.beam")
+    |> Path.wildcard()
+    |> Beams.stream(project: project)
+    |> Enum.to_list()
+
+    remote_column = String.length("    #{inspect(imported)}.") + 1
+
+    assert {:ok, {^imported, :helper, 1}} = ModuleRegistry.imported_call(project, module, {9, 5})
+    assert :error = ModuleRegistry.imported_call(project, module, {10, remote_column})
+  end
+
   test "clears metadata without replacing the registry table" do
     project = project()
     start_supervised!({ModuleRegistry, project})

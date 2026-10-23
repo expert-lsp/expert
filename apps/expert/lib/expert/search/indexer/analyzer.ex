@@ -50,9 +50,7 @@ defmodule Expert.Search.Indexer.Analyzer do
         {module, function_name, arity}
 
       :error ->
-        aliases = aliases_at(analysis, position)
-        current_module = aliases[[:__MODULE__]]
-        {current_module, function_name, arity}
+        {current_module_at(analysis, position), function_name, arity}
     end
   end
 
@@ -69,9 +67,14 @@ defmodule Expert.Search.Indexer.Analyzer do
         {module, function_name, arity}
 
       :error ->
-        aliases = aliases_at(analysis, position)
-        current_module = aliases[[:__MODULE__]]
-        {current_module, function_name, arity}
+        {current_module_at(analysis, position), function_name, arity}
+    end
+  end
+
+  defp current_module_at(analysis, position) do
+    case Aliases.fetch(Aliases.in_scope(analysis, position), [:__MODULE__]) do
+      {:ok, module} -> module
+      :error -> nil
     end
   end
 
@@ -134,7 +137,7 @@ defmodule Expert.Search.Indexer.Analyzer do
           {:ok, module()} | :error
   def expand_alias([_ | _] = segments, %Analysis{} = analysis, %Position{} = position) do
     with %Analysis{valid?: true} = analysis <- Forge.Ast.reanalyze_to(analysis, position),
-         aliases = aliases_at(analysis, position),
+         aliases = Aliases.in_scope(analysis, position),
          {:ok, resolved} <- resolve_alias(segments, aliases) do
       {:ok, Module.concat(resolved)}
     else
@@ -175,7 +178,7 @@ defmodule Expert.Search.Indexer.Analyzer do
   end
 
   defp resolve_alias([{:@, _, [{:protocol, _, _}]} | rest], alias_mapping) do
-    with {:ok, protocol} <- Map.fetch(alias_mapping, [:"@protocol"]) do
+    with {:ok, protocol} <- Aliases.fetch(alias_mapping, [:"@protocol"]) do
       Ast.reify_alias(protocol, rest)
     end
   end
@@ -188,7 +191,7 @@ defmodule Expert.Search.Indexer.Analyzer do
   end
 
   defp resolve_alias([{:@, _, [{:for, _, _} | _]} | rest], alias_mapping) do
-    with {:ok, protocol_for} <- Map.fetch(alias_mapping, [:"@for"]) do
+    with {:ok, protocol_for} <- Aliases.fetch(alias_mapping, [:"@for"]) do
       Ast.reify_alias(protocol_for, rest)
     end
   end
@@ -201,7 +204,7 @@ defmodule Expert.Search.Indexer.Analyzer do
   end
 
   defp resolve_alias([first | _] = segments, aliases_mapping) when is_tuple(first) do
-    with {:ok, current_module} <- Map.fetch(aliases_mapping, [:__MODULE__]) do
+    with {:ok, current_module} <- Aliases.fetch(aliases_mapping, [:__MODULE__]) do
       Ast.reify_alias(current_module, segments)
     end
   end
@@ -215,7 +218,7 @@ defmodule Expert.Search.Indexer.Analyzer do
   defp resolve_alias(_, _), do: :error
 
   defp fetch_leading_alias([first | rest], aliases_mapping) do
-    with {:ok, resolved} <- Map.fetch(aliases_mapping, [first]) do
+    with {:ok, resolved} <- Aliases.fetch(aliases_mapping, [first]) do
       {:ok, [resolved | rest]}
     end
   end
@@ -228,7 +231,7 @@ defmodule Expert.Search.Indexer.Analyzer do
     # The resolved module must end with all the segments being resolved; otherwise an
     # unrelated alias sharing the last segment (e.g. alias A.B.User while resolving
     # Foo.User) would shadow the literal module.
-    with {:ok, resolved} <- Map.fetch(aliases_mapping, [List.last(segments)]),
+    with {:ok, resolved} <- Aliases.fetch(aliases_mapping, [List.last(segments)]),
          true <- ends_with_segments?(resolved, segments) do
       {:ok, List.wrap(resolved)}
     else
@@ -247,9 +250,5 @@ defmodule Expert.Search.Indexer.Analyzer do
       _ ->
         false
     end
-  end
-
-  defp ends_with_segments?(_resolved, _segments) do
-    false
   end
 end

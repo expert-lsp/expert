@@ -19,16 +19,24 @@ defmodule Expert.Search.Indexer.SourceTest do
     {:ok, project: project}
   end
 
-  test "analyzes source in the Engine runtime", %{project: project} do
-    test_pid = self()
+  test "resolves a bare call to the function the compiled module imports", %{project: project} do
+    patch(EngineApi, :application, fn ^project, _module -> :example end)
+    patch(EngineApi, :available_module?, fn ^project, _module -> false end)
+    patch(EngineApi, :module_exports, fn ^project, _module -> :error end)
 
-    patch(EngineApi, :analyze, fn ^project, document, opts ->
-      send(test_pid, {:analyze, opts})
-      Ast.analyze(document, opts)
-    end)
+    ModuleRegistry.put(project, Example, "/example.beam", :example, [run: 0], %{
+      {2, 16} => {Imported, :called, 0}
+    })
 
-    assert {:ok, _entries} = Source.index("example.ex", "1", [], project)
-    assert_received {:analyze, [expand_uses: true]}
+    source = """
+    defmodule Example do
+      def run, do: called()
+    end
+    """
+
+    assert {:ok, entries} = Source.index("example.ex", source, nil, project)
+    subject = Forge.Formats.mfa(Imported, :called, 0)
+    assert Enum.any?(entries, &(&1.subject == subject and &1.subtype == :reference))
   end
 
   test "caches Engine lookups in the module registry", %{project: project} do

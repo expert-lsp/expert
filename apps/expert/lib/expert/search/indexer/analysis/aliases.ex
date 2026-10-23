@@ -25,6 +25,54 @@ defmodule Expert.Search.Indexer.Analysis.Aliases do
     end
   end
 
+  @type in_scope :: {[Alias.t()], pos_integer()}
+
+  @doc """
+  Returns the aliases in scope at the given position.
+  """
+  @spec in_scope(Analysis.t(), Position.t()) :: in_scope()
+  def in_scope(%Analysis{} = analysis, %Position{} = position) do
+    case Analysis.scopes_at(analysis, position) do
+      [%Scope{aliases: aliases} | _] -> {aliases, position.line}
+      [] -> {[], position.line}
+    end
+  end
+
+  @doc """
+  Returns the module the given alias resolves to among the aliases in scope.
+
+  Returns `:error` if the alias is not defined in scope.
+  """
+  @spec fetch(in_scope(), [atom()]) :: {:ok, module()} | :error
+  def fetch({aliases, line}, as), do: resolve(aliases, as, line)
+
+  defp resolve(aliases, as, line) do
+    case latest_alias(aliases, as, line, nil) do
+      %Alias{module: segments} = alias when is_list(segments) ->
+        if Enum.all?(segments, &is_atom/1), do: {:ok, Alias.to_module(alias)}, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  defp latest_alias([], _as, _line, found), do: found
+
+  defp latest_alias([%Alias{as: as, range: range} = alias | rest], as, line, found) do
+    alias_line = range.start.line
+
+    found =
+      cond do
+        alias_line > line -> found
+        found == nil or alias_line >= found.range.start.line -> alias
+        true -> found
+      end
+
+    latest_alias(rest, as, line, found)
+  end
+
+  defp latest_alias([_other | rest], as, line, found), do: latest_alias(rest, as, line, found)
+
   @doc """
   Resolves an alias in the context of a line and a scope
   (used internally when calculating imports)

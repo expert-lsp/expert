@@ -130,8 +130,8 @@ defmodule Expert.Search.Indexer.Beams do
   defp register_modules(nil, _modules), do: :ok
 
   defp register_modules(project, modules) do
-    Enum.each(modules, fn {module, beam_path, application, exports} ->
-      ModuleRegistry.put(project, module, beam_path, application, exports)
+    Enum.each(modules, fn {module, beam_path, application, exports, imported_calls} ->
+      ModuleRegistry.put(project, module, beam_path, application, exports, imported_calls)
     end)
   end
 
@@ -233,18 +233,56 @@ defmodule Expert.Search.Indexer.Beams do
 
     with {:ok, beam} <- File.read(beam_path),
          {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
-      results =
+      {results, imported_calls} =
         case debug_metadata_result do
           {:ok, metadata} ->
-            metadata_result_from_beam(beam_path, beam_stat, metadata)
+            {metadata_result_from_beam(beam_path, beam_stat, metadata), imported_calls(metadata)}
 
           :error ->
-            skipped_result_from_beam(beam_path, beam_stat, nil, nil)
+            {skipped_result_from_beam(beam_path, beam_stat, nil, nil), %{}}
         end
 
-      {results, {module, beam_path, application, exports}}
+      {results, {module, beam_path, application, exports, imported_calls}}
     else
       _ -> {skipped_result_from_beam(beam_path, beam_stat, nil, nil), nil}
+    end
+  end
+
+  # The compiler turns a call to an imported function into a remote call whose
+  # dot is at the call's own position, while a written remote call's dot comes
+  # before the function name. Calls to `:erlang` are inlined `Kernel` functions.
+  defp imported_calls(metadata) do
+    for {_definition, _kind, _meta, clauses} <- Map.get(metadata, :definitions, []),
+        {_meta, _args, guards, body} <- clauses,
+        reduce: %{} do
+      imported_calls -> imported_calls({guards, body}, imported_calls)
+    end
+  end
+
+  defp imported_calls(ast, imported_calls) do
+    {_ast, imported_calls} =
+      Macro.prewalk(ast, imported_calls, fn
+        {{:., dot_meta, [module, function]}, meta, args} = call, imported_calls
+        when is_atom(module) and module != :erlang and is_atom(function) and is_list(args) ->
+          case {position(meta), position(dot_meta)} do
+            {{_line, _column} = position, position} ->
+              {call, Map.put(imported_calls, position, {module, function, length(args)})}
+
+            _ ->
+              {call, imported_calls}
+          end
+
+        node, imported_calls ->
+          {node, imported_calls}
+      end)
+
+    imported_calls
+  end
+
+  defp position(meta) do
+    case {Keyword.get(meta, :line), Keyword.get(meta, :column)} do
+      {line, column} when is_integer(line) and is_integer(column) -> {line, column}
+      _ -> nil
     end
   end
 

@@ -42,7 +42,7 @@ defmodule Expert.Search.Indexer.Extractors.ModuleAttribute do
   end
 
   # Finds module attribute definitions @foo 3
-  def extract({:@, _, [{attr_name, _, attr_value}]} = attr, %Reducer{} = reducer) do
+  def extract({:@, meta, [{attr_name, attr_meta, attr_value}]} = attr, %Reducer{} = reducer) do
     block = Reducer.current_block(reducer)
 
     case Analyzer.current_module(reducer.analysis, Reducer.position(reducer)) do
@@ -70,7 +70,9 @@ defmodule Expert.Search.Indexer.Extractors.ModuleAttribute do
             attr_value
           end
 
-        {:ok, definition, value}
+        # only the value is walked further; the node keeps its shape, since
+        # analysis and extraction walk the same tree
+        {:ok, definition, {:@, meta, [{attr_name, Reducer.skip(attr_meta), value}]}}
 
       _ ->
         :ignored
