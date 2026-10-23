@@ -1,12 +1,14 @@
 defmodule Expert.Search.Indexer.Beams do
   import Forge.Document.Line
 
+  alias Expert.EngineApi
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Subject
   alias Forge.Document.Position
   alias Forge.Document.Range
+  alias Forge.Project
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
 
@@ -232,7 +234,8 @@ defmodule Expert.Search.Indexer.Beams do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
 
     with {:ok, beam} <- File.read(beam_path),
-         {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
+         {:ok, module, exports, debug_metadata_result} <-
+           metadata_from_binary(beam, opts[:project]) do
       results =
         case debug_metadata_result do
           {:ok, metadata} ->
@@ -303,6 +306,31 @@ defmodule Expert.Search.Indexer.Beams do
 
   # The debug-info chunk data is backend-owned and opaque. The public contract is
   # to ask the backend to decode it into the Elixir debug-info format we consume.
+  defp metadata_from_binary(beam, nil), do: metadata_from_binary(beam)
+
+  defp metadata_from_binary(beam, %Project{} = project) do
+    case metadata_from_binary(beam) do
+      {:ok, _module, _exports, {:ok, _metadata}} = decoded ->
+        decoded
+
+      local_result ->
+        # A packaged manager may run an older OTP than the project (e.g. OTP 27
+        # cannot decode OTP 29's ExpT). Keep compatible reads local and ask the
+        # project runtime only when local chunk/backend decoding is unavailable.
+        try do
+          case EngineApi.beam_metadata(project, beam) do
+            {:ok, module, exports, metadata} when is_atom(module) and is_list(exports) ->
+              {:ok, module, exports, metadata}
+
+            _ ->
+              local_result
+          end
+        catch
+          _kind, _reason -> local_result
+        end
+    end
+  end
+
   defp metadata_from_binary(beam) do
     case :beam_lib.chunks(beam, [:debug_info, :exports]) do
       {:ok, {module, chunks}} ->

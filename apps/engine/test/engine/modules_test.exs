@@ -4,6 +4,51 @@ defmodule Engine.ModulesTest do
 
   alias Engine.Modules
 
+  describe "beam_metadata/1" do
+    test "returns generated definitions and exports from compiler output" do
+      # Arrange
+      module = Module.concat(__MODULE__, "Generated#{System.unique_integer([:positive])}")
+
+      compiler_options = Code.compiler_options()
+
+      [{^module, beam}] =
+        try do
+          Code.compiler_options(debug_info: true)
+
+          Code.compile_string("""
+          defmodule #{inspect(module)} do
+            use GenServer
+            def init(value), do: {:ok, value}
+          end
+          """)
+        after
+          Code.compiler_options(compiler_options)
+        end
+
+      on_exit(fn ->
+        :code.purge(module)
+        :code.delete(module)
+      end)
+
+      # Act
+      result = Modules.beam_metadata(beam)
+
+      # Assert
+      assert {:ok, ^module, exports, {:ok, %{module: ^module, definitions: definitions}}} = result
+      assert {:child_spec, 1} in exports
+      assert Enum.any?(definitions, &match?({{:child_spec, 1}, :def, _, _}, &1))
+    end
+
+    test "malformed object code is not a successful metadata result" do
+      # Arrange
+      beam = "not a BEAM file"
+      # Act
+      result = Modules.beam_metadata(beam)
+      # Assert
+      assert result == :error
+    end
+  end
+
   describe "simple prefixes" do
     test "specifying a prefix with a string" do
       found = Modules.with_prefix("En")
