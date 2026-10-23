@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/expert-lsp/expert/compare/v0.2.1...v0.2.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* build releases with elixir 1.20 and otp 29 ([#962](https://github.com/expert-lsp/expert/issues/962)) ([6de148c](https://github.com/expert-lsp/expert/commit/6de148c36516ce4e4d4e103aaa5d7dcfa3887350))
+
 ## [0.2.1](https://github.com/expert-lsp/expert/compare/v0.2.0...v0.2.1) (2026-10-23)
 
 
