@@ -35,8 +35,7 @@ defmodule Expert.Search.Indexer.Beams do
       |> Stream.transform(
         fn -> start_progress("Indexing dependencies metadata") end,
         fn task_result, progress ->
-          {chunk_bytes, items, modules} = task_result!(task_result)
-          register_modules(opts[:project], modules)
+          {chunk_bytes, items} = task_result!(task_result)
 
           {[items], report_progress(progress, chunk_bytes, total_bytes, "Indexing dependencies")}
         end,
@@ -117,6 +116,8 @@ defmodule Expert.Search.Indexer.Beams do
       |> Enum.map(&metadata_from_beam(&1, opts))
       |> Enum.unzip()
 
+    register_modules(opts[:project], modules)
+
     {entries, manifest_entries} =
       results
       |> List.flatten()
@@ -124,15 +125,15 @@ defmodule Expert.Search.Indexer.Beams do
 
     items = stream_items(entries, manifest_entries)
 
-    {chunk_bytes, items, Enum.reject(modules, &is_nil/1)}
+    {chunk_bytes, items}
   end
 
   defp register_modules(nil, _modules), do: :ok
 
   defp register_modules(project, modules) do
-    Enum.each(modules, fn {module, beam_path, application, exports} ->
-      ModuleRegistry.put(project, module, beam_path, application, exports)
-    end)
+    modules
+    |> Enum.reject(&is_nil/1)
+    |> then(&ModuleRegistry.put_all(project, &1))
   end
 
   defp stream_items([], manifest_entries), do: [{nil, manifest_entries}]
