@@ -294,7 +294,7 @@ defmodule Expert.Search.Store.State do
     wrapped_update = fn write_batch ->
       write_and_update_fuzzy = fn entries, fuzzy ->
         with :ok <- write_batch.(entries) do
-          {:ok, Fuzzy.add(fuzzy, entries)}
+          {:ok, Fuzzy.add(fuzzy, Enum.map(entries, &entry_of/1))}
         end
       end
 
@@ -365,4 +365,7 @@ defmodule Expert.Search.Store.State do
       {:error, _} = error -> error
     end
   end
+
+  defp entry_of({:encoded, entry, _row}), do: entry
+  defp entry_of(entry), do: entry
 end
