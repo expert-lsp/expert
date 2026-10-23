@@ -40,6 +40,10 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
     %FoldingRange{start_line: start_line, end_line: end_line, kind: "comment"}
   end
 
+  defp region_range(start_line, end_line) do
+    %FoldingRange{start_line: start_line, end_line: end_line, kind: "region"}
+  end
+
   test "preserves block, string, and comment ordering in mixed documents" do
     source = ~S'''
     defmodule Mixed do
@@ -69,6 +73,50 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
              range(1, 3),
              comment_range(5, 6)
            ]
+  end
+
+  describe "indentation" do
+    test "folds a multiline assignment" do
+      source = """
+      value =
+        source
+        |> transform()
+        |> finalize()
+
+      :ok
+      """
+
+      assert region_range(0, 3) in fold(source)
+    end
+
+    test "folds case clause bodies" do
+      source = """
+      case value do
+        {:ok, result} ->
+          transform(result)
+          |> finalize()
+        {:error, reason} ->
+          report(reason)
+      end
+      """
+
+      ranges = fold(source)
+
+      assert region_range(1, 3) in ranges
+      assert region_range(4, 5) in ranges
+    end
+
+    test "trims blank lines at the end of a region" do
+      source = """
+      value =
+        transform(source)
+
+
+      :ok
+      """
+
+      assert region_range(0, 1) in fold(source)
+    end
   end
 
   describe "do/end blocks" do
@@ -137,6 +185,26 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
 
       assert fold(source) == []
     end
+
+    test "folds a for comprehension independent of indentation" do
+      source = """
+      for value <- values do
+      transform(value)
+      end
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
+
+    test "folds a with block independent of indentation" do
+      source = """
+      with {:ok, value} <- fetch() do
+      transform(value)
+      end
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
   end
 
   describe "anonymous functions" do
@@ -173,7 +241,7 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
       end
       """
 
-      assert fold(source) == [range(0, 4)]
+      assert fold(source) == [range(0, 4), region_range(1, 2), region_range(3, 4)]
     end
 
     test "does not fold a single-line anonymous function" do
@@ -241,7 +309,72 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
       """
       '''
 
-      assert fold(source) == [range(0, 4)]
+      assert fold(source) == [range(0, 4), region_range(1, 3)]
+    end
+  end
+
+  describe "delimited containers" do
+    test "folds lists, tuples, and maps" do
+      source = """
+      values = [
+        :a,
+        :b
+      ]
+
+      pair = {
+        :a,
+        :b
+      }
+
+      options = %{
+        enabled: true,
+        retries: 3
+      }
+      """
+
+      ranges = fold(source)
+
+      assert range(0, 2) in ranges
+      assert range(5, 7) in ranges
+      assert range(10, 12) in ranges
+    end
+
+    test "folds function call parentheses" do
+      source = """
+      result = build_result(
+        first,
+        second
+      )
+      """
+
+      assert range(0, 2) in fold(source)
+    end
+
+    test "folds nested containers" do
+      source = """
+      values = [
+        %{
+          key: {
+            :a,
+            :b
+          }
+        }
+      ]
+      """
+
+      ranges = fold(source)
+
+      assert range(0, 6) in ranges
+      assert range(1, 5) in ranges
+      assert range(2, 4) in ranges
+    end
+
+    test "does not fold single-line or empty containers" do
+      assert fold("values = [:a, :b]\n") == []
+      assert fold("values = []\n") == []
+      assert fold("value = {}\n") == []
+      assert fold("value = %{}\n") == []
+      assert fold("result = call()\n") == []
     end
   end
 
@@ -333,6 +466,50 @@ defmodule Expert.Provider.Handlers.CodeFoldingTest do
       """
 
       assert range(2, 3) in fold(source)
+    end
+  end
+
+  describe "charlists" do
+    test "folds a multiline charlist" do
+      source = ~S"""
+      value = '
+      one
+      two'
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
+
+    test "folds a charlist heredoc" do
+      source = ~S"""
+      value = '''
+      one
+      two
+      '''
+      """
+
+      assert fold(source) == [range(0, 2)]
+    end
+
+    test "folds an interpolated charlist" do
+      source = ~S"""
+      value = 'one
+      #{item}
+      three'
+      """
+
+      assert fold(source) == [range(0, 1)]
+    end
+
+    test "does not fold a single-line or empty charlist" do
+      assert fold("'one line'\n") == []
+
+      source = ~S"""
+      '''
+      '''
+      """
+
+      assert fold(source) == []
     end
   end
 
