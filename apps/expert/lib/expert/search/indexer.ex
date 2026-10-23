@@ -36,14 +36,9 @@ defmodule Expert.Search.Indexer do
 
   defp build_index(%Project{} = project, opts) do
     :ok = EngineApi.clear_application_cache(project)
-    :ok = ModuleRegistry.clear(project)
 
     try do
-      paths = paths_for_project(project, opts)
-
-      with {:ok, state} <- replace_store(paths, new_stream_state(), project) do
-        {:ok, Manifest.new(manifest_entries(state))}
-      end
+      replace_index(project, opts)
     after
       EngineApi.clear_application_cache(project)
     end
@@ -52,7 +47,6 @@ defmodule Expert.Search.Indexer do
   defp update_index(%Project{} = project, path_to_ids, opts) do
     :ok = EngineApi.clear_application_cache(project)
     paths = paths_for_project(project, opts)
-    :ok = ModuleRegistry.prune(project, paths.beam_paths)
     opts = Keyword.put(opts, :paths, paths)
 
     try do
@@ -63,17 +57,19 @@ defmodule Expert.Search.Indexer do
           end
 
         :missing ->
-          replace_index(project, path_to_ids, opts)
+          replace_index(project, opts)
       end
     after
       EngineApi.clear_application_cache(project)
     end
   end
 
-  defp replace_index(%Project{} = project, _path_to_ids, opts) do
+  defp replace_index(%Project{} = project, opts) do
+    :ok = ModuleRegistry.clear(project)
     paths = paths_for_project(project, opts)
 
-    with {:ok, state} <- replace_store(paths, new_stream_state(), project) do
+    with {:ok, state} <- replace_store(paths, new_stream_state(), project),
+         :ok <- replace_modules(project) do
       {:ok, Manifest.new(manifest_entries(state))}
     end
   end
@@ -85,6 +81,7 @@ defmodule Expert.Search.Indexer do
          opts
        ) do
     paths = paths_for_project(project, opts)
+    :ok = ModuleRegistry.prune(project, paths.beam_paths)
 
     plan =
       manifest
@@ -126,7 +123,8 @@ defmodule Expert.Search.Indexer do
       |> tag_stream(:source)
       |> Stream.concat(tag_stream(beam_items, :beam))
 
-    with {:ok, state} <- refresh_store(stream, paths_to_clear, new_stream_state(), project) do
+    with {:ok, state} <- refresh_store(stream, paths_to_clear, new_stream_state(), project),
+         :ok <- update_modules(project, plan) do
       manifest = Manifest.apply_update(manifest, plan, manifest_entries(state))
 
       {:ok, manifest}
@@ -364,6 +362,20 @@ defmodule Expert.Search.Indexer do
 
     case Store.apply_index_update(project, update, paths_to_clear) do
       {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:error, {:store, reason}}
+    end
+  end
+
+  defp replace_modules(project) do
+    case ModuleRegistry.persist(project) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:store, reason}}
+    end
+  end
+
+  defp update_modules(project, %Manifest.Plan{} = plan) do
+    case ModuleRegistry.persist(project, plan.beam_paths_to_index, plan.input_paths_to_remove) do
+      :ok -> :ok
       {:error, reason} -> {:error, {:store, reason}}
     end
   end

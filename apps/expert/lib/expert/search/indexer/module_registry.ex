@@ -7,6 +7,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
 
   alias Expert.EngineApi
   alias Expert.Project.Store
+  alias Expert.Search
   alias Expert.Search.Indexer.BeamFile
   alias Forge.Project
 
@@ -27,10 +28,11 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
 
   def name(%Project{} = project), do: :"#{Project.unique_name(project)}::module_registry"
 
-  def clear(%Project{} = project), do: GenServer.call(name(project), :clear)
+  def clear(%Project{} = project), do: GenServer.call(name(project), :clear, :infinity)
 
   def prune(%Project{} = project, beam_paths) do
-    GenServer.call(name(project), {:prune, MapSet.new(beam_paths, &Forge.Path.native/1)})
+    beam_paths = MapSet.new(beam_paths, &Forge.Path.native/1)
+    GenServer.call(name(project), {:prune, beam_paths}, :infinity)
   end
 
   @impl GenServer
@@ -44,7 +46,17 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
         write_concurrency: true
       ])
 
+    load(project, table)
     {:ok, table}
+  end
+
+  defp load(project, table) do
+    rows =
+      for {beam_path, module, application, exports} <- Search.Store.modules(project) do
+        {{:module, module}, %{application: application, beam_path: beam_path, exports: exports}}
+      end
+
+    true = :ets.insert(table, rows)
   end
 
   @impl GenServer
@@ -58,10 +70,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
       {{{:"$1", :_}, :_}, [{:"=/=", :"$1", :module}], [true]}
     ])
 
-    for {module, beam_path} <-
-          :ets.select(table, [
-            {{{:module, :"$1"}, %{beam_path: :"$2"}}, [], [{{:"$1", :"$2"}}]}
-          ]),
+    for {module, beam_path} <- module_beam_paths(table),
         !MapSet.member?(beam_paths, beam_path) do
       :ets.delete(table, {:module, module})
     end
@@ -92,6 +101,33 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
 
     true = :ets.insert(name(project), objects)
     :ok
+  end
+
+  @spec persist(Project.t()) :: :ok | {:error, term()}
+  def persist(%Project{} = project) do
+    Search.Store.replace_modules(project, modules(project))
+  end
+
+  @spec persist(Project.t(), [Path.t()], [Path.t()]) :: :ok | {:error, term()}
+  def persist(%Project{} = project, changed_beam_paths, removed_beam_paths) do
+    paths = Enum.map(changed_beam_paths ++ removed_beam_paths, &Forge.Path.native/1)
+    Search.Store.update_modules(project, modules(project, changed_beam_paths), paths)
+  end
+
+  defp modules(%Project{} = project) do
+    for {{:module, module}, metadata} <- :ets.match_object(name(project), {{:module, :_}, :_}) do
+      {metadata.beam_path, module, metadata.application, metadata.exports}
+    end
+  end
+
+  defp modules(%Project{} = project, beam_paths) do
+    table = name(project)
+    beam_paths = MapSet.new(beam_paths, &Forge.Path.native/1)
+
+    for {module, beam_path} <- module_beam_paths(table), MapSet.member?(beam_paths, beam_path) do
+      metadata = :ets.lookup_element(table, {:module, module}, 2)
+      {beam_path, module, metadata.application, metadata.exports}
+    end
   end
 
   @spec application(Project.t() | nil, module() | nil) :: atom() | nil
@@ -145,6 +181,10 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     do: engine_lookup(project, :exunit_module?, module, false)
 
   defp key(module), do: {:module, Atom.to_string(module)}
+
+  defp module_beam_paths(table) do
+    :ets.select(table, [{{{:module, :"$1"}, %{beam_path: :"$2"}}, [], [{{:"$1", :"$2"}}]}])
+  end
 
   defp engine_lookup(project, operation, module, default) do
     if Store.ready?(project) do

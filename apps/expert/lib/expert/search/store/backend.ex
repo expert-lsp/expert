@@ -3,6 +3,7 @@ defmodule Expert.Search.Store.Backend do
   Behaviour for project-scoped search store backends.
   """
 
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
@@ -16,6 +17,7 @@ defmodule Expert.Search.Store.Backend do
   @type type_query :: Entry.entry_type() | wildcard()
   @type subtype_query :: Entry.entry_subtype() | wildcard()
   @type block_structure :: %{Entry.block_id() => block_structure()} | %{}
+  @type module_row :: {Path.t(), String.t(), atom() | nil, ModuleRegistry.stored_exports()}
   @type replacement(result) ::
           (([Entry.t()] -> :ok | {:error, term()}) ->
              {:ok, result} | {:error, term()})
@@ -26,6 +28,9 @@ defmodule Expert.Search.Store.Backend do
   @callback drop(Project.t()) :: boolean() | :ok | {:error, any()}
   @callback destroy(Project.t()) :: :ok | {:error, any()}
   @callback path_to_ids(Project.t()) :: %{Path.t() => Entry.entry_id()} | {:error, any()}
+  @callback modules(Project.t()) :: [module_row()] | {:error, any()}
+  @callback replace_modules(Project.t(), [module_row()]) :: :ok | {:error, any()}
+  @callback update_modules(Project.t(), [module_row()], [Path.t()]) :: :ok | {:error, any()}
   @callback definitions_for_fuzzy(Project.t()) :: [Entry.t()] | {:error, any()}
   @callback replace_all(Project.t(), replacement(term())) ::
               {:ok, term()} | {:error, term()}

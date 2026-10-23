@@ -19,6 +19,7 @@ defmodule Expert.Search.IndexerTest do
 
   defmodule FakeBackend do
     @entries_key {__MODULE__, :entries}
+    @modules_key {__MODULE__, :modules}
     @calls_key {__MODULE__, :calls}
 
     def set_entries(entries) when is_list(entries) do
@@ -76,6 +77,24 @@ defmodule Expert.Search.IndexerTest do
       :ok
     end
 
+    def modules, do: :persistent_term.get(@modules_key, [])
+
+    def replace_modules(modules) do
+      :persistent_term.put(@modules_key, modules)
+      :ok
+    end
+
+    def update_modules(modules, paths_to_clear) do
+      paths_to_clear = MapSet.new(paths_to_clear)
+
+      kept_modules =
+        Enum.reject(modules(), fn {path, _module, _application, _exports} ->
+          MapSet.member?(paths_to_clear, path)
+        end)
+
+      replace_modules(kept_modules ++ modules)
+    end
+
     def record_call(call) do
       :persistent_term.put(@calls_key, [call | :persistent_term.get(@calls_key, [])])
     end
@@ -83,6 +102,8 @@ defmodule Expert.Search.IndexerTest do
 
   setup do
     project = project()
+    FakeBackend.replace_modules([])
+    patch(Store, :modules, fn _project -> FakeBackend.modules() end)
     start_supervised!({Expert.Project.Store, []})
     start_supervised!({ModuleRegistry, project})
     start_supervised!(Engine.ApplicationCache)
@@ -152,6 +173,14 @@ defmodule Expert.Search.IndexerTest do
 
     patch(Store, :path_to_ids, fn _project -> FakeBackend.path_to_ids() end)
 
+    patch(Store, :replace_modules, fn _project, modules ->
+      FakeBackend.replace_modules(modules)
+    end)
+
+    patch(Store, :update_modules, fn _project, modules, paths_to_clear ->
+      FakeBackend.update_modules(modules, paths_to_clear)
+    end)
+
     ManifestStore.invalidate(project)
     {:ok, project: project}
   end
@@ -185,6 +214,11 @@ defmodule Expert.Search.IndexerTest do
     start_supervised!({ModuleRegistry, project})
     Expert.Project.Store.add_projects([project])
     Expert.Project.Store.transition(project, :ready)
+  end
+
+  defp stored_module(beam_path) do
+    beam_path = Forge.Path.native(beam_path)
+    Enum.find(FakeBackend.modules(), &match?({^beam_path, _, _, _}, &1))
   end
 
   defp cleared_paths(calls, previous_paths) do
@@ -896,6 +930,83 @@ defmodule Expert.Search.IndexerTest do
 
       assert [^old_entry] = FakeBackend.entries()
       assert :missing = ManifestStore.load(project)
+    end
+  end
+
+  describe "module storage" do
+    @tag :tmp_dir
+    test "stores the module of every BEAM it reads", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, module: module, project: project} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      start_registry(project)
+      assert {_entries, _cleared_paths} = update_index(project)
+
+      module_name = Atom.to_string(module)
+
+      assert {_path, ^module_name, _application, %{functions: [{"public_fun", 0}]}} =
+               stored_module(beam_path)
+    end
+
+    @tag :tmp_dir
+    test "stores the modules of BEAMs without Elixir debug info", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, module: module, project: project} =
+        with_beam_dependency(tmp_dir, debug_info?: false, rewrite_source?: false)
+
+      start_registry(project)
+      assert {_entries, _cleared_paths} = update_index(project)
+
+      module_name = Atom.to_string(module)
+
+      assert {_path, ^module_name, _application, %{functions: [{"public_fun", 0}]}} =
+               stored_module(beam_path)
+    end
+
+    @tag :tmp_dir
+    test "keeps the modules of unchanged BEAMs across a registry restart", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, module: module, project: project} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      start_registry(project)
+      assert {_entries, _cleared_paths} = update_index(project)
+
+      stop_supervised!({ModuleRegistry, Project.unique_name(project)})
+      start_supervised!({ModuleRegistry, project})
+
+      assert {[], []} = update_index(project)
+      module_name = Atom.to_string(module)
+      assert {_path, ^module_name, _application, _exports} = stored_module(beam_path)
+      assert ModuleRegistry.beam_path(project, module) == Forge.Path.native(beam_path)
+    end
+
+    @tag :tmp_dir
+    test "drops the module of a BEAM that is no longer indexed", %{tmp_dir: tmp_dir} do
+      %{app_root: app_root, beam_path: beam_path, project: project} =
+        with_beam_dependency(tmp_dir)
+
+      start_registry(project)
+      FakeBackend.set_entries(create_index(project))
+      assert stored_module(beam_path)
+
+      assert {_entries, _cleared_paths} =
+               app_root |> project_without_beam_dependency() |> update_index()
+
+      assert stored_module(beam_path) == nil
+    end
+
+    @tag :tmp_dir
+    test "replaces every stored module on a full run", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, project: project} = with_beam_dependency(tmp_dir)
+
+      FakeBackend.replace_modules([
+        {"/stale.beam", "Elixir.Stale", nil, %{functions: [], macros: []}}
+      ])
+
+      start_registry(project)
+      create_index(project)
+
+      assert [{_path, _module, _application, _exports}] = FakeBackend.modules()
+      assert stored_module(beam_path)
     end
   end
 

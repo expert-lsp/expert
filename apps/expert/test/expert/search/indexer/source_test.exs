@@ -2,18 +2,22 @@ defmodule Expert.Search.Indexer.SourceTest do
   use ExUnit.Case
   use Patch
 
-  import Forge.Test.Fixtures
-
   alias Expert.EngineApi
+  alias Expert.Search
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Source
+  alias Expert.Search.Store.Backends.Sqlite
   alias Forge.Ast
 
-  setup do
-    project = project()
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: tmp_dir} do
+    project = tmp_dir |> Forge.Document.Path.to_uri() |> Forge.Project.new()
     start_supervised!({Expert.Project.Store, []})
     Expert.Project.Store.set_projects([project])
     Expert.Project.Store.transition(project, :ready)
+    start_supervised!({Sqlite, [project, runtime_versions: %{erlang: "test", elixir: "test"}]})
+    start_supervised!({Search.Store, [project, Sqlite]})
     start_supervised!({ModuleRegistry, project})
     patch(EngineApi, :analyze, fn ^project, document, opts -> Ast.analyze(document, opts) end)
     {:ok, project: project}
