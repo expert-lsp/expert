@@ -59,5 +59,7 @@ defmodule Expert.Search.Store.Backend do
               [Entry.t()] | :error | {:ok, [Entry.t()]} | {:error, any()}
   @callback parent(Project.t(), Entry.t()) :: {:ok, Entry.t()} | :error | {:error, any()}
 
+  @callback encode_entries([Entry.t()]) :: [{:encoded, Entry.t(), term()}]
+
   @optional_callbacks sync: 1
 end

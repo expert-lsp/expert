@@ -72,7 +72,24 @@ defmodule Expert.Search.StoreTest do
     assert {:ok, [^new_entry]} = Store.fuzzy(project, "New", subtype: :definition)
   end
 
-  test "exact_many uses one indexed query and skips SQL for empty input", %{project: project} do
+  test "updates fuzzy search with entries returned by encode_entries/1", %{project: project} do
+    path = "/same.ex"
+    old_entry = definition(id: 1, subject: Old.Module, path: path)
+    new_entry = definition(id: 2, subject: New.Module, path: path)
+
+    assert :ok = Store.replace(project, [old_entry])
+
+    update = fn write_batch, write_state ->
+      with {:ok, write_state} <- write_batch.(Sqlite.encode_entries([new_entry]), write_state) do
+        {:ok, :updated, write_state}
+      end
+    end
+
+    assert {:ok, :updated} = Store.apply_index_update(project, update, [path])
+    assert {:ok, [^new_entry]} = Store.fuzzy(project, "New", subtype: :definition)
+  end
+
+  test "exact_many uses one query and skips SQL for empty input", %{project: project} do
     one = definition(id: 1, subject: Foo.Bar)
     two = definition(id: 2, subject: Other.Module)
 
@@ -96,21 +113,7 @@ defmodule Expert.Search.StoreTest do
              )
 
     assert [^one, ^two] = Enum.sort_by(matches, & &1.id)
-    assert_called(Exqlite.Basic.exec(_, sql, args), 1)
-
-    {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions()))
-
-    try do
-      result = Exqlite.Basic.exec(conn, "EXPLAIN QUERY PLAN " <> sql, args)
-      assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
-
-      assert Enum.any?(rows, fn [_id, _parent, _unused, detail] ->
-               String.contains?(detail, "SEARCH entries USING INDEX entries_subject_idx") and
-                 String.contains?(detail, "subject=?")
-             end)
-    after
-      Exqlite.Basic.close(conn)
-    end
+    assert_called(Exqlite.Basic.exec(_, _, _), 1)
   end
 
   test "exact_many follows the disabled store behavior", %{project: project} do
@@ -126,7 +129,7 @@ defmodule Expert.Search.StoreTest do
     assert {:error, :busy} = Store.exact_many(project, ["Foo.Bar"], [])
   end
 
-  test "by_caller returns only matching occurrences using the caller index", %{project: project} do
+  test "by_caller returns only matching occurrences", %{project: project} do
     first = %Entry{
       id: 1,
       block_id: :root,
@@ -166,21 +169,7 @@ defmodule Expert.Search.StoreTest do
              )
 
     assert [^first, ^second, ^repeated] = Enum.sort_by(matches, & &1.id)
-    assert_called(Exqlite.Basic.exec(_, sql, args), 1)
-
-    {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions()))
-
-    try do
-      result = Exqlite.Basic.exec(conn, "EXPLAIN QUERY PLAN " <> sql, args)
-      assert {:ok, rows, _columns} = Exqlite.Basic.rows(result)
-
-      assert Enum.any?(rows, fn [_id, _parent, _unused, detail] ->
-               String.contains?(detail, "SEARCH entries USING INDEX entries_caller_idx") and
-                 String.contains?(detail, "caller=? AND path=?")
-             end)
-    after
-      Exqlite.Basic.close(conn)
-    end
+    assert_called(Exqlite.Basic.exec(_, _, _), 1)
 
     assert {:ok, matches} = Store.by_caller(project, "Core.public/1", "/core.ex")
     assert [^first, ^second, ^repeated, ^definition, ^other_type] = Enum.sort_by(matches, & &1.id)

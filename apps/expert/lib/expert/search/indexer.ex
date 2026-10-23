@@ -121,7 +121,7 @@ defmodule Expert.Search.Indexer do
 
     stream =
       source_paths
-      |> Sources.stream(source_indexer(project))
+      |> Sources.stream(source_indexer(project), &Store.encode_entries/1)
       |> tag_stream(:source)
       |> Stream.concat(tag_stream(beam_items, :beam))
 
@@ -314,7 +314,7 @@ defmodule Expert.Search.Indexer do
       include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
 
     source_paths
-    |> Sources.stream(source_indexer(project))
+    |> Sources.stream(source_indexer(project), &Store.encode_entries/1)
     |> tag_stream(:source)
     |> Stream.concat(tag_stream(beam_items, :beam))
   end
@@ -411,15 +411,20 @@ defmodule Expert.Search.Indexer do
 
   defp consume_entry(_origin, nil, entries, state), do: {entries, state}
 
-  defp consume_entry(:source, %{subtype: subtype} = entry, entries, state)
+  defp consume_entry(
+         :source,
+         {:encoded, %{subtype: subtype} = entry, _row} = encoded,
+         entries,
+         state
+       )
        when subtype in [:definition, :block_structure] do
     state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
 
-    {[entry | entries], state}
+    {[encoded | entries], state}
   end
 
-  defp consume_entry(:source, entry, entries, state) do
-    {[entry | entries], state}
+  defp consume_entry(:source, {:encoded, _entry, _row} = encoded, entries, state) do
+    {[encoded | entries], state}
   end
 
   defp consume_entry(:beam, entry, entries, state) do
