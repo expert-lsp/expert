@@ -91,4 +91,50 @@ defmodule Forge.Path do
     |> :filename.basedir("expert")
     |> to_string()
   end
+
+  @doc """
+  Checks if `path` is a template file (such as generator templates under
+  `priv/templates`, `installer/templates`, `rel/templates`, or files with `.eex` in their name).
+
+  ## Examples
+
+      iex> Forge.Path.template_path?("/app/priv/templates/phx.gen.auth/settings_live.ex")
+      true
+
+      iex> Forge.Path.template_path?("installer/templates/phx_new/config.exs")
+      true
+
+      iex> Forge.Path.template_path?("rel/templates/env.sh.eex")
+      true
+
+      iex> Forge.Path.template_path?("/app/lib/my_app/templates/email.ex")
+      false
+
+      iex> Forge.Path.template_path?("/app/priv/repo/migrations/20260101_create_users.exs")
+      false
+
+      iex> Forge.Path.template_path?("/app/lib/my_app/user.ex")
+      false
+
+  """
+  def template_path?(path) when is_binary(path) do
+    parts = path |> normalize() |> Path.split()
+    filename = Path.basename(path)
+
+    template_dir?(parts) or
+      String.contains?(filename, ".eex.") or
+      String.ends_with?(filename, ".eex")
+  end
+
+  def template_path?(_), do: false
+
+  defp template_dir?(parts) do
+    case Enum.split_while(parts, &(&1 not in ["priv", "installer", "rel"])) do
+      {_, []} ->
+        false
+
+      {_, [_prefix | rest]} ->
+        "templates" in rest
+    end
+  end
 end
