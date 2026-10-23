@@ -98,6 +98,20 @@ defmodule Expert.Search.Store do
     call_or_default(project, :path_to_ids, %{})
   end
 
+  @spec modules(Project.t()) :: [Store.Backend.module_row()] | {:error, term()}
+  def modules(%Project{} = project), do: GenServer.call(name(project), :modules, :infinity)
+
+  @spec replace_modules(Project.t(), [Store.Backend.module_row()]) :: :ok | {:error, term()}
+  def replace_modules(%Project{} = project, modules) do
+    GenServer.call(name(project), {:replace_modules, modules}, :infinity)
+  end
+
+  @spec update_modules(Project.t(), [Store.Backend.module_row()], [Path.t()]) ::
+          :ok | {:error, term()}
+  def update_modules(%Project{} = project, modules, paths_to_clear) do
+    GenServer.call(name(project), {:update_modules, modules, paths_to_clear}, :infinity)
+  end
+
   @spec resolve_mfa(Project.t(), module(), atom(), non_neg_integer()) ::
           {module(), atom(), non_neg_integer(), boolean(), boolean()}
   def resolve_mfa(%Project{} = project, module, function, arity) do
@@ -270,6 +284,18 @@ defmodule Expert.Search.Store do
 
   def handle_call(:path_to_ids, _from, {ref, %State{} = state}) do
     {:reply, State.path_to_ids(state), {ref, state}}
+  end
+
+  def handle_call(:modules, _from, {ref, %State{} = state}) do
+    {:reply, State.modules(state), {ref, state}}
+  end
+
+  def handle_call({:replace_modules, modules}, _from, {ref, %State{} = state}) do
+    {:reply, State.replace_modules(state, modules), {ref, state}}
+  end
+
+  def handle_call({:update_modules, modules, paths_to_clear}, _from, {ref, %State{} = state}) do
+    {:reply, State.update_modules(state, modules, paths_to_clear), {ref, state}}
   end
 
   def handle_call({:update, path, entries}, _from, {ref, %State{} = state}) do

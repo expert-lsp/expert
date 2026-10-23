@@ -13,7 +13,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 8
+  @schema_version 9
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -84,6 +84,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @impl Backend
   def path_to_ids(%Project{} = project) do
     GenServer.call(name(project), :path_to_ids, :infinity)
+  end
+
+  @impl Backend
+  def modules(%Project{} = project), do: GenServer.call(name(project), :modules, :infinity)
+
+  @impl Backend
+  def replace_modules(%Project{} = project, modules) do
+    GenServer.call(name(project), {:replace_modules, modules}, :infinity)
+  end
+
+  @impl Backend
+  def update_modules(%Project{} = project, modules, paths_to_clear) do
+    GenServer.call(name(project), {:update_modules, modules, paths_to_clear}, :infinity)
   end
 
   @impl Backend
@@ -254,6 +267,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   def handle_call(:path_to_ids, _from, %State{} = state),
     do: reply(do_path_to_ids(state), state)
 
+  def handle_call(:modules, _from, %State{} = state), do: reply(do_modules(state), state)
+
+  def handle_call({:replace_modules, modules}, _from, %State{} = state),
+    do: reply(do_replace_modules(state, modules), state)
+
+  def handle_call({:update_modules, modules, paths_to_clear}, _from, %State{} = state),
+    do: reply(do_update_modules(state, modules, paths_to_clear), state)
+
   def handle_call(:definitions_for_fuzzy, _from, %State{} = state),
     do: reply(do_find_definitions_for_fuzzy(state), state)
 
@@ -326,6 +347,35 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  def do_modules(%State{} = state) do
+    case query(state, "SELECT path, module FROM modules") do
+      {:ok, rows} ->
+        Enum.map(rows, fn [path, module_blob] ->
+          {module, application, exports} = decode_term(module_blob)
+          {path, module, application, exports}
+        end)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  def do_replace_modules(%State{} = state, modules) do
+    transaction(state, fn ->
+      with :ok <- exec(state, "DELETE FROM modules") do
+        insert_modules(state, modules)
+      end
+    end)
+  end
+
+  def do_update_modules(%State{} = state, modules, paths_to_clear) do
+    transaction(state, fn ->
+      with :ok <- delete_path_rows(state, "modules", paths_to_clear) do
+        insert_modules(state, modules)
+      end
+    end)
+  end
+
   def do_find_definitions_for_fuzzy(%State{} = state) do
     sql = """
     SELECT defs.id, files.path, defs.subject, types.type
@@ -376,7 +426,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       when is_function(update, 1) and is_list(paths_to_clear) do
     transaction(state, fn ->
       with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths_to_clear),
-           :ok <- delete_structures_for_paths(state, paths_to_clear),
+           :ok <- delete_path_rows(state, "structures", paths_to_clear),
            {:ok, result} <- update.(fn entries -> insert_entries(state, entries) end) do
         {:ok, deleted_ids, result}
       end
@@ -397,7 +447,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp commit_index_update(%State{} = state, updated_entries, paths) do
     transaction(state, fn ->
       with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths),
-           :ok <- delete_structures_for_paths(state, paths),
+           :ok <- delete_path_rows(state, "structures", paths),
            :ok <- insert_entries(state, updated_entries) do
         {:ok, deleted_ids}
       end
@@ -407,7 +457,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   def do_delete_by_path(%State{} = state, path) do
     transaction(state, fn ->
       with {:ok, ids_to_delete} <- delete_entries_for_paths(state, [path]),
-           :ok <- delete_structures_for_paths(state, [path]) do
+           :ok <- delete_path_rows(state, "structures", [path]) do
         {:ok, ids_to_delete}
       end
     end)
@@ -769,12 +819,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS modules"),
          :ok <- create_defs_table(state),
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
+         :ok <- create_modules_table(state),
          :ok <- create_indexes(state),
          :ok <- exec(state, "INSERT INTO schema (version) VALUES (?)", [@schema_version]) do
       {:ok, :empty}
@@ -789,6 +841,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS modules"),
          # earlier schema versions kept every entry in these
          :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
@@ -804,6 +857,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_types_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
+         :ok <- create_modules_table(state),
          :ok <- create_indexes(state),
          {:ok, result} <-
            query(state, "SELECT 1 FROM defs UNION ALL SELECT 1 FROM refs LIMIT 1") do
@@ -878,6 +932,15 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     CREATE TABLE IF NOT EXISTS structures (
       path TEXT PRIMARY KEY,
       structure BLOB NOT NULL
+    )
+    """)
+  end
+
+  defp create_modules_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS modules (
+      path TEXT PRIMARY KEY,
+      module BLOB NOT NULL
     )
     """)
   end
@@ -1240,6 +1303,26 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     exec(state, sql, args)
   end
 
+  defp insert_modules(%State{}, []), do: :ok
+
+  defp insert_modules(%State{} = state, modules) do
+    modules
+    |> Enum.chunk_every(@insert_batch_size)
+    |> Enum.reduce_while(:ok, fn modules, :ok ->
+      sql = "INSERT INTO modules (path, module) VALUES #{row_placeholders(modules, 2)}"
+
+      args =
+        Enum.flat_map(modules, fn {path, module, application, exports} ->
+          [path, blob({module, application, exports})]
+        end)
+
+      case exec(state, sql, args) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
   defp entry_args(%Entry{} = entry) do
     [
       entry.id,
@@ -1334,13 +1417,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  defp delete_structures_for_paths(%State{}, []), do: :ok
+  defp delete_path_rows(%State{}, _table, []), do: :ok
 
-  defp delete_structures_for_paths(%State{} = state, paths) do
+  defp delete_path_rows(%State{} = state, table, paths) do
     paths
     |> Enum.chunk_every(@sqlite_variable_limit)
     |> Enum.reduce_while(:ok, fn chunk, :ok ->
-      case exec(state, "DELETE FROM structures WHERE path IN (#{placeholders(chunk)})", chunk) do
+      case exec(state, "DELETE FROM #{table} WHERE path IN (#{placeholders(chunk)})", chunk) do
         :ok -> {:cont, :ok}
         {:error, _} = error -> {:halt, error}
       end
