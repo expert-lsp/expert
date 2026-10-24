@@ -4,6 +4,7 @@ defmodule Expert.Provider.Handlers.CodeAction do
   alias Expert.Configuration
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Refactor
   alias Forge.CodeAction
   alias GenLSP.Requests
   alias GenLSP.Structures
@@ -16,19 +17,32 @@ defmodule Expert.Provider.Handlers.CodeAction do
     %Context{document: document, project: project} = context
     diagnostics = Enum.map(params.context.diagnostics, &to_code_action_diagnostic/1)
     defer_edits? = Configuration.client_resolves_code_action_edits?()
+    only = params.context.only || :all
+    trigger_kind = params.context.trigger_kind
 
-    code_actions =
+    engine_actions =
       EngineApi.code_actions(
         project,
         document,
         params.range,
         diagnostics,
-        params.context.only || :all,
-        params.context.trigger_kind,
+        only,
+        trigger_kind,
         defer_edits?: defer_edits?
       )
 
-    results = Enum.map(code_actions, &to_result/1)
+    refactor_actions =
+      Refactor.CodeAction.actions(
+        project,
+        document,
+        params.range,
+        diagnostics,
+        only,
+        trigger_kind,
+        defer_edits?: defer_edits?
+      )
+
+    results = Enum.map(engine_actions ++ refactor_actions, &to_result/1)
 
     {:ok, results}
   end

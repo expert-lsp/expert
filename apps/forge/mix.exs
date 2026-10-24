@@ -23,7 +23,7 @@ defmodule Forge.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :sasl, :eex]
+      extra_applications: [:logger, :eex]
     ]
   end
 
@@ -38,7 +38,6 @@ defmodule Forge.MixProject do
   defp deps do
     [
       {:benchee, "~> 1.3", only: :test},
-      {:briefly, "~> 0.5"},
       Mix.Credo.dependency(),
       Mix.Dialyzer.dependency(),
       {:deps_nix, "~> 3.0", only: :dev},
