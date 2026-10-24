@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/expert-lsp/expert/compare/v0.2.0...v0.3.0) (2026-10-24)
+
+
+### Features
+
+* implement remaining folding ranges ([#930](https://github.com/expert-lsp/expert/issues/930)) ([324854c](https://github.com/expert-lsp/expert/commit/324854cef116e2a566c609e669a9a3889b8e25fb))
+
+
+### Bug Fixes
+
+* build releases with elixir 1.20 and otp 29 ([#960](https://github.com/expert-lsp/expert/issues/960)) ([e374c1e](https://github.com/expert-lsp/expert/commit/e374c1efb7d3cd0fc85befefcead38e75f3d60bc))
+* **engine:** keep the module table from filling up on large projects ([#948](https://github.com/expert-lsp/expert/issues/948)) ([647a4c8](https://github.com/expert-lsp/expert/commit/647a4c86d5800258c092a8223fd70f8ab074ea45))
+* **expert:** clear more files than SQLite binds at once ([#952](https://github.com/expert-lsp/expert/issues/952)) ([7608b1e](https://github.com/expert-lsp/expert/commit/7608b1ed7599fa7e681d850eec48b493d92eded0))
+* **expert:** don't force a recompile on an empty index ([#951](https://github.com/expert-lsp/expert/issues/951)) ([88a68f1](https://github.com/expert-lsp/expert/commit/88a68f199c6ba24d5c2e96b452c63700bb50efd6))
+
+
+### Performance Improvements
+
+* **expert:** register beam modules concurrently in worker tasks ([#943](https://github.com/expert-lsp/expert/issues/943)) ([b098784](https://github.com/expert-lsp/expert/commit/b0987847d571156ec7ef3078ad50c33b2deaa2e3))
+* **indexer:** reduce index file size ([#954](https://github.com/expert-lsp/expert/issues/954)) ([3a62764](https://github.com/expert-lsp/expert/commit/3a62764e4ecc977d4d148c545230da0882dc4043))
+
 ## [0.2.0](https://github.com/expert-lsp/expert/compare/v0.1.0...v0.2.0) (2026-10-20)
 
 
