@@ -194,6 +194,43 @@ defmodule Expert.Search.Indexer.PathsTest do
       assert app_file in source_paths(project)
       refute dep_file in source_paths(project)
     end
+
+    @tag :tmp_dir
+    test "does not include generator template files", %{tmp_dir: tmp_dir} do
+      source_file = native_join([tmp_dir, "lib", "my_app", "user.ex"])
+
+      migration_file =
+        native_join([tmp_dir, "priv", "repo", "migrations", "20260101_create_users.exs"])
+
+      template_file =
+        native_join([tmp_dir, "priv", "templates", "phx.gen.auth", "settings_live.ex"])
+
+      installer_template =
+        native_join([tmp_dir, "installer", "templates", "phx_new", "config.exs"])
+
+      eex_named_file = native_join([tmp_dir, "lib", "my_app", "view.eex.ex"])
+
+      write_mix_project!(
+        tmp_dir,
+        "TemplatePathsTest.MixProject",
+        ~s([app: :template_paths_test, version: "0.1.0"])
+      )
+
+      write_file!(source_file, "defmodule MyApp.User do end")
+      write_file!(migration_file, "defmodule MyApp.Repo.Migrations.CreateUsers do end")
+      write_file!(template_file, "defmodule <%= mod %> do end")
+      write_file!(installer_template, "defmodule <%= mod %> do end")
+      write_file!(eex_named_file, "defmodule <%= mod %> do end")
+
+      project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
+
+      paths = source_paths(project)
+      assert source_file in paths
+      assert migration_file in paths
+      refute template_file in paths
+      refute installer_template in paths
+      refute eex_named_file in paths
+    end
   end
 
   defp with_env(name, value) do
