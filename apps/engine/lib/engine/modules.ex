@@ -49,13 +49,16 @@ defmodule Engine.Modules do
          true <- function_exported?(module, :__info__, 1) do
       {:ok,
        %{
-         functions: module.__info__(:functions),
-         macros: module.__info__(:macros)
+         functions: names(module.__info__(:functions)),
+         macros: names(module.__info__(:macros))
        }}
     else
       _ -> :error
     end
   end
+
+  # Names reach the manager node as strings so that they don't become atoms there.
+  defp names(exports), do: for({name, arity} <- exports, do: {Atom.to_string(name), arity})
 
   @doc """
   Fetch the docs chunk from BEAM object code.
