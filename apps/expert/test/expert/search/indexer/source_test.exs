@@ -61,7 +61,7 @@ defmodule Expert.Search.Indexer.SourceTest do
       send(test_pid, {:module_exports, module})
 
       case module do
-        Imported -> {:ok, %{functions: [called: 0], macros: []}}
+        Imported -> {:ok, %{functions: [{"called", 0}], macros: []}}
         module -> Engine.Modules.exports(module)
       end
     end)

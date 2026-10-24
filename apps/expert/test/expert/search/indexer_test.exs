@@ -454,7 +454,7 @@ defmodule Expert.Search.IndexerTest do
 
       entries = create_index(project)
 
-      assert Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
+      assert Enum.any?(entries, &(&1.subject == inspect(module) and &1.subtype == :definition))
 
       assert Enum.any?(
                entries,
@@ -473,7 +473,7 @@ defmodule Expert.Search.IndexerTest do
       start_registry(project)
       entries = create_index(project)
 
-      refute Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
+      refute Enum.any?(entries, &(&1.subject == inspect(module) and &1.subtype == :definition))
     end
 
     @tag :tmp_dir
@@ -483,7 +483,10 @@ defmodule Expert.Search.IndexerTest do
 
       entries = create_index(project)
 
-      assert Enum.any?(entries, &(&1.subject == protocol and &1.type == {:protocol, :definition}))
+      assert Enum.any?(
+               entries,
+               &(&1.subject == inspect(protocol) and &1.type == {:protocol, :definition})
+             )
 
       assert Enum.any?(
                entries,
@@ -506,18 +509,19 @@ defmodule Expert.Search.IndexerTest do
 
       assert Enum.any?(
                entries,
-               &(&1.subject == protocol and &1.type == {:protocol, :implementation} and
+               &(&1.subject == inspect(protocol) and &1.type == {:protocol, :implementation} and
                    &1.subtype == :definition)
              )
 
       assert Enum.any?(
                entries,
-               &(&1.subject == impl_module and &1.type == :module and &1.subtype == :definition)
+               &(&1.subject == inspect(impl_module) and &1.type == :module and
+                   &1.subtype == :definition)
              )
 
       refute Enum.any?(
                entries,
-               &(&1.subject == impl_module and &1.type == {:protocol, :implementation})
+               &(&1.subject == inspect(impl_module) and &1.type == {:protocol, :implementation})
              )
     end
 
@@ -534,7 +538,10 @@ defmodule Expert.Search.IndexerTest do
       entries = create_index(project)
 
       entry =
-        Enum.find(entries, &(&1.subject == protocol and &1.type == {:protocol, :implementation}))
+        Enum.find(
+          entries,
+          &(&1.subject == inspect(protocol) and &1.type == {:protocol, :implementation})
+        )
 
       assert %Entry{range: range, subtype: :definition} = entry
       assert range.start.character == expected_column
@@ -547,7 +554,7 @@ defmodule Expert.Search.IndexerTest do
       start_registry(project)
 
       entries = create_index(project)
-      assert Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
+      assert Enum.any?(entries, &(&1.subject == inspect(module) and &1.subtype == :definition))
     end
 
     @tag :tmp_dir
@@ -560,7 +567,7 @@ defmodule Expert.Search.IndexerTest do
       expected_column = expected_column(dep_file, module_name)
 
       entries = create_index(project)
-      entry = Enum.find(entries, &(&1.subject == module and &1.type == :module))
+      entry = Enum.find(entries, &(&1.subject == inspect(module) and &1.type == :module))
 
       assert %Entry{range: range, subtype: :definition} = entry
       assert range.start.character == expected_column
@@ -576,7 +583,7 @@ defmodule Expert.Search.IndexerTest do
       expected_column = expected_column(dep_file, "Inner")
 
       entries = create_index(project)
-      entry = Enum.find(entries, &(&1.subject == module and &1.type == :module))
+      entry = Enum.find(entries, &(&1.subject == inspect(module) and &1.type == :module))
 
       assert %Entry{range: range, subtype: :definition} = entry
       assert range.start.character == expected_column
@@ -592,7 +599,7 @@ defmodule Expert.Search.IndexerTest do
       assert {entries, _cleared_paths} = update_index(project)
       assert {:ok, manifest} = ManifestStore.load(project)
 
-      refute Enum.any?(entries, &(&1.subject == module))
+      refute Enum.any?(entries, &(&1.subject == inspect(module)))
 
       assert {:ok, %ManifestEntry{kind: :beam, output_path: nil}} =
                Manifest.fetch(manifest, beam_path)
@@ -610,7 +617,7 @@ defmodule Expert.Search.IndexerTest do
       assert {entries, _cleared_paths} = update_index(project)
       assert {:ok, manifest} = ManifestStore.load(project)
 
-      assert Enum.any?(entries, &(&1.subject == module and &1.subtype == :definition))
+      assert Enum.any?(entries, &(&1.subject == inspect(module) and &1.subtype == :definition))
 
       assert Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(module, :public_fun, 0)))
       refute Enum.any?(entries, &(&1.subject == Forge.Formats.mfa(module, :private_fun, 0)))
@@ -689,7 +696,11 @@ defmodule Expert.Search.IndexerTest do
       File.touch!(dep_file, {{2100, 1, 1}, {0, 0, 0}})
 
       assert {updated_entries, _cleared_paths} = update_index(project)
-      assert Enum.any?(updated_entries, &(&1.subject == module and &1.subtype == :definition))
+
+      assert Enum.any?(
+               updated_entries,
+               &(&1.subject == inspect(module) and &1.subtype == :definition)
+             )
 
       assert Enum.any?(
                updated_entries,
@@ -810,10 +821,10 @@ defmodule Expert.Search.IndexerTest do
 
       assert Enum.any?(
                updated_entries,
-               &(&1.subject == kept_module and &1.subtype == :definition)
+               &(&1.subject == inspect(kept_module) and &1.subtype == :definition)
              )
 
-      refute Enum.any?(updated_entries, &(&1.subject == removed_module))
+      refute Enum.any?(updated_entries, &(&1.subject == inspect(removed_module)))
 
       assert File.exists?(kept_beam_path)
       refute File.exists?(removed_beam_path)
@@ -934,12 +945,19 @@ defmodule Expert.Search.IndexerTest do
       assert {updated_entries, _cleared_paths} = update_index(project)
       updated_entries = Enum.to_list(updated_entries)
 
-      assert Enum.any?(updated_entries, &(&1.subject == parent and &1.subtype == :definition))
-      assert Enum.any?(updated_entries, &(&1.subject == child and &1.subtype == :definition))
+      assert Enum.any?(
+               updated_entries,
+               &(&1.subject == inspect(parent) and &1.subtype == :definition)
+             )
+
+      assert Enum.any?(
+               updated_entries,
+               &(&1.subject == inspect(child) and &1.subtype == :definition)
+             )
 
       assert Enum.any?(
                FakeBackend.entries(),
-               &(&1.subject == child and &1.subtype == :definition)
+               &(&1.subject == inspect(child) and &1.subtype == :definition)
              )
     end
   end

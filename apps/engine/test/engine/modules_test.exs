@@ -53,8 +53,8 @@ defmodule Engine.ModulesTest do
   describe "exports/1" do
     test "returns Elixir functions and macros" do
       assert {:ok, exports} = Modules.exports(Kernel)
-      assert {:is_map, 1} in exports.functions
-      assert {:def, 2} in exports.macros
+      assert {"is_map", 1} in exports.functions
+      assert {"def", 2} in exports.macros
     end
 
     test "returns an error for an unavailable module" do

@@ -65,7 +65,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     start_supervised!({ModuleRegistry, project})
     registry = ModuleRegistry.name(project)
     table = :ets.whereis(registry)
-    ModuleRegistry.put(project, Example, "/example.beam", :example, run: 0)
+    ModuleRegistry.put(project, "Elixir.Example", "/example.beam", :example, [{"run", 0}])
 
     assert :ok = ModuleRegistry.clear(project)
 
@@ -80,10 +80,11 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     Expert.Project.Store.transition(project, :ready)
     start_supervised!({ModuleRegistry, project})
 
-    exports = %{functions: [project_runtime: 0], macros: []}
-    patch(Expert.EngineApi, :module_exports, fn ^project, Kernel -> {:ok, exports} end)
+    stored = %{functions: [{"project_runtime", 0}], macros: []}
+    patch(Expert.EngineApi, :module_exports, fn ^project, Kernel -> {:ok, stored} end)
 
-    assert {:ok, ^exports} = ModuleRegistry.module_exports(project, Kernel)
+    assert {:ok, %{functions: [project_runtime: 0], macros: []}} =
+             ModuleRegistry.module_exports(project, Kernel)
   end
 
   test "looks up missing metadata after the project becomes ready" do
@@ -94,7 +95,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
 
     patch(Expert.EngineApi, :module_exports, fn ^project, Example ->
       send(test_pid, :engine_lookup)
-      {:ok, %{functions: [run: 0], macros: []}}
+      {:ok, %{functions: [{"run", 0}], macros: []}}
     end)
 
     assert :error = ModuleRegistry.module_exports(project, Example)
@@ -116,8 +117,8 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     project = project()
     start_supervised!({ModuleRegistry, project})
     registry = ModuleRegistry.name(project)
-    ModuleRegistry.put(project, Current, "/current.beam", :example, run: 0)
-    ModuleRegistry.put(project, Removed, "/removed.beam", :example, run: 0)
+    ModuleRegistry.put(project, "Elixir.Current", "/current.beam", :example, [{"run", 0}])
+    ModuleRegistry.put(project, "Elixir.Removed", "/removed.beam", :example, [{"run", 0}])
 
     :ets.insert(registry, [
       {{:available_module, Current}, true},
@@ -139,8 +140,8 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert :ok = ModuleRegistry.put_all(project, [])
 
     modules = [
-      {ModA, "/a.beam", :app_a, [foo: 1]},
-      {ModB, "/b.beam", :app_b, [bar: 2]}
+      {"Elixir.ModA", "/a.beam", :app_a, [{"foo", 1}]},
+      {"Elixir.ModB", "/b.beam", :app_b, [{"bar", 2}]}
     ]
 
     assert :ok = ModuleRegistry.put_all(project, modules)
