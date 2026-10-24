@@ -6,9 +6,9 @@ defmodule Expert.Integrations.Spark.Callbacks do
   alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Project
 
-  def fetch(%Project{} = project, beam, module, function) do
-    case exported?(project, beam, module, function) do
-      true -> call(project, beam, module, function)
+  def fetch(%Project{} = project, exports, module, function) do
+    case exported?(project, exports, module, function) do
+      true -> call(project, exports, module, function)
       false -> :error
     end
   end
@@ -72,19 +72,15 @@ defmodule Expert.Integrations.Spark.Callbacks do
     end)
   end
 
-  defp call(project, _beam, module, function) do
+  defp call(project, _exports, module, function) do
     {:ok, EngineApi.call(project, module, function, [])}
   end
 
   defp exported_as?({function, 0}, name), do: Atom.to_string(function) == name
   defp exported_as?(_export, _name), do: false
 
-  defp exported?(_project, beam, module, function) when is_binary(beam) do
-    case :beam_lib.chunks(beam, [:exports]) do
-      {:ok, {^module, [exports: exports]}} -> {function, 0} in exports
-      _ -> false
-    end
-  end
+  defp exported?(_project, exports, _module, function) when is_list(exports),
+    do: {Atom.to_string(function), 0} in exports
 
   defp exported?(project, nil, module, function) do
     case ModuleRegistry.module_exports(project, module) do

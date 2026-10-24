@@ -2,43 +2,41 @@ defmodule Expert.Integrations.Spark.Indexer do
   @behaviour Expert.Integrations
 
   alias Expert.Integrations.Spark.Callbacks
+  alias Expert.Search.Indexer.BeamFile
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
-  @spark_extension Spark.Dsl.Extension
+  @spark_extension Atom.to_string(Spark.Dsl.Extension)
 
-  defp recognizes?(metadata) do
-    attributes = Map.get(metadata, :attributes, [])
-    behaviours = attribute_modules(attributes, :behaviour)
-
-    true in attribute_values(attributes, :spark_dsl) or
-      behaviours != [] or attribute_modules(attributes, :spark_is) != []
+  defp recognizes?(attributes) do
+    true in attribute_values(attributes, "spark_dsl") or
+      attribute_modules(attributes, "behaviour") != [] or
+      attribute_modules(attributes, "spark_is") != []
   end
 
   @impl Expert.Integrations
-  def index(%Project{} = project, binary, metadata, source_path) do
-    function_entries = function_option_entries(binary, metadata, source_path)
+  def index(%Project{} = project, beam, exports, metadata, source_path) do
+    module = Map.fetch!(metadata, "module")
+    attributes = Map.get(metadata, "attributes", [])
+    function_entries = function_option_entries(beam, module, source_path)
 
-    if recognizes?(metadata) do
-      index_module(project, binary, metadata, source_path) ++ function_entries
+    if recognizes?(attributes) do
+      index_module(project, exports, module, attributes, source_path) ++ function_entries
     else
       function_entries
     end
   end
 
-  defp index_module(project, binary, metadata, source_path) do
-    module = Map.fetch!(metadata, :module)
-    attributes = Map.get(metadata, :attributes, [])
-    dsl? = true in attribute_values(attributes, :spark_dsl)
-    behaviours = attribute_modules(attributes, :behaviour)
-    extension? = @spark_extension in behaviours
-    skip_callback? = exports?(binary, :skip_in_spark_autocomplete, 0)
+  defp index_module(project, exports, module, attributes, source_path) do
+    dsl? = true in attribute_values(attributes, "spark_dsl")
+    extension? = @spark_extension in attribute_modules(attributes, "behaviour")
+    skip_callback? = {"skip_in_spark_autocomplete", 0} in exports
 
     {skip?, dynamic_entries} =
       dynamic_entries(
         project,
         attributes,
-        binary,
+        exports,
         module,
         source_path,
         dsl?,
@@ -52,7 +50,7 @@ defmodule Expert.Integrations.Spark.Indexer do
   defp dynamic_entries(
          _project,
          _attributes,
-         _binary,
+         _exports,
          _module,
          _source_path,
          false,
@@ -64,14 +62,15 @@ defmodule Expert.Integrations.Spark.Indexer do
   defp dynamic_entries(
          project,
          attributes,
-         binary,
+         exports,
          module,
          source_path,
          dsl?,
          extension?,
          skip_callback?
        ) do
-    callback = &Callbacks.fetch(project, binary, module, &1)
+    # calling the module needs its atom, so only the modules we call get one
+    callback = &Callbacks.fetch(project, exports, String.to_atom(module), &1)
 
     skip? =
       skip_callback? and
@@ -94,13 +93,13 @@ defmodule Expert.Integrations.Spark.Indexer do
   defp relation_entries(path, module, attributes, skip?) do
     behaviour_entries =
       attributes
-      |> attribute_modules(:behaviour)
+      |> attribute_modules("behaviour")
       |> Enum.uniq()
       |> Enum.map(&relation_entry(path, :behaviour, &1, module, %{skip?: skip?}))
 
     type_entries =
       attributes
-      |> attribute_modules(:spark_is)
+      |> attribute_modules("spark_is")
       |> Enum.uniq()
       |> Enum.map(&relation_entry(path, :type, &1, module, %{}))
 
@@ -126,14 +125,14 @@ defmodule Expert.Integrations.Spark.Indexer do
           callback
           |> callback_or_attribute(
             :default_extensions,
-            attribute_modules(attributes, :spark_default_extensions)
+            attribute_modules(attributes, "spark_default_extensions")
           )
           |> normalize_modules(),
         default_extension_kinds: normalize_extension_kinds(default_extension_kinds),
         single_extension_kinds: normalize_names(single_extension_kinds),
         extension_kinds:
           attributes
-          |> attribute_values(:spark_extension_kinds)
+          |> attribute_values("spark_extension_kinds")
           |> List.flatten()
           |> normalize_names(),
         options: normalize_schema(options)
@@ -165,11 +164,11 @@ defmodule Expert.Integrations.Spark.Indexer do
     Entry.integration(path, "spark", kind, key, remove_documentation(metadata))
   end
 
-  defp function_option_entries(binary, metadata, source_path) do
-    module = Map.fetch!(metadata, :module)
-
-    case fetch_docs(binary) do
+  defp function_option_entries(beam, module, source_path) do
+    case spark_docs(beam) do
       {:ok, {:docs_v1, _, _, _, _, _, entries}} ->
+        module = String.to_atom(module)
+
         for {{kind, name, arity}, _, _, _, metadata} <- entries,
             kind in [:function, :macro],
             {argument_index, schema} <- Map.get(metadata, :spark_opts, []),
@@ -185,36 +184,42 @@ defmodule Expert.Integrations.Spark.Indexer do
     end
   end
 
-  defp fetch_docs(binary) do
-    case :beam_lib.chunks(binary, [~c"Docs"]) do
-      {:ok, {_module, [{~c"Docs", docs}]}} -> {:ok, :erlang.binary_to_term(docs)}
+  # Decoding docs creates an atom for every name in them, so only docs that
+  # mention spark_opts are decoded.
+  defp spark_docs(beam) do
+    with {:ok, chunk} <- BeamFile.chunk(beam, "Docs"),
+         docs = uncompressed(chunk),
+         true <- String.contains?(docs, "spark_opts") do
+      {:ok, :erlang.binary_to_term(docs)}
+    else
       _ -> :error
     end
   end
 
+  defp uncompressed(<<131, 80, _size::32, compressed::binary>>),
+    do: <<131, :zlib.uncompress(compressed)::binary>>
+
+  defp uncompressed(term), do: term
+
   defp attribute_values(attributes, name) do
     attributes
-    |> Keyword.get_values(name)
+    |> Enum.flat_map(fn
+      {^name, values} -> [values]
+      _attribute -> []
+    end)
     |> List.flatten()
   end
 
   defp attribute_modules(attributes, name) do
     attributes
     |> attribute_values(name)
-    |> Enum.filter(&is_atom/1)
+    |> Enum.filter(&is_binary/1)
   end
 
   defp callback_or_attribute(callback, function, fallback) do
     case callback.(function) do
       :error -> fallback
       {:ok, value} -> value
-    end
-  end
-
-  defp exports?(binary, name, arity) do
-    case :beam_lib.chunks(binary, [:exports]) do
-      {:ok, {_module, [exports: exports]}} -> {name, arity} in exports
-      _ -> false
     end
   end
 
@@ -250,7 +255,7 @@ defmodule Expert.Integrations.Spark.Indexer do
     value
     |> List.wrap()
     |> List.flatten()
-    |> Enum.filter(&is_atom/1)
+    |> Enum.filter(&(is_atom(&1) or is_binary(&1)))
     |> Enum.map(&module_name/1)
     |> Enum.uniq()
   end
@@ -504,6 +509,7 @@ defmodule Expert.Integrations.Spark.Indexer do
   defp to_string_or_empty(value), do: to_string(value)
 
   defp module_name(module) when is_atom(module), do: Atom.to_string(module)
+  defp module_name(module) when is_binary(module), do: module
   defp source_module_name(nil), do: nil
   defp source_module_name(module), do: Forge.Formats.module(module)
 end

@@ -203,7 +203,7 @@ defmodule Expert.Search.Indexer.SourceTest do
     )
 
     beam_path = Path.join(tmp_dir, "Elixir.SourceTest.Caller.beam")
-    ModuleRegistry.put(project, SourceTest.Caller, beam_path, :example, run: 1)
+    ModuleRegistry.put(project, "Elixir.SourceTest.Caller", beam_path, :example, [{"run", 1}])
   end
 
   defp references(entries) do
@@ -240,7 +240,7 @@ defmodule Expert.Search.Indexer.SourceTest do
       send(test_pid, {:module_exports, module})
 
       case module do
-        Imported -> {:ok, %{functions: [called: 0], macros: []}}
+        Imported -> {:ok, %{functions: [{"called", 0}], macros: []}}
         module -> Engine.Modules.exports(module)
       end
     end)
