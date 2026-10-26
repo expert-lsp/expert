@@ -10,7 +10,6 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   alias Expert.Search.Indexer.BeamFile
   alias Forge.Project
 
-  @type exports :: %{functions: [{atom(), arity()}], macros: [{atom(), arity()}]}
   @type stored_exports :: %{functions: BeamFile.exports(), macros: BeamFile.exports()}
   @type module_metadata :: %{
           application: atom() | nil,
@@ -120,18 +119,13 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
       engine_lookup(project, :available_module?, module, false)
   end
 
-  @spec module_exports(Project.t() | nil, module()) :: {:ok, exports()} | :error
+  @spec module_exports(Project.t() | nil, module()) :: {:ok, stored_exports()} | :error
   def module_exports(nil, _module), do: :error
 
   def module_exports(%Project{} = project, module) when is_atom(module) do
-    exports =
-      case :ets.lookup(name(project), key(module)) do
-        [{_key, %{exports: exports}}] -> {:ok, exports}
-        [] -> engine_lookup(project, :module_exports, module, :error)
-      end
-
-    with {:ok, exports} <- exports do
-      {:ok, Map.new(exports, fn {kind, names} -> {kind, existing_names(names)} end)}
+    case :ets.lookup(name(project), key(module)) do
+      [{_key, %{exports: exports}}] -> {:ok, exports}
+      [] -> engine_lookup(project, :module_exports, module, :error)
     end
   end
 
@@ -151,19 +145,6 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     do: engine_lookup(project, :exunit_module?, module, false)
 
   defp key(module), do: {:module, Atom.to_string(module)}
-
-  # Names are stored as strings so that reading a module creates no atoms. A
-  # caller compares them against names parsed from source, and parsing made
-  # those atoms, so a name with no atom can't match anything and is left out.
-  defp existing_names(names) do
-    for {name, arity} <- names, atom = existing_atom(name), do: {atom, arity}
-  end
-
-  defp existing_atom(name) do
-    String.to_existing_atom(name)
-  rescue
-    ArgumentError -> nil
-  end
 
   defp engine_lookup(project, operation, module, default) do
     if Store.ready?(project) do
