@@ -225,13 +225,16 @@ defmodule Forge.Ast do
 
   defp top_level_eex?(source) do
     case :elixir_tokenizer.tokenize(String.to_charlist(source), 1, []) do
-      {:ok, _, _, _, tokens, _} ->
-        tokens
-        |> Enum.chunk_every(2, 1, :discard)
-        |> Enum.any?(fn
-          [{:%, {line, col2, _}}, {:rel_op, {line, col1, _}, :<}] -> col2 == col1 + 1
-          _ -> false
-        end)
+      res when is_tuple(res) and elem(res, 0) == :ok ->
+        tokens =
+          case tuple_size(res) do
+            6 -> elem(res, 4)
+            5 -> elem(res, 4)
+            4 -> elem(res, 3)
+            _ -> []
+          end
+
+        has_eex_tokens?(tokens)
 
       _ ->
         false
@@ -239,6 +242,28 @@ defmodule Forge.Ast do
   rescue
     _ -> false
   end
+
+  defp has_eex_tokens?(tokens) do
+    tokens
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.any?(fn
+      [{:%, meta2}, {:rel_op, meta1, :<}] -> adjacent_eex_tokens?(meta1, meta2)
+      [{:rel_op, meta1, :<}, {:%, meta2}] -> adjacent_eex_tokens?(meta1, meta2)
+      _ -> false
+    end)
+  end
+
+  defp adjacent_eex_tokens?(meta1, meta2) do
+    case {extract_token_pos(meta1), extract_token_pos(meta2)} do
+      {{line, col1}, {line, col2}} -> col2 == col1 + 1
+      _ -> false
+    end
+  end
+
+  defp extract_token_pos({line, col}), do: {line, col}
+  defp extract_token_pos({line, col, _}), do: {line, col}
+  defp extract_token_pos(meta) when is_list(meta), do: {meta[:line], meta[:column]}
+  defp extract_token_pos(_), do: nil
 
   @doc """
   Returns an AST fragment from the start of the document to the given position.
