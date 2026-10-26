@@ -15,6 +15,9 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
           beam_path: Path.t() | nil,
           exports: exports()
         }
+  @type position :: {pos_integer(), pos_integer()}
+  @type imported_call :: {String.t(), String.t(), arity()}
+  @type imported_calls :: {Path.t(), %{position() => imported_call()}}
 
   def start_link(%Project{} = project) do
     GenServer.start_link(__MODULE__, project, name: name(project))
@@ -111,6 +114,33 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
 
     true = :ets.insert(name(project), objects)
     :ok
+  end
+
+  # the compiler's trace is written next to the beam, with the file it compiled
+  @spec imported_calls(Project.t(), module()) :: imported_calls() | nil
+  def imported_calls(%Project{} = project, module) when is_atom(module) do
+    with beam_path when is_binary(beam_path) <- beam_path(project, module),
+         {:ok, binary} <- read_file(Path.rootname(beam_path) <> ".imported_calls") do
+      {file, calls} = :erlang.binary_to_term(binary, [:safe])
+
+      {Forge.Path.native(file),
+       Map.new(calls, fn {line, column, imported_module, name, arity} ->
+         {{line, column}, {imported_module, name, arity}}
+       end)}
+    else
+      _ -> nil
+    end
+  end
+
+  # every source worker reads these at once, and the file server would serialize them
+  defp read_file(path) do
+    with {:ok, fd} <- :file.open(path, [:read, :binary, :raw]) do
+      try do
+        with {:ok, size} <- :file.position(fd, :eof), do: :file.pread(fd, 0, size)
+      after
+        :file.close(fd)
+      end
+    end
   end
 
   @spec application(Project.t() | nil, module() | nil) :: atom() | nil

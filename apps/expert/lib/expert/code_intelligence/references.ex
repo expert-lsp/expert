@@ -40,6 +40,19 @@ defmodule Expert.CodeIntelligence.References do
     end
   end
 
+  def indexed_call(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
+    with true <- current_document?(project, analysis.document),
+         {:ok, references} <-
+           Store.all(project, paths: [analysis.document.path], subtype: :reference),
+         %Entry{type: {kind, _}, subject: subject, range: range} when kind in [:function, :macro] <-
+           reference_at(references, analysis, position),
+         {module, function, arity} <- Forge.Code.parse_mfa(subject) do
+      {:ok, {:call, module, function, arity}, range}
+    else
+      _ -> :error
+    end
+  end
+
   defp indexed_references(project, analysis, position, include_definitions?) do
     with true <- current_document?(project, analysis.document),
          {:ok, references} <- Store.all(project, paths: [analysis.document.path], subtype: :_),

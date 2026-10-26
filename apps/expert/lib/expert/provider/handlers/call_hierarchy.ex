@@ -20,6 +20,7 @@ defmodule Expert.Provider.Handlers.CallHierarchy do
 
   import Forge.Document.Line, only: [line: 1]
 
+  alias Expert.CodeIntelligence.References
   alias Expert.Document.Context
   alias Forge.Ast
   alias Forge.Document
@@ -46,7 +47,7 @@ defmodule Expert.Provider.Handlers.CallHierarchy do
     with {:ok, _document, %Ast.Analysis{} = analysis} <-
            Document.Store.fetch(document.uri, :analysis),
          {:ok, {:call, module, function, arity}, _range} <-
-           Expert.EngineApi.resolve_entity(project, analysis, params.position) do
+           resolve_call(project, analysis, params.position) do
       mfa = Formats.mfa(module, function, arity)
 
       case Expert.Search.Store.exact(project, mfa, subtype: :definition) do
@@ -152,6 +153,12 @@ defmodule Expert.Provider.Handlers.CallHierarchy do
 
       _ ->
         {:ok, []}
+    end
+  end
+
+  defp resolve_call(project, analysis, position) do
+    with :error <- References.indexed_call(project, analysis, position) do
+      Expert.EngineApi.resolve_entity(project, analysis, position)
     end
   end
 

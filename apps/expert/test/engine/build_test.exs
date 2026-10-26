@@ -118,6 +118,62 @@ defmodule Engine.BuildTest do
       assert {:arity_1, 1} in functions
       assert {:arity_2, 2} in functions
     end
+
+    test "writes each app's imported calls next to its beams" do
+      {:ok, project} = with_project(:umbrella)
+      EngineApi.schedule_compile(project, true)
+      assert_receive project_compiled(status: :success), :timer.seconds(15)
+
+      for {app, module} <- [first: Umbrella.First, second: Umbrella.Second] do
+        assert [path] =
+                 Forge.Path.glob([
+                   Project.versioned_build_path(project),
+                   "*/lib/#{app}/ebin/#{module}.imported_calls"
+                 ])
+
+        assert {file, calls} = path |> File.read!() |> :erlang.binary_to_term()
+
+        assert Forge.Path.native(file) ==
+                 Forge.Path.native(
+                   Path.join(Project.root_path(project), "apps/#{app}/lib/umbrella/#{app}.ex")
+                 )
+
+        assert {2, 3, "Elixir.Kernel", "def", 2} in calls
+      end
+    end
+  end
+
+  describe "compiling a document" do
+    setup [:with_metadata_project]
+
+    test "sends the document and the imported calls traced from it", %{project: project} do
+      source = ~S[
+        defmodule Traced do
+          def run(list), do: length(list)
+        end
+      ]
+      compile_document(project, source)
+
+      assert_receive file_compiled(
+                       status: :success,
+                       document: %Document{} = document,
+                       imported_calls: [{Traced, calls}]
+                     )
+
+      assert Document.to_string(document) == source
+      assert {3, 30, "Elixir.Kernel", "length", 1} in calls
+    end
+
+    test "sends no imported calls for a document that fails to compile", %{project: project} do
+      source = ~S[
+        defmodule Failing do
+          def run(list), do: missing(list)
+        end
+      ]
+      compile_document(project, source)
+
+      assert_receive file_compiled(status: :error, document: %Document{}, imported_calls: [])
+    end
   end
 
   describe "compiling a project that has errors" do

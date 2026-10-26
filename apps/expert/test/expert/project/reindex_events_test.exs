@@ -30,9 +30,10 @@ defmodule Expert.Project.ReindexEventsTest do
       {:ok, exact_entries(store, subject)}
     end)
 
-    patch(Search.Indexer, :document, fn ^project, uri ->
-      with {:ok, document, analysis} <- Document.Store.fetch(uri, :analysis),
-           {:ok, entries} <- Search.Indexer.Quoted.index_with_cleanup(analysis) do
+    patch(Search.Indexer, :document, fn ^project, document, _imported_calls ->
+      analysis = Forge.Ast.analyze(document)
+
+      with {:ok, entries} <- Search.Indexer.Quoted.index_with_cleanup(analysis) do
         {:ok, document.path, entries}
       end
     end)
@@ -96,11 +97,16 @@ defmodule Expert.Project.ReindexEventsTest do
     {uri, source}
   end
 
+  defp compiled(uri, imported_calls \\ []) do
+    {:ok, document} = Document.Store.fetch(uri)
+    file_compiled(uri: uri, document: document, imported_calls: imported_calls)
+  end
+
   defp format_subject(subject) when is_atom(subject), do: Forge.Formats.module(subject)
   defp format_subject(subject) when is_binary(subject), do: subject
   defp format_subject(subject), do: to_string(subject)
 
-  describe "handling file_quoted events" do
+  describe "handling file_compiled events" do
     test "should add new entries to the store", %{project: project, store: store} do
       {uri, _source} =
         ~q[
@@ -109,7 +115,7 @@ defmodule Expert.Project.ReindexEventsTest do
         ]
         |> set_document!()
 
-      send(Reindex.name(project), file_compile_requested(uri: uri))
+      send(Reindex.name(project), compiled(uri))
 
       assert_eventually {:ok, [entry]} = exact(store, "NewModule")
 
@@ -134,26 +140,59 @@ defmodule Expert.Project.ReindexEventsTest do
         ]
         |> set_document!()
 
-      send(Reindex.name(project), file_compile_requested(uri: uri))
+      send(Reindex.name(project), compiled(uri))
 
       assert_eventually {:ok, [entry]} = exact(store, "UpdatedModule")
       assert entry.subject == UpdatedModule
       assert {:ok, []} = exact(store, "OldModule")
     end
 
-    test "only updates entries if the version of the document is the same as the version in the document store",
+    test "indexes the document that was compiled rather than the store's current text",
          %{project: project, store: store} do
-      Document.Store.open("file:///file.ex", "defmodule Newer do \nend", 3)
-
       {uri, _source} =
         ~q[
-          defmodule Stale do
+          defmodule Compiled do
           end
         ]
         |> set_document!()
 
-      send(Reindex.name(project), file_compile_requested(uri: uri))
-      assert {:ok, []} = exact(store, "Stale")
+      message = compiled(uri)
+
+      {^uri, _source} =
+        ~q[
+          defmodule Newer do
+          end
+        ]
+        |> set_document!()
+
+      send(Reindex.name(project), message)
+
+      assert_eventually {:ok, [entry]} = exact(store, "Compiled")
+      assert entry.subject == Compiled
+      assert {:ok, []} = exact(store, "Newer")
+    end
+
+    test "indexes the document with the imported calls traced from it", %{project: project} do
+      test_pid = self()
+
+      patch(Search.Indexer, :document, fn ^project, document, imported_calls ->
+        send(test_pid, {:indexed, document, imported_calls})
+        {:ok, document.path, []}
+      end)
+
+      {uri, _source} =
+        ~q[
+          defmodule Traced do
+          end
+        ]
+        |> set_document!()
+
+      imported_calls = [{Traced, [{1, 1, "Elixir.Kernel", "defmodule", 2}]}]
+      file_compiled(document: document) = message = compiled(uri, imported_calls)
+
+      send(Reindex.name(project), message)
+
+      assert_receive {:indexed, ^document, ^imported_calls}
     end
   end
 
