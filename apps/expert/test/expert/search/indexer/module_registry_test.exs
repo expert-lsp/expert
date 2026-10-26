@@ -55,8 +55,8 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert ModuleRegistry.application(project, module) == :registry_app
     assert ModuleRegistry.beam_path(project, module) == Forge.Path.native(beam_path)
     assert {:ok, exports} = ModuleRegistry.module_exports(project, module)
-    assert {:public_function, 0} in exports.functions
-    assert {:public_macro, 0} in exports.macros
+    assert {"public_function", 0} in exports.functions
+    assert {"public_macro", 0} in exports.macros
     refute Code.loaded?(module)
   end
 
@@ -83,7 +83,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     stored = %{functions: [{"project_runtime", 0}], macros: []}
     patch(Expert.EngineApi, :module_exports, fn ^project, Kernel -> {:ok, stored} end)
 
-    assert {:ok, %{functions: [project_runtime: 0], macros: []}} =
+    assert {:ok, %{functions: [{"project_runtime", 0}], macros: []}} =
              ModuleRegistry.module_exports(project, Kernel)
   end
 
@@ -102,10 +102,10 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     refute_received :engine_lookup
 
     Expert.Project.Store.transition(project, :ready)
-    assert {:ok, %{functions: [run: 0]}} = ModuleRegistry.module_exports(project, Example)
+    assert {:ok, %{functions: [{"run", 0}]}} = ModuleRegistry.module_exports(project, Example)
     assert_received :engine_lookup
 
-    assert {:ok, %{functions: [run: 0]}} = ModuleRegistry.module_exports(project, Example)
+    assert {:ok, %{functions: [{"run", 0}]}} = ModuleRegistry.module_exports(project, Example)
     refute_received :engine_lookup
 
     ModuleRegistry.prune(project, [])
@@ -150,14 +150,14 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert ModuleRegistry.application(project, ModA) == :app_a
     assert ModuleRegistry.beam_path(project, ModA) == Forge.Path.native("/a.beam")
 
-    assert {:ok, %{functions: [foo: 1], macros: []}} =
+    assert {:ok, %{functions: [{"foo", 1}], macros: []}} =
              ModuleRegistry.module_exports(project, ModA)
 
     assert ModuleRegistry.available_module?(project, ModB)
     assert ModuleRegistry.application(project, ModB) == :app_b
     assert ModuleRegistry.beam_path(project, ModB) == Forge.Path.native("/b.beam")
 
-    assert {:ok, %{functions: [bar: 2], macros: []}} =
+    assert {:ok, %{functions: [{"bar", 2}], macros: []}} =
              ModuleRegistry.module_exports(project, ModB)
   end
 end
