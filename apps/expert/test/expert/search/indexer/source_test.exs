@@ -275,7 +275,7 @@ defmodule Expert.Search.Indexer.SourceTest do
         Imported ->
           case Agent.get(response, & &1) do
             :error -> :error
-            :ok -> {:ok, %{functions: [other: 0], macros: []}}
+            :ok -> {:ok, %{functions: [{"other", 0}], macros: []}}
           end
 
         module ->

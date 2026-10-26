@@ -45,7 +45,7 @@ defmodule Expert.Search.Indexer.Extractors.StructReference do
     imports = Analyzer.imports_at(reducer.analysis, reducer_position)
     arity = length(args)
 
-    with true <- Enum.member?(imports, {Kernel, struct_fn_name, arity}),
+    with true <- Enum.member?(imports, {Kernel, Atom.to_string(struct_fn_name), arity}),
          {:ok, struct_module} <- expand_alias(struct_alias, reducer) do
       {:ok, entry(reducer, struct_module, reference)}
     else

@@ -15,8 +15,8 @@ defmodule Expert.Integrations.Spark.Callbacks do
 
   def fetch_by_name(%Project{} = project, module, name) when is_binary(name) do
     with {:ok, %{functions: functions}} <- ModuleRegistry.module_exports(project, module),
-         {function, 0} <- Enum.find(functions, &exported_as?(&1, name)) do
-      call(project, nil, module, function)
+         true <- {name, 0} in functions do
+      call(project, nil, module, String.to_atom(name))
     else
       _ -> :error
     end
@@ -76,15 +76,12 @@ defmodule Expert.Integrations.Spark.Callbacks do
     {:ok, EngineApi.call(project, module, function, [])}
   end
 
-  defp exported_as?({function, 0}, name), do: Atom.to_string(function) == name
-  defp exported_as?(_export, _name), do: false
-
   defp exported?(_project, exports, _module, function) when is_list(exports),
     do: {Atom.to_string(function), 0} in exports
 
   defp exported?(project, nil, module, function) do
     case ModuleRegistry.module_exports(project, module) do
-      {:ok, %{functions: functions}} -> {function, 0} in functions
+      {:ok, %{functions: functions}} -> {Atom.to_string(function), 0} in functions
       :error -> false
     end
   end
