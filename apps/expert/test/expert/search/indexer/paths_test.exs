@@ -194,6 +194,37 @@ defmodule Expert.Search.Indexer.PathsTest do
       assert app_file in source_paths(project)
       refute dep_file in source_paths(project)
     end
+
+    @tag :tmp_dir
+    test "correctly filters files and excluded directories with unicode names", %{tmp_dir: root} do
+      unicode_source = native_join([root, "mã_nguồn", "chính.ex"])
+      excluded_dir = native_join([root, "thư_mục_bỏ_qua"])
+      excluded_file = native_join([excluded_dir, "phụ.ex"])
+      sibling_dir = native_join([root, "thư_mục_bỏ_qua_mới"])
+      sibling_file = native_join([sibling_dir, "giữ_lại.ex"])
+
+      for path <- [unicode_source, excluded_file, sibling_file] do
+        write_file!(path, "defmodule Sample, do: :ok")
+      end
+
+      info = %{
+        config: [app: :unicode_app],
+        project_config: [],
+        build_root: "_build",
+        build_path: native_join([root, "_build"]),
+        deps_path: excluded_dir,
+        apps_paths: nil,
+        dependency_apps: {:ok, []}
+      }
+
+      project = root |> Forge.Document.Path.to_uri() |> Project.bare()
+      project = %{project | kind: :mix}
+      paths = Paths.for_project(project, fn ^project -> {:ok, info} end)
+
+      assert unicode_source in paths.source_paths
+      assert sibling_file in paths.source_paths
+      refute excluded_file in paths.source_paths
+    end
   end
 
   defp with_env(name, value) do

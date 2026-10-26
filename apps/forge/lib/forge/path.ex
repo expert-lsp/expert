@@ -40,10 +40,25 @@ defmodule Forge.Path do
   """
   def contains?(file_path, possible_parent)
       when is_binary(file_path) and is_binary(possible_parent) do
-    file_parts = file_path |> normalize() |> Path.split()
-    parent_parts = possible_parent |> normalize() |> Path.split()
+    file_norm = normalize(file_path)
+    parent_norm = normalize(possible_parent)
 
-    List.starts_with?(file_parts, parent_parts)
+    case parent_norm do
+      "" ->
+        true
+
+      "/" ->
+        String.starts_with?(file_norm, "/")
+
+      _ ->
+        parent_prefix =
+          if String.ends_with?(parent_norm, "/"), do: parent_norm, else: parent_norm <> "/"
+
+        parent_exact = String.trim_trailing(parent_norm, "/")
+        file_exact = String.trim_trailing(file_norm, "/")
+
+        file_exact == parent_exact or String.starts_with?(file_norm, parent_prefix)
+    end
   end
 
   def normalize_paths(paths) when is_list(paths) do
