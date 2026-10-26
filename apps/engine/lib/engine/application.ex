@@ -16,6 +16,7 @@ defmodule Engine.Application do
           Engine.Module.Loader,
           Engine.Dispatch,
           Engine.ModuleMappings,
+          Engine.Compilation.Tracer,
           Engine.Build,
           Engine.ModuleStore,
           Engine.Build.CaptureServer
