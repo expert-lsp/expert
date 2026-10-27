@@ -1,5 +1,6 @@
 defmodule Expert.Search.Indexer.Extractors.FunctionReference do
   alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Indexer.Extractors.FunctionDefinition
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.Source.Reducer
@@ -49,11 +50,26 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
 
   # remote function OtherModule.foo(:arg), OtherModule.foo() or OtherModule.foo
   def extract(
-        {{:., _, [{:__aliases__, start_metadata, module}, fn_name]}, end_metadata, args},
+        {{:., dot_meta, [{:__aliases__, start_metadata, module}, fn_name]}, end_metadata, args},
         %Reducer{} = reducer
       )
       when is_atom(fn_name) do
-    entry(reducer, start_metadata, end_metadata, module, fn_name, args)
+    case resolved_entry(reducer, start_metadata, end_metadata, module, fn_name, args) do
+      {:ok, entry, expanded} ->
+        with true <- Enum.all?(module, &is_atom/1),
+             {:ok, module_entry} <-
+               Extractors.Module.reference(reducer, expanded, module, start_metadata) do
+          module_alias = {:__aliases__, Reducer.skip(start_metadata), module}
+
+          {:ok, [entry, module_entry],
+           {{:., dot_meta, [module_alias, fn_name]}, end_metadata, args}}
+        else
+          _ -> {:ok, entry}
+        end
+
+      :ignored ->
+        :ignored
+    end
   end
 
   # local function capture &downcase/1
@@ -160,6 +176,20 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
          function_name,
          args_arity
        ) do
+    case resolved_entry(reducer, start_metadata, end_metadata, module, function_name, args_arity) do
+      {:ok, entry, _module} -> {:ok, entry}
+      :ignored -> :ignored
+    end
+  end
+
+  defp resolved_entry(
+         %Reducer{} = reducer,
+         start_metadata,
+         end_metadata,
+         module,
+         function_name,
+         args_arity
+       ) do
     arity = call_arity(args_arity, end_metadata)
     block = Reducer.current_block(reducer)
 
@@ -180,15 +210,17 @@ defmodule Expert.Search.Indexer.Extractors.FunctionReference do
           {:ok, module} ->
             mfa = Subject.mfa(module, function_name, arity)
 
-            {:ok,
-             Entry.reference(
-               reducer.analysis.document.path,
-               block,
-               mfa,
-               {:function, :usage},
-               range,
-               Reducer.application(reducer, module)
-             )}
+            entry =
+              Entry.reference(
+                reducer.analysis.document.path,
+                block,
+                mfa,
+                {:function, :usage},
+                range,
+                Reducer.application(reducer, module)
+              )
+
+            {:ok, entry, module}
 
           _ ->
             human_location = Reducer.human_location(reducer)
