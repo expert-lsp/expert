@@ -73,12 +73,14 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       assert Enum.any?(
                entries,
-               &(&1.subject == module and &1.type == :module and &1.subtype == :definition)
+               &(&1.subject == inspect(module) and &1.type == :module and
+                   &1.subtype == :definition)
              )
 
       refute Enum.any?(
                entries,
-               &(&1.subject == module and &1.type == :struct and &1.subtype == :definition)
+               &(&1.subject == inspect(module) and &1.type == :struct and
+                   &1.subtype == :definition)
              )
 
       for {subject, type} <- [
@@ -129,7 +131,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
       {entries, _manifest_entries} = index_beams([Map.fetch!(beam_paths_by_module, module)])
 
       for {subject, type} <- [
-            {module, :module},
+            {inspect(module), :module},
             {Formats.mfa(module, :public_fun, 0), {:function, :public}}
           ] do
         assert Enum.any?(
@@ -220,7 +222,8 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       assert Enum.any?(
                entries,
-               &(&1.subject == module and &1.type == :module and &1.subtype == :definition)
+               &(&1.subject == inspect(module) and &1.type == :module and
+                   &1.subtype == :definition)
              )
     end
 
@@ -341,7 +344,10 @@ defmodule Expert.Search.Indexer.BeamsTest do
                    &1.subtype == :definition)
              )
 
-      refute Enum.any?(entries, &(&1.subject == skipped_module and &1.subtype == :definition))
+      refute Enum.any?(
+               entries,
+               &(&1.subject == inspect(skipped_module) and &1.subtype == :definition)
+             )
 
       refute Enum.any?(
                entries,
@@ -379,10 +385,14 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       assert Enum.any?(
                entries,
-               &(&1.subject == parent_module and &1.type == :module and &1.subtype == :definition)
+               &(&1.subject == inspect(parent_module) and &1.type == :module and
+                   &1.subtype == :definition)
              )
 
-      refute Enum.any?(entries, &(&1.subject == child_module and &1.subtype == :definition))
+      refute Enum.any?(
+               entries,
+               &(&1.subject == inspect(child_module) and &1.subtype == :definition)
+             )
 
       refute Enum.any?(
                entries,
@@ -423,7 +433,8 @@ defmodule Expert.Search.Indexer.BeamsTest do
       for module <- modules do
         assert Enum.any?(
                  entries,
-                 &(&1.subject == module and &1.type == :module and &1.subtype == :definition)
+                 &(&1.subject == inspect(module) and &1.type == :module and
+                     &1.subtype == :definition)
                )
       end
 
@@ -450,12 +461,14 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
       assert Enum.any?(
                entries,
-               &(&1.subject == module and &1.type == :module and &1.subtype == :definition)
+               &(&1.subject == inspect(module) and &1.type == :module and
+                   &1.subtype == :definition)
              )
 
       assert Enum.any?(
                entries,
-               &(&1.subject == module and &1.type == :struct and &1.subtype == :definition)
+               &(&1.subject == inspect(module) and &1.type == :struct and
+                   &1.subtype == :definition)
              )
     end
 
@@ -484,10 +497,10 @@ defmodule Expert.Search.Indexer.BeamsTest do
       protocol_fun = Formats.mfa(protocol, :to_value, 1)
 
       for {subject, type} <- [
-            {protocol, {:protocol, :definition}},
+            {inspect(protocol), {:protocol, :definition}},
             {protocol_fun, {:function, :public}},
-            {protocol, {:protocol, :implementation}},
-            {implementation, :module}
+            {inspect(protocol), {:protocol, :implementation}},
+            {inspect(implementation), :module}
           ] do
         assert Enum.any?(
                  entries,
@@ -498,15 +511,15 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert %Entry{range: range} =
                Enum.find(
                  entries,
-                 &(&1.subject == protocol and &1.type == {:protocol, :definition} and
+                 &(&1.subject == inspect(protocol) and &1.type == {:protocol, :definition} and
                      &1.subtype == :definition)
                )
 
       assert extract(source, range) == inspect(protocol)
 
       for {subject, type} <- [
-            {protocol, {:protocol, :implementation}},
-            {implementation, :module}
+            {inspect(protocol), {:protocol, :implementation}},
+            {inspect(implementation), :module}
           ] do
         assert %Entry{range: range} =
                  Enum.find(
@@ -532,7 +545,8 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert %Entry{range: range} =
                Enum.find(
                  entries,
-                 &(&1.subject == module and &1.type == :module and &1.subtype == :definition)
+                 &(&1.subject == inspect(module) and &1.type == :module and
+                     &1.subtype == :definition)
                )
 
       assert range.start.line == 1
@@ -564,7 +578,8 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert %Entry{range: range} =
                Enum.find(
                  entries,
-                 &(&1.subject == child and &1.type == :module and &1.subtype == :definition)
+                 &(&1.subject == inspect(child) and &1.type == :module and
+                     &1.subtype == :definition)
                )
 
       assert extract(source, range) == "Child"
@@ -572,11 +587,38 @@ defmodule Expert.Search.Indexer.BeamsTest do
       assert %Entry{range: range} =
                Enum.find(
                  entries,
-                 &(&1.subject == sibling and &1.type == :module and &1.subtype == :definition)
+                 &(&1.subject == inspect(sibling) and &1.type == :module and
+                     &1.subtype == :definition)
                )
 
       assert extract(source, range) == "__MODULE__.Sibling"
     end
+  end
+
+  test "reads a BEAM without creating its atoms", %{tmp_dir: tmp_dir} do
+    suffix = System.unique_integer([:positive])
+    module_name = "Expert.Search.Indexer.BeamsTest.AtomFree#{suffix}"
+    function_name = "never_seen_before_#{suffix}"
+
+    source_path = Path.join(tmp_dir, "atom_free.ex")
+    ebin = Path.join(tmp_dir, "ebin")
+    File.mkdir_p!(ebin)
+
+    File.write!(source_path, """
+    defmodule #{module_name} do
+      def #{function_name}(value), do: value
+    end
+    """)
+
+    elixirc = System.find_executable("elixirc") || raise "could not find elixirc"
+    {output, 0} = System.cmd(elixirc, ["-o", ebin, source_path], stderr_to_stdout: true)
+    assert output == ""
+
+    {entries, _manifest_entries} = index_beams([Path.join(ebin, "Elixir.#{module_name}.beam")])
+
+    assert Enum.any?(entries, &(&1.subject == "#{module_name}.#{function_name}/1"))
+    assert_raise ArgumentError, fn -> String.to_existing_atom("Elixir." <> module_name) end
+    assert_raise ArgumentError, fn -> String.to_existing_atom(function_name) end
   end
 
   defp index_source!(tmp_dir, source, opts) do

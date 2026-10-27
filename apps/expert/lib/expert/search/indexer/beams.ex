@@ -2,6 +2,7 @@ defmodule Expert.Search.Indexer.Beams do
   import Forge.Document.Line
 
   alias Expert.Progress
+  alias Expert.Search.Indexer.BeamFile
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Subject
@@ -46,8 +47,8 @@ defmodule Expert.Search.Indexer.Beams do
 
   def extract_definitions_from_binary(beam, source_path)
       when is_binary(beam) and is_binary(source_path) do
-    with {:ok, metadata} <- debug_metadata_from_binary(beam) do
-      metadata = Map.put(metadata, :file, Forge.Path.native(source_path))
+    with {:ok, _module, _exports, {:ok, metadata}} <- BeamFile.read(beam) do
+      metadata = Map.put(metadata, "file", Forge.Path.native(source_path))
 
       entries =
         metadata
@@ -57,23 +58,6 @@ defmodule Expert.Search.Indexer.Beams do
         |> Enum.filter(&definition?/1)
 
       {:ok, entries}
-    end
-  end
-
-  def extract_definitions_from_binary(beam, source_path, module, compiler_definitions)
-      when is_binary(beam) and is_binary(source_path) and is_atom(module) and
-             is_list(compiler_definitions) do
-    compiler_entries =
-      remote_context_definition_entries(
-        Forge.Path.native(source_path),
-        module,
-        compiler_definitions
-      )
-
-    case extract_definitions_from_binary(beam, source_path) do
-      {:ok, entries} -> {:ok, entries ++ compiler_entries}
-      :error when compiler_entries != [] -> {:ok, compiler_entries}
-      :error -> :error
     end
   end
 
@@ -233,7 +217,7 @@ defmodule Expert.Search.Indexer.Beams do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
 
     with {:ok, beam} <- File.read(beam_path),
-         {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
+         {:ok, module, exports, debug_metadata_result} <- BeamFile.read(beam) do
       results =
         case debug_metadata_result do
           {:ok, metadata} ->
@@ -251,12 +235,12 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp metadata_result_from_beam(beam_path, beam_stat, metadata) do
     metadata =
-      case Map.get(metadata, :file) do
-        path when is_binary(path) -> Map.put(metadata, :file, Forge.Path.native(path))
+      case Map.get(metadata, "file") do
+        path when is_binary(path) -> Map.put(metadata, "file", Forge.Path.native(path))
         _ -> metadata
       end
 
-    source_path = Map.get(metadata, :file)
+    source_path = Map.get(metadata, "file")
     source_stat_result = stat_source(source_path)
 
     case source_stat_result do
@@ -302,38 +286,6 @@ defmodule Expert.Search.Indexer.Beams do
     [{:skipped, manifest_entry}]
   end
 
-  # The debug-info chunk data is backend-owned and opaque. The public contract is
-  # to ask the backend to decode it into the Elixir debug-info format we consume.
-  defp metadata_from_binary(beam) do
-    case :beam_lib.chunks(beam, [:debug_info, :exports]) do
-      {:ok, {module, chunks}} ->
-        {:ok, module, chunks[:exports] || [], decode_debug_metadata(module, chunks[:debug_info])}
-
-      _ ->
-        :error
-    end
-  catch
-    _kind, _reason -> :error
-  end
-
-  defp decode_debug_metadata(module, {:debug_info_v1, backend, data}) do
-    case backend.debug_info(:elixir_v1, module, data, []) do
-      {:ok, metadata} when is_map(metadata) -> {:ok, metadata}
-      _ -> :error
-    end
-  catch
-    _kind, _reason -> :error
-  end
-
-  defp decode_debug_metadata(_module, _debug_info), do: :error
-
-  defp debug_metadata_from_binary(beam) do
-    case metadata_from_binary(beam) do
-      {:ok, _module, _exports, debug_metadata_result} -> debug_metadata_result
-      :error -> :error
-    end
-  end
-
   defp entries_from_metadata(metadata, source_lines, app \\ nil) do
     context = entry_context(metadata, app)
 
@@ -342,13 +294,11 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp entry_context(metadata, app) do
-    module = Map.fetch!(metadata, :module)
-
     %{
       app: app,
-      module: module,
+      module: metadata |> Map.fetch!("module") |> Subject.module(),
       root_block: Block.root(),
-      source_path: Map.fetch!(metadata, :file)
+      source_path: Map.fetch!(metadata, "file")
     }
   end
 
@@ -361,7 +311,7 @@ defmodule Expert.Search.Indexer.Beams do
         ]
 
       :error ->
-        case Map.get(metadata, :struct) do
+        case Map.get(metadata, "struct") do
           nil ->
             [module_definition(context, module_type(metadata), module_range)]
 
@@ -378,7 +328,7 @@ defmodule Expert.Search.Indexer.Beams do
     Entry.definition(
       context.source_path,
       context.root_block,
-      Subject.module(context.module),
+      context.module,
       type,
       range,
       context.app
@@ -397,7 +347,7 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp public_definition_entries(metadata, context) do
-    definitions = Map.get(metadata, :definitions, [])
+    definitions = Map.get(metadata, "definitions", [])
     protocol_callbacks = protocol_callbacks(metadata)
     protocol_definition? = module_type(metadata) == {:protocol, :definition}
     delegate_specs = delegate_specs_from_metadata(metadata)
@@ -424,19 +374,19 @@ defmodule Expert.Search.Indexer.Beams do
          delegate_specs,
          default_wrappers
        )
-       when definition in [:def, :defmacro] do
+       when definition in ["def", "defmacro"] do
     cond do
       default_wrapper?(name, arity, definition, clauses, default_wrappers) ->
         []
 
-      Keyword.get(metadata, :generated, false) and not Keyword.has_key?(metadata, :context) ->
+      meta(metadata, "generated", false) and not meta?(metadata, "context") ->
         []
 
       true ->
         name
         |> public_arities(
           arity,
-          Keyword.get(metadata, :defaults, 0),
+          meta(metadata, "defaults", 0),
           metadata,
           protocol_callbacks,
           protocol_definition?
@@ -468,8 +418,8 @@ defmodule Expert.Search.Indexer.Beams do
   defp default_wrapper_identities(definitions) do
     definitions
     |> Enum.flat_map(fn
-      {{name, arity}, definition, metadata, _clauses} when definition in [:def, :defmacro] ->
-        case Keyword.get(metadata, :defaults, 0) do
+      {{name, arity}, definition, metadata, _clauses} when definition in ["def", "defmacro"] ->
+        case meta(metadata, "defaults", 0) do
           defaults when defaults > 0 ->
             for wrapper_arity <- (arity - defaults)..(arity - 1),
                 do: {name, wrapper_arity, definition}
@@ -496,11 +446,11 @@ defmodule Expert.Search.Indexer.Beams do
   defp default_wrapper_clauses?(_clauses, _definition, _name), do: false
 
   defp default_wrapper_clause?(
-         {_metadata, _args, [], {:super, metadata, _defaults}},
+         {_metadata, _args, [], {"super", metadata, _defaults}},
          definition,
          name
        ) do
-    Keyword.get(metadata, :super) == {definition, name}
+    meta(metadata, "super") == {definition, name}
   end
 
   defp default_wrapper_clause?(_clause, _definition, _name), do: false
@@ -540,7 +490,7 @@ defmodule Expert.Search.Indexer.Beams do
          metadata,
          protocol_callback?
        ) do
-    type = if definition == :def, do: {:function, :public}, else: {:macro, :public}
+    type = if definition == "def", do: {:function, :public}, else: {:macro, :public}
 
     entry =
       Entry.definition(
@@ -552,66 +502,18 @@ defmodule Expert.Search.Indexer.Beams do
         context.app
       )
 
-    case Keyword.get(metadata, :context) do
-      macro_context
-      when is_atom(macro_context) and not is_nil(macro_context) and
-             macro_context != context.module and not protocol_callback? ->
-        Entry.put_metadata(entry, %{
-          original_mfa: Subject.mfa(macro_context, name, arity),
-          via: :use
-        })
-
-      _ ->
-        entry
-    end
-  end
-
-  defp remote_context_definition_entries(source_path, module, compiler_definitions) do
-    context = %{
-      app: nil,
-      module: module,
-      root_block: Block.root(),
-      source_path: source_path
-    }
-
-    compiler_definitions
-    |> Enum.flat_map(&remote_context_definition_entry(&1, context))
-    |> Enum.uniq_by(&{&1.subject, &1.type})
-  end
-
-  defp remote_context_definition_entry(
-         {{name, arity}, definition, metadata},
-         context
-       )
-       when is_atom(name) and is_integer(arity) and definition in [:def, :defmacro] and
-              is_list(metadata) do
-    with macro_context when is_atom(macro_context) and not is_nil(macro_context) <-
-           Keyword.get(metadata, :context),
-         true <- macro_context != context.module do
-      type = if definition == :def, do: {:function, :public}, else: {:macro, :public}
-
-      entry =
-        Entry.definition(
-          context.source_path,
-          context.root_block,
-          Subject.mfa(context.module, name, arity),
-          type,
-          definition_range(metadata, name),
-          context.app
-        )
-
-      [
-        Entry.put_metadata(entry, %{
-          original_mfa: Subject.mfa(macro_context, name, arity),
-          via: :use
-        })
-      ]
+    with macro_context when is_binary(macro_context) <- meta(metadata, "context"),
+         false <- protocol_callback?,
+         macro_module = Subject.module(macro_context),
+         true <- macro_module != context.module do
+      Entry.put_metadata(entry, %{
+        original_mfa: Subject.mfa(macro_module, name, arity),
+        via: :use
+      })
     else
-      _ -> []
+      _ -> entry
     end
   end
-
-  defp remote_context_definition_entry(_definition, _context), do: []
 
   defp delegate_definition_entry(context, name, arity, delegate_spec) do
     context.source_path
@@ -629,15 +531,15 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp delegate_specs_from_metadata(metadata) do
     metadata
-    |> Map.get(:definitions, [])
+    |> Map.get("definitions", [])
     |> Enum.flat_map(&delegate_specs/1)
     |> Map.new()
   end
 
-  defp delegate_specs({{name, arity}, :def, metadata, clauses}) do
+  defp delegate_specs({{name, arity}, "def", metadata, clauses}) do
     with true <- delegate_metadata?(metadata),
          {:ok, module, target_name, target_arity} <- delegate_target(clauses) do
-      defaults = Keyword.get(metadata, :defaults, 0)
+      defaults = meta(metadata, "defaults", 0)
 
       spec = %{
         module: module,
@@ -657,16 +559,15 @@ defmodule Expert.Search.Indexer.Beams do
   defp delegate_specs(_definition), do: []
 
   defp delegate_metadata?(metadata) do
-    Keyword.has_key?(metadata, :line) and not Keyword.has_key?(metadata, :column) and
-      not Keyword.has_key?(metadata, :context)
+    meta?(metadata, "line") and not meta?(metadata, "column") and not meta?(metadata, "context")
   end
 
   defp delegate_target([{_metadata, args, [], body}]) do
-    with {{:., _dot_metadata, [module, name]}, _call_metadata, call_args} <- body,
-         true <- is_atom(module),
-         true <- is_atom(name),
+    with {{".", _dot_metadata, [module, name]}, _call_metadata, call_args} <- body,
+         true <- is_binary(module),
+         true <- is_binary(name),
          true <- same_variables?(args, call_args) do
-      {:ok, module, name, length(call_args)}
+      {:ok, Subject.module(module), name, length(call_args)}
     else
       _ -> :error
     end
@@ -682,21 +583,21 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp same_variables?(_args, _call_args), do: false
 
-  defp variable_identity({name, metadata, context}) when is_atom(name) and is_list(metadata) do
-    {name, Keyword.get(metadata, :version), context}
+  defp variable_identity({name, metadata, context}) when is_binary(name) and is_list(metadata) do
+    {name, meta(metadata, "version"), context}
   end
 
   defp variable_identity(_ast), do: :error
 
-  defp module_type(%{attributes: attributes}) do
-    if Keyword.has_key?(attributes, :__protocol__), do: {:protocol, :definition}, else: :module
+  defp module_type(%{"attributes" => attributes}) do
+    if meta?(attributes, "__protocol__"), do: {:protocol, :definition}, else: :module
   end
 
   defp module_type(_), do: :module
 
-  defp protocol_implementation(%{attributes: attributes}) do
-    with impl when is_list(impl) <- Keyword.get(attributes, :__impl__),
-         protocol when is_atom(protocol) <- Keyword.get(impl, :protocol) do
+  defp protocol_implementation(%{"attributes" => attributes}) do
+    with impl when is_list(impl) <- meta(attributes, "__impl__"),
+         protocol when is_binary(protocol) <- meta(impl, "protocol") do
       {:ok, protocol}
     else
       _ -> :error
@@ -707,9 +608,9 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp protocol_callbacks(metadata) do
     metadata
-    |> Map.get(:definitions, [])
+    |> Map.get("definitions", [])
     |> Enum.find_value([], fn
-      {{:__protocol__, 1}, :def, _definition_metadata, clauses} ->
+      {{"__protocol__", 1}, "def", _definition_metadata, clauses} ->
         protocol_callback_clauses(clauses)
 
       _definition ->
@@ -721,11 +622,11 @@ defmodule Expert.Search.Indexer.Beams do
   defp protocol_callback_clauses(clauses) do
     clauses
     |> Enum.find_value([], fn
-      {_metadata, [:functions], [], functions} when is_list(functions) -> functions
+      {_metadata, ["functions"], [], functions} when is_list(functions) -> functions
       _clause -> nil
     end)
     |> Enum.flat_map(fn
-      {name, arity} when is_atom(name) and is_integer(arity) -> [{name, arity}]
+      {name, arity} when is_binary(name) and is_integer(arity) -> [{name, arity}]
       _function -> []
     end)
   end
@@ -740,7 +641,7 @@ defmodule Expert.Search.Indexer.Beams do
        ) do
     arities = Enum.to_list((arity - defaults)..arity)
 
-    if protocol_definition? and Keyword.has_key?(definition_metadata, :context) do
+    if protocol_definition? and meta?(definition_metadata, "context") do
       Enum.filter(arities, &MapSet.member?(protocol_callbacks, {name, &1}))
     else
       arities
@@ -748,10 +649,7 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp definition_range(metadata, name) do
-    line = Keyword.get(metadata, :line, 1)
-    column = Keyword.get(metadata, :column, 1)
-
-    range(line, column, name |> Atom.to_string() |> String.length())
+    range(meta(metadata, "line", 1), meta(metadata, "column", 1), String.length(name))
   end
 
   # BEAM debug metadata stores nested modules under their expanded names, but the
@@ -759,7 +657,7 @@ defmodule Expert.Search.Indexer.Beams do
   # definition line for the source spelling before falling back to compiler data.
   defp module_range(metadata, source_lines) do
     {line, fallback_column} = metadata_position(metadata)
-    module_name = metadata |> Map.fetch!(:module) |> Forge.Formats.module()
+    module_name = metadata |> Map.fetch!("module") |> Subject.module()
 
     fallback_span = {fallback_column, String.length(module_name)}
 
@@ -947,7 +845,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp definition?(_entry), do: false
 
   defp metadata_position(metadata) do
-    case Map.get(metadata, :anno) || Map.get(metadata, :line) do
+    case Map.get(metadata, "anno") || Map.get(metadata, "line") do
       {line, column} -> {line, column}
       line when is_integer(line) -> {line, 1}
       _ -> {1, 1}
@@ -982,6 +880,15 @@ defmodule Expert.Search.Indexer.Beams do
   defp synthetic_line(line_number, column) do
     line(text: String.duplicate(" ", max(column - 1, 0)), ending: "", line_number: line_number)
   end
+
+  defp meta(metadata, key, default \\ nil) do
+    case List.keyfind(metadata, key, 0) do
+      {^key, value} -> value
+      nil -> default
+    end
+  end
+
+  defp meta?(metadata, key), do: List.keymember?(metadata, key, 0)
 
   defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
   defp format_duration(ms), do: "#{Float.round(ms / 1000, 1)}s"

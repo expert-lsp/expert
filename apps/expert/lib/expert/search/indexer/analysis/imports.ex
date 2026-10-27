@@ -7,7 +7,9 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   alias Forge.Document.Range
   alias Forge.ProcessCache
 
-  @spec at(Analysis.t(), Position.t()) :: [Scope.import_mfa()]
+  @type import_mfa :: {module(), String.t(), arity()}
+
+  @spec at(Analysis.t(), Position.t()) :: [import_mfa()]
   def at(%Analysis{} = analysis, %Position{} = position, module_exports \\ &module_exports/1) do
     case Analysis.scopes_at(analysis, position) do
       [%Scope{} = scope | _] ->
@@ -119,7 +121,10 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   end
 
   defp imports_after_use(scope, position, use, module_exports) do
-    imports = Enum.group_by(use.imported_mfas, &elem(&1, 0))
+    imports =
+      Enum.group_by(use.imported_mfas, &elem(&1, 0), fn {module, name, arity} ->
+        {module, Atom.to_string(name), arity}
+      end)
 
     scope.imports
     |> Enum.filter(&import_in_range?(&1, use.range.end, position))
@@ -130,31 +135,33 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   end
 
   defp used_module_for(imported_mfas, function_name, arity) do
+    name = Atom.to_string(function_name)
+
     Enum.find_value(imported_mfas, :error, fn
-      {module, ^function_name, ^arity} -> {:ok, module}
+      {module, ^name, ^arity} -> {:ok, module}
       _ -> false
     end)
   end
 
   defp import_allows?(module, :all, fun, arity, module_exports) do
     not loaded?(module, module_exports) or
-      {fun, arity} in fetch_function_and_arities(module, :functions, module_exports) or
-      {fun, arity} in fetch_function_and_arities(module, :macros, module_exports)
+      exported?(module, :functions, fun, arity, module_exports) or
+      exported?(module, :macros, fun, arity, module_exports)
   end
 
   defp import_allows?(module, [only: :functions], fun, arity, module_exports) do
     not loaded?(module, module_exports) or
-      {fun, arity} in fetch_function_and_arities(module, :functions, module_exports)
+      exported?(module, :functions, fun, arity, module_exports)
   end
 
   defp import_allows?(module, [only: :macros], fun, arity, module_exports) do
     not loaded?(module, module_exports) or
-      {fun, arity} in fetch_function_and_arities(module, :macros, module_exports)
+      exported?(module, :macros, fun, arity, module_exports)
   end
 
   defp import_allows?(module, [only: :sigils], fun, arity, module_exports) do
     not loaded?(module, module_exports) or
-      {fun, arity} in fetch_function_and_arities(module, :sigils, module_exports)
+      exported?(module, :sigils, fun, arity, module_exports)
   end
 
   defp import_allows?(_module, [only: fns], fun, arity, _module_exports) when is_list(fns),
@@ -163,13 +170,13 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
   defp import_allows?(module, [except: fns], fun, arity, module_exports) when is_list(fns) do
     {fun, arity} not in fns and
       (not loaded?(module, module_exports) or
-         {fun, arity} in fetch_function_and_arities(module, :functions, module_exports) or
-         {fun, arity} in fetch_function_and_arities(module, :macros, module_exports))
+         exported?(module, :functions, fun, arity, module_exports) or
+         exported?(module, :macros, fun, arity, module_exports))
   end
 
   defp import_allows?(_module, _selector, _fun, _arity, _module_exports), do: false
 
-  @spec imports(Scope.t(), Scope.scope_position()) :: [Scope.import_mfa()]
+  @spec imports(Scope.t(), Scope.scope_position()) :: [import_mfa()]
   def imports(%Scope{} = scope, position \\ :end, module_exports \\ &module_exports/1) do
     scope
     |> import_map(position, module_exports)
@@ -218,7 +225,7 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
         Map.put(
           current_imports,
           import_module,
-          function_and_arity_to_mfa(import_module, functions_to_import)
+          function_and_arity_to_mfa(import_module, string_names(functions_to_import))
         )
 
       [except: functions_to_except] ->
@@ -230,7 +237,8 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
         # the except clause from those that have been previously imported.
         # See: https://hexdocs.pm/elixir/1.13.0/Kernel.SpecialForms.html#import/2-selector
 
-        functions_to_except = function_and_arity_to_mfa(import_module, functions_to_except)
+        functions_to_except =
+          function_and_arity_to_mfa(import_module, string_names(functions_to_except))
 
         if already_imported?(current_imports, import_module) do
           Map.update!(current_imports, import_module, fn old_imports ->
@@ -250,6 +258,8 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     end
   end
 
+  defp string_names(fa_list), do: for({name, arity} <- fa_list, do: {Atom.to_string(name), arity})
+
   defp function_and_arity_to_mfa(current_module, fa_list) when is_list(fa_list) do
     Enum.map(fa_list, fn {function, arity} -> {current_module, function, arity} end)
   end
@@ -265,20 +275,19 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     end
   end
 
-  defp fetch_function_and_arities(module, type, module_exports) do
+  defp exported?(module, type, fun, arity, module_exports) do
     case module_exports.(module) do
-      {:ok, exports} -> function_and_arities_for_module(module, type, exports)
-      :error -> []
+      {:ok, exports} ->
+        {Atom.to_string(fun), arity} in function_and_arities_for_module(module, type, exports)
+
+      :error ->
+        false
     end
   end
 
   defp function_and_arities_for_module(module, :sigils, exports) do
     ProcessCache.trans({module, :info, :sigils}, fn ->
-      for {name, arity} <- exports.functions,
-          string_name = Atom.to_string(name),
-          sigil?(string_name, arity) do
-        {name, arity}
-      end
+      for {name, arity} <- exports.functions, sigil?(name, arity), do: {name, arity}
     end)
   end
 
@@ -287,8 +296,7 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
       exports
       |> Map.fetch!(type)
       |> Enum.reject(fn {name, arity} ->
-        string_name = Atom.to_string(name)
-        String.starts_with?(string_name, "_") or sigil?(string_name, arity)
+        String.starts_with?(name, "_") or sigil?(name, arity)
       end)
     end)
   end
@@ -313,7 +321,11 @@ defmodule Expert.Search.Indexer.Analysis.Imports do
     ProcessCache.trans({module, :indexing_exports}, fn ->
       with {:module, ^module} <- Code.ensure_loaded(module),
            true <- function_exported?(module, :__info__, 1) do
-        {:ok, %{functions: module.__info__(:functions), macros: module.__info__(:macros)}}
+        {:ok,
+         %{
+           functions: string_names(module.__info__(:functions)),
+           macros: string_names(module.__info__(:macros))
+         }}
       else
         _ -> :error
       end
