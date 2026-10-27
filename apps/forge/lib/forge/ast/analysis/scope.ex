@@ -53,9 +53,9 @@ defmodule Forge.Ast.Analysis.Scope do
   @spec alias_map(t(), scope_position()) :: %{[module()] => t()}
   def alias_map(%__MODULE__{} = scope, position \\ :end) do
     scope.aliases
-    # sorting by line ensures that aliases on later lines
-    # override aliases on earlier lines
-    |> Enum.sort_by(& &1.range.start.line)
+    # aliases are stored newest first, so reversing them ensures
+    # that later aliases override earlier ones, even on the same line
+    |> Enum.reverse()
     |> Enum.take_while(fn %Alias{range: alias_range} ->
       case position do
         %Position{} = pos ->

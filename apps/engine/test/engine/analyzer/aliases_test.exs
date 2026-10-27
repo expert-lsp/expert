@@ -230,6 +230,17 @@ defmodule Engine.Analyzer.AliasesTest do
       assert aliases[:Baz] == Other.Baz
     end
 
+    test "can be overridden on the same line" do
+      aliases =
+        ~q[
+          alias Foo.Bar.Baz; alias Other.Baz
+          |
+        ]
+        |> aliases_at_cursor()
+
+      assert aliases[:Baz] == Other.Baz
+    end
+
     test "can be accessed before being overridden" do
       aliases =
         ~q[
