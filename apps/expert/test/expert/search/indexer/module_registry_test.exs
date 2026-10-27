@@ -108,6 +108,21 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
              ModuleRegistry.module_exports(project, Stored)
   end
 
+  @tag :capture_log
+  test "starts empty when the store can't open", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "unwritable")
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, ".expert"), "")
+    project = root |> Forge.Document.Path.to_uri() |> Forge.Project.new()
+
+    start_supervised!({Sqlite, [project, runtime_versions: %{erlang: "test", elixir: "test"}]})
+    start_supervised!({Search.Store, [project, Sqlite]})
+    start_supervised!({ModuleRegistry, project})
+
+    assert {:error, _reason} = Search.Store.modules(project)
+    refute ModuleRegistry.available_module?(project, Kernel)
+  end
+
   test "persists registered modules", %{project: project} do
     start_supervised!({ModuleRegistry, project})
     ModuleRegistry.put(project, "Elixir.First", "/first.beam", :app, [{"run", 0}])

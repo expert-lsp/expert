@@ -11,6 +11,8 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   alias Expert.Search.Indexer.BeamFile
   alias Forge.Project
 
+  require Logger
+
   @type stored_exports :: %{functions: BeamFile.exports(), macros: BeamFile.exports()}
   @type module_metadata :: %{
           application: atom() | nil,
@@ -51,12 +53,19 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   end
 
   defp load(project, table) do
-    rows =
-      for {beam_path, module, application, exports} <- Search.Store.modules(project) do
-        {{:module, module}, %{application: application, beam_path: beam_path, exports: exports}}
-      end
+    case Search.Store.modules(project) do
+      modules when is_list(modules) ->
+        rows =
+          for {beam_path, module, application, exports} <- modules do
+            {{:module, module},
+             %{application: application, beam_path: beam_path, exports: exports}}
+          end
 
-    true = :ets.insert(table, rows)
+        true = :ets.insert(table, rows)
+
+      {:error, reason} ->
+        Logger.warning("Could not load stored modules: #{inspect(reason)}")
+    end
   end
 
   @impl GenServer
