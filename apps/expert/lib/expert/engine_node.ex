@@ -277,9 +277,11 @@ defmodule Expert.EngineNode do
   @start_timeout 6_000
 
   defp start_node(project, paths, opts) do
+    timeout = Expert.Port.path_discovery_timeout() + @start_timeout + 500
+
     project
     |> name()
-    |> GenServer.call({:start, paths, opts}, @start_timeout + 500)
+    |> GenServer.call({:start, paths, opts}, timeout)
   end
 
   @impl GenServer

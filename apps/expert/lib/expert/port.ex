@@ -19,6 +19,7 @@ defmodule Expert.Port do
   @default_unix_path "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   @path_marker "__EXPERT_PATH__"
   @path_fetch_cmd_timeout_ms 5_000
+  @slow_path_discovery_ms 1_000
 
   # These variables are interpreted by release, Elixir, or Erlang launchers and
   # must not leak from Expert's own runtime into project runtime detection.
@@ -40,6 +41,10 @@ defmodule Expert.Port do
     "MIX_REBAR3",
     "REBAR_CACHE_DIR"
   ]
+
+  # Interactive shell discovery may retry once without interactive mode.
+  @doc false
+  def path_discovery_timeout, do: 2 * @path_fetch_cmd_timeout_ms
 
   @doc """
   Launches Elixir in a port.
@@ -256,9 +261,30 @@ defmodule Expert.Port do
   end
 
   defp shell_project_path(%Project{} = project, shell) do
+    started_at = System.monotonic_time(:millisecond)
+
     case path_env_at_directory(Project.root_path(project), shell) do
-      {:ok, path} -> path
-      {:error, :timeout} -> system_path_without_release_root()
+      {:ok, path} ->
+        elapsed = System.monotonic_time(:millisecond) - started_at
+
+        if elapsed >= @slow_path_discovery_ms do
+          Logger.warning(
+            "Project PATH discovery using #{shell} took #{elapsed}ms; check shell startup hooks if engine startup is slow",
+            project: project
+          )
+        end
+
+        path
+
+      {:error, :timeout} ->
+        elapsed = System.monotonic_time(:millisecond) - started_at
+
+        Logger.warning(
+          "Project PATH discovery using #{shell} timed out after #{elapsed}ms; falling back to inherited PATH",
+          project: project
+        )
+
+        system_path_without_release_root()
     end
   end
 
@@ -320,6 +346,10 @@ defmodule Expert.Port do
 
       {:error, :timeout} ->
         if "-i" in args do
+          Logger.warning(
+            "Interactive PATH discovery using #{shell} timed out after #{@path_fetch_cmd_timeout_ms}ms; retrying without interactive mode"
+          )
+
           args
           |> List.delete("-i")
           |> run_path_fetch_command(shell, env)
@@ -350,7 +380,8 @@ defmodule Expert.Port do
   defp cmd_with_timeout(shell, args, env, timeout) do
     task = Task.async(fn -> System.cmd(shell, args, env: env) end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task) do
+    # Do not add Task.shutdown/1's default five-second grace period to each attempt.
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> {:ok, result}
       _ -> {:error, :timeout}
     end
