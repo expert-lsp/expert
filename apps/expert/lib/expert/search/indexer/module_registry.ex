@@ -45,11 +45,10 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     end
   end
 
-  def clear(%Project{} = project), do: GenServer.call(name(project), :clear, :infinity)
+  def clear(%Project{} = project), do: GenServer.call(name(project), :clear)
 
   def prune(%Project{} = project, beam_paths) do
-    beam_paths = MapSet.new(beam_paths, &Forge.Path.native/1)
-    GenServer.call(name(project), {:prune, beam_paths}, :infinity)
+    GenServer.call(name(project), {:prune, MapSet.new(beam_paths, &Forge.Path.native/1)})
   end
 
   @impl GenServer
