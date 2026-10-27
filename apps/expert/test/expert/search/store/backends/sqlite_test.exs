@@ -221,7 +221,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[8]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[9]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -895,6 +895,63 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Sqlite.replace_all(project, [structure])
 
       assert {:ok, %{1 => %{2 => %{}}}} = Sqlite.structure_for_path(project, path)
+    end
+  end
+
+  describe "modules" do
+    setup %{project: project, runtime_versions: runtime_versions} do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      :ok
+    end
+
+    test "replaces every stored module", %{project: project} do
+      old = {"/ebin/Elixir.Old.beam", "Elixir.Old", :app, %{functions: [{"run", 0}], macros: []}}
+      new = {"/ebin/Elixir.New.beam", "Elixir.New", :app, %{functions: [], macros: [{"run", 1}]}}
+
+      assert :ok = Sqlite.replace_modules(project, [old])
+      assert :ok = Sqlite.replace_modules(project, [new])
+
+      assert [^new] = Sqlite.modules(project)
+    end
+
+    test "clears modules by path before storing the given ones", %{project: project} do
+      kept = {"/ebin/Elixir.Kept.beam", "Elixir.Kept", :app, %{functions: [], macros: []}}
+
+      reread =
+        {"/ebin/Elixir.Reread.beam", "Elixir.Reread", :app,
+         %{functions: [{"run", 0}], macros: []}}
+
+      removed =
+        {"/ebin/Elixir.Removed.beam", "Elixir.Removed", :app, %{functions: [], macros: []}}
+
+      updated =
+        {"/ebin/Elixir.Reread.beam", "Elixir.Reread", :app,
+         %{functions: [{"run", 1}], macros: []}}
+
+      assert :ok = Sqlite.replace_modules(project, [kept, reread, removed])
+
+      assert :ok =
+               Sqlite.update_modules(project, [updated], [
+                 "/ebin/Elixir.Reread.beam",
+                 "/ebin/Elixir.Removed.beam"
+               ])
+
+      assert Enum.sort(Sqlite.modules(project)) == Enum.sort([kept, updated])
+    end
+
+    test "keeps modules when entries are replaced", %{project: project} do
+      module = {"/ebin/Elixir.Kept.beam", "Elixir.Kept", :app, %{functions: [], macros: []}}
+
+      assert :ok = Sqlite.replace_modules(project, [module])
+      assert :ok = Sqlite.replace_all(project, [])
+
+      assert [^module] = Sqlite.modules(project)
     end
   end
 
