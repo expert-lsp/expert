@@ -144,6 +144,32 @@ defmodule Expert.Search.Indexer.SourceTest do
   end
 
   @tag :tmp_dir
+  test "expands uses only in files the build never traced", %{
+    project: project,
+    tmp_dir: tmp_dir
+  } do
+    test_pid = self()
+    patch_engine_lookups(project)
+
+    patch(EngineApi, :analyze, fn ^project, document, _opts ->
+      send(test_pid, {:expanded, document.path})
+      Ast.analyze(document)
+    end)
+
+    document = caller_document(tmp_dir, "lib/caller.ex")
+    register_traced_caller(project, tmp_dir, document.path)
+    path = document.path
+
+    assert {:ok, _entries} = Source.index_document(document, nil, project)
+    refute_received {:expanded, ^path}
+
+    script = caller_document(tmp_dir, "test/caller_test.exs")
+    script_path = script.path
+    assert {:ok, _entries} = Source.index_document(script, nil, project)
+    assert_received {:expanded, ^script_path}
+  end
+
+  @tag :tmp_dir
   test "indexes a document with the imported calls that came with it, never the beam's", %{
     project: project,
     tmp_dir: tmp_dir

@@ -51,9 +51,9 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   end
 
   # a build's calls hold the positions of the file its module was compiled from
-  defp built_imported_calls(_analysis, nil), do: %{}
+  def built_imported_calls(_analysis, nil), do: %{}
 
-  defp built_imported_calls(%Analysis{} = analysis, project) do
+  def built_imported_calls(%Analysis{} = analysis, project) do
     for module <- defined_modules(analysis),
         {file, calls} <- [ModuleRegistry.imported_calls(project, module)],
         file == analysis.document.path,
@@ -61,7 +61,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
         do: {module, calls}
   end
 
-  defp defined_modules(%Analysis{} = analysis) do
+  def defined_modules(%Analysis{} = analysis) do
     for %Scope{module: [_ | _] = segments} <- analysis.scopes,
         Enum.all?(segments, &is_atom/1),
         uniq: true,
