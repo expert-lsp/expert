@@ -78,28 +78,10 @@ defmodule Expert.Search.Indexer.Paths do
   end
 
   defp source_files(root, excluded) do
-    prepared_excluded = prepare_excluded(excluded)
-
     [root, "**", @indexable_extensions]
-    |> Forge.Path.glob()
-    |> Enum.reject(&path_contained?(&1, prepared_excluded))
+    |> Forge.Path.glob(exclude: excluded)
+    |> Enum.reject(fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end)
     |> Enum.uniq()
-  end
-
-  defp prepare_excluded(excluded) do
-    Enum.map(excluded, fn dir ->
-      norm = Forge.Path.normalize(dir)
-      prefix = if String.ends_with?(norm, "/"), do: norm, else: norm <> "/"
-      {norm, prefix}
-    end)
-  end
-
-  defp path_contained?(path, prepared_excluded) do
-    norm = Forge.Path.normalize(path)
-
-    Enum.any?(prepared_excluded, fn {exact, prefix} ->
-      norm == exact or String.starts_with?(norm, prefix)
-    end)
   end
 
   defp application_beams(build_path, apps) do
