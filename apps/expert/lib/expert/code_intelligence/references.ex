@@ -5,6 +5,8 @@ defmodule Expert.CodeIntelligence.References do
   alias Expert.EngineApi
   alias Expert.Search.Indexer
   alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Indexer.Manifest
+  alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Store
   alias Expert.Search.Subject
   alias Forge.Ast
@@ -44,7 +46,7 @@ defmodule Expert.CodeIntelligence.References do
          {:ok, references} <-
            Store.all(project, paths: [analysis.document.path], subtype: :reference),
          %Entry{type: {kind, _}, subject: subject, range: range} when kind in [:function, :macro] <-
-           reference_at(references, analysis, position),
+           containing_entry(references, analysis, position, :reference),
          {module, function, arity} <- Forge.Code.parse_mfa(subject) do
       {:ok, {:call, module, function, arity}, range}
     else
@@ -72,6 +74,10 @@ defmodule Expert.CodeIntelligence.References do
         subtype \\ :_
       ) do
     {:ok, entries} = Indexer.Quoted.entries_at(analysis, project, position)
+    containing_entry(entries, analysis, position, subtype)
+  end
+
+  defp containing_entry(entries, %Analysis{} = analysis, %Position{} = position, subtype) do
     function = function_at(analysis, position)
 
     entries
@@ -236,6 +242,18 @@ defmodule Expert.CodeIntelligence.References do
 
       _ ->
         :error
+    end
+  end
+
+  defp current_document?(_project, %Document{dirty?: true}), do: false
+
+  defp current_document?(project, %Document{} = document) do
+    with {:ok, manifest} <- ManifestStore.load(project),
+         {:ok, entry} <- Manifest.fetch(manifest, document.path),
+         true <- Manifest.Entry.matches_file?(entry) do
+      File.read(document.path) == {:ok, Document.to_string(document)}
+    else
+      _ -> false
     end
   end
 end

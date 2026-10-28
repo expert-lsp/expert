@@ -34,14 +34,6 @@ defmodule Expert.Search.Indexer do
     ManifestStore.record_integrations(project, Integrations.indexer_module_names())
   end
 
-  def document(%Project{} = project, uri) do
-    with {:ok, document, analysis} <- Forge.Document.Store.fetch(uri, :analysis),
-         {:ok, entries} <-
-           Quoted.index_with_cleanup(analysis, project) do
-      {:ok, document.path, entries}
-    end
-  end
-
   def document(%Project{} = project, %Forge.Document{} = document, imported_calls) do
     imported_calls =
       Map.new(imported_calls, fn {module, calls} ->
