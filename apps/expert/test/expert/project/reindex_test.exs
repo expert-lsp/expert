@@ -63,11 +63,13 @@ defmodule Expert.Project.ReindexTest do
     Process.put(uri, entries)
   end
 
-  describe "uri/1" do
+  defp compiled(uri), do: file_compiled(document: Document.new(uri, "", 1))
+
+  describe "file_compiled" do
     setup do
       test = self()
 
-      patch(Reindex.State, :entries_for_uri, fn _project, uri ->
+      patch(Indexer, :document, fn _project, %Document{uri: uri}, _calls ->
         entries =
           test
           |> Process.info()
@@ -87,12 +89,12 @@ defmodule Expert.Project.ReindexTest do
       :ok
     end
 
-    test "reindexes a specific uri", %{project: project} do
+    test "reindexes a compiled document", %{project: project} do
       uri = "file:///file.ex"
       path = Document.Path.ensure_path(uri)
       entries = [reference()]
       put_entries(uri, entries)
-      Reindex.uri(project, uri)
+      send(Reindex.name(project), compiled(uri))
       assert_receive {:entries, ^path, ^entries}
     end
 
@@ -102,7 +104,7 @@ defmodule Expert.Project.ReindexTest do
       new_entries = [reference(), definition()]
       put_entries(uri, new_entries)
       Reindex.perform(project)
-      Reindex.uri(project, uri)
+      send(Reindex.name(project), compiled(uri))
 
       assert_receive {:entries, ^path, ^new_entries}
     end

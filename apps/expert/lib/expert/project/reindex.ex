@@ -12,8 +12,6 @@ defmodule Expert.Project.Reindex do
   alias Forge.Document
   alias Forge.Project
 
-  require Logger
-
   defmodule State do
     @default_debounce_interval_millis 1000
 
@@ -21,7 +19,6 @@ defmodule Expert.Project.Reindex do
               reindex_fun: nil,
               index_task: nil,
               pending_updates: %{},
-              pending_uris: MapSet.new(),
               pending_documents: %{},
               debounce_timer: nil,
               debounce_interval_millis: @default_debounce_interval_millis
@@ -42,18 +39,10 @@ defmodule Expert.Project.Reindex do
       %__MODULE__{state | index_task: nil}
     end
 
-    def reindex_uri(%__MODULE__{} = state, uri) do
-      debounce(%{state | pending_uris: MapSet.put(state.pending_uris, uri)})
-    end
-
     def reindex_document(%__MODULE__{} = state, %Document{} = document, imported_calls) do
       pending_documents =
         Map.put(state.pending_documents, document.uri, {document, imported_calls})
 
-      debounce(%{state | pending_documents: pending_documents})
-    end
-
-    defp debounce(%__MODULE__{} = state) do
       if state.debounce_timer do
         {timer, _timer_ref} = state.debounce_timer
         Process.cancel_timer(timer)
@@ -64,38 +53,21 @@ defmodule Expert.Project.Reindex do
       timer =
         Process.send_after(self(), {:flush_pending, timer_ref}, state.debounce_interval_millis)
 
-      %{state | debounce_timer: {timer, timer_ref}}
+      %{state | pending_documents: pending_documents, debounce_timer: {timer, timer_ref}}
     end
 
-    def flush_pending_uris(%__MODULE__{index_task: nil} = state) do
-      for {:ok, path, entries} <- pending_entries(state) do
+    def flush_pending_documents(%__MODULE__{index_task: nil} = state) do
+      for {path, entries} <- pending_entries(state) do
         update_search_store(state.project, path, entries)
       end
 
-      %{state | pending_uris: MapSet.new(), pending_documents: %{}, debounce_timer: nil}
+      %{state | pending_documents: %{}, debounce_timer: nil}
     end
 
-    def flush_pending_uris(%__MODULE__{} = state) do
-      new_pending_updates =
-        Enum.reduce(pending_entries(state), state.pending_updates, fn
-          {:ok, path, entries}, acc -> Map.put(acc, path, entries)
-          _, acc -> acc
-        end)
+    def flush_pending_documents(%__MODULE__{} = state) do
+      pending_updates = Enum.into(pending_entries(state), state.pending_updates)
 
-      %{
-        state
-        | pending_uris: MapSet.new(),
-          pending_documents: %{},
-          debounce_timer: nil,
-          pending_updates: new_pending_updates
-      }
-    end
-
-    defp pending_entries(%__MODULE__{} = state) do
-      Enum.map(state.pending_uris, &entries_for_uri(state.project, &1)) ++
-        Enum.map(state.pending_documents, fn {_uri, {document, imported_calls}} ->
-          Search.Indexer.document(state.project, document, imported_calls)
-        end)
+      %{state | pending_documents: %{}, debounce_timer: nil, pending_updates: pending_updates}
     end
 
     def flush_pending_updates(%__MODULE__{} = state) do
@@ -106,14 +78,10 @@ defmodule Expert.Project.Reindex do
       %__MODULE__{state | pending_updates: %{}}
     end
 
-    defp entries_for_uri(%Project{} = project, uri) do
-      case Search.Indexer.document(project, uri) do
-        {:ok, path, entries} ->
-          {:ok, path, entries}
-
-        error ->
-          Logger.error("Could not update index because #{inspect(error)}")
-          error
+    defp pending_entries(%__MODULE__{} = state) do
+      for {_uri, {document, imported_calls}} <- state.pending_documents do
+        {:ok, path, entries} = Search.Indexer.document(state.project, document, imported_calls)
+        {path, entries}
       end
     end
 
@@ -143,7 +111,6 @@ defmodule Expert.Project.Reindex do
 
   def name(%Project{} = project), do: :"#{Project.unique_name(project)}::reindex"
 
-  def uri(%Project{} = project, uri), do: GenServer.cast(name(project), {:reindex_uri, uri})
   def perform(%Project{} = project), do: GenServer.call(name(project), :perform)
   def running?(%Project{} = project), do: GenServer.call(name(project), :running?)
 
@@ -176,11 +143,6 @@ defmodule Expert.Project.Reindex do
 
   def handle_call(:perform, _from, state) do
     {:reply, {:error, "Already Running"}, state}
-  end
-
-  @impl GenServer
-  def handle_cast({:reindex_uri, uri}, %State{} = state) do
-    {:noreply, State.reindex_uri(state, uri)}
   end
 
   @impl GenServer
@@ -217,7 +179,7 @@ defmodule Expert.Project.Reindex do
   end
 
   def handle_info({:flush_pending, timer_ref}, %State{debounce_timer: {_, timer_ref}} = state) do
-    {:noreply, State.flush_pending_uris(state)}
+    {:noreply, State.flush_pending_documents(state)}
   end
 
   def handle_info({:flush_pending, _timer_ref}, %State{} = state) do

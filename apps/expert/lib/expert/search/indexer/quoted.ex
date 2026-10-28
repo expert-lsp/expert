@@ -12,12 +12,6 @@ defmodule Expert.Search.Indexer.Quoted do
     end
   end
 
-  def index_with_cleanup(%Analysis{} = analysis, %Project{} = project) do
-    ProcessCache.with_cleanup do
-      index(analysis, nil, project)
-    end
-  end
-
   def index_with_cleanup(%Analysis{} = analysis, %Project{} = project, imported_calls) do
     ProcessCache.with_cleanup do
       index(analysis, nil, project, imported_calls)
@@ -26,20 +20,12 @@ defmodule Expert.Search.Indexer.Quoted do
 
   def index(analysis, extractors \\ nil), do: do_index(analysis, extractors, nil, nil)
 
-  def index(%Analysis{} = analysis, extractors, project) do
-    do_index(analysis, extractors, project, nil)
-  end
-
   def index(%Analysis{} = analysis, extractors, project, imported_calls) do
     do_index(analysis, extractors, project, imported_calls)
   end
 
   defp do_index(%Analysis{valid?: true} = analysis, extractors, nil, _imported_calls) do
     {:ok, extract_entries(analysis, extractors)}
-  end
-
-  defp do_index(%Analysis{valid?: true} = analysis, extractors, project, nil) do
-    {:ok, extract_entries(analysis, extractors, project)}
   end
 
   defp do_index(%Analysis{valid?: true} = analysis, extractors, project, imported_calls) do
