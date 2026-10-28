@@ -7,7 +7,20 @@ defmodule Forge.Path do
   which have platform-specific quirks.
   """
 
-  def glob(path_segments) when is_list(path_segments) do
+  def glob(path_segments, opts \\ []) when is_list(path_segments) and is_list(opts) do
+    case Keyword.get(opts, :exclude) do
+      nil ->
+        do_glob(path_segments)
+
+      [] ->
+        do_glob(path_segments)
+
+      excluded when is_list(excluded) ->
+        glob_with_excluded(path_segments, excluded)
+    end
+  end
+
+  defp do_glob(path_segments) do
     path_segments
     |> Path.join()
     |> normalize()
@@ -15,9 +28,57 @@ defmodule Forge.Path do
     |> native_paths()
   end
 
-  def normalize(path) when is_binary(path) do
-    String.replace(path, "\\", "/")
+  defp glob_with_excluded(path_segments, excluded) do
+    root = path_segments |> hd() |> normalize()
+
+    norm_excluded =
+      excluded
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(fn p ->
+        norm = normalize(p)
+
+        expanded =
+          if Path.type(norm) == :relative and Path.type(root) == :absolute do
+            Path.expand(norm, root)
+          else
+            norm
+          end
+
+        String.trim_trailing(expanded, "/")
+      end)
+
+    exact_set = MapSet.new(norm_excluded)
+    prefix_list = Enum.map(norm_excluded, &(&1 <> "/"))
+
+    pattern =
+      path_segments
+      |> Path.join()
+      |> normalize()
+      |> String.to_charlist()
+
+    Process.put(:forge_wildcard_excluded, {exact_set, prefix_list})
+
+    try do
+      pattern
+      |> :filelib.wildcard(Forge.Path.Wildcard)
+      |> Enum.map(&:unicode.characters_to_binary/1)
+      |> native_paths()
+    after
+      Process.delete(:forge_wildcard_excluded)
+    end
   end
+
+  def normalize(path) when is_binary(path) do
+    path
+    |> String.replace("\\", "/")
+    |> normalize_drive_letter()
+  end
+
+  defp normalize_drive_letter(<<drive, ":", rest::binary>>) when drive in ?A..?Z do
+    <<drive + 32, ":", rest::binary>>
+  end
+
+  defp normalize_drive_letter(path), do: path
 
   def native(path) when is_binary(path) do
     :filename.nativename(path)
@@ -105,5 +166,46 @@ defmodule Forge.Path do
     :user_cache
     |> :filename.basedir("expert")
     |> to_string()
+  end
+end
+
+defmodule Forge.Path.Wildcard do
+  @moduledoc false
+
+  def read_link_info(file), do: :file.read_link_info(file)
+  def read_file_info(file), do: :file.read_file_info(file)
+
+  def list_dir(dir) do
+    str_dir =
+      dir
+      |> :unicode.characters_to_binary()
+      |> Forge.Path.normalize()
+      |> String.trim_trailing("/")
+
+    {exact_set, prefix_list} = Process.get(:forge_wildcard_excluded, {MapSet.new(), []})
+
+    if MapSet.member?(exact_set, str_dir) or String.starts_with?(str_dir, prefix_list) do
+      {:error, :enoent}
+    else
+      case :file.list_dir(dir) do
+        {:ok, files} ->
+          filtered =
+            Enum.filter(files, fn file ->
+              file != ~c"" and hd(file) != ?. and
+                not (
+                  entry_str = :unicode.characters_to_binary(file)
+                  entry_path = str_dir <> "/" <> entry_str
+
+                  MapSet.member?(exact_set, entry_path) or
+                    String.starts_with?(entry_path, prefix_list)
+                )
+            end)
+
+          {:ok, filtered}
+
+        other ->
+          other
+      end
+    end
   end
 end
