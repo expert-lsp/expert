@@ -4,8 +4,12 @@ defmodule Expert.Search.Indexer.BeamsTest do
 
   import Forge.Test.RangeSupport
 
+  alias Expert.EngineApi
   alias Expert.Search.Indexer.Beams
+  alias Expert.Search.Indexer.ModuleRegistry
+  alias Forge.Document
   alias Forge.Formats
+  alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
   @moduletag :tmp_dir
@@ -22,6 +26,123 @@ defmodule Expert.Search.Indexer.BeamsTest do
   end
 
   describe "stream/1" do
+    test "compatible manager decoding does not call the project runtime", %{tmp_dir: root} do
+      # Arrange
+      module = unique_module("CompatibleRuntime")
+
+      %{beam_paths: [path]} =
+        compile_source!(root, "defmodule #{inspect(module)}, do: nil",
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      project = root |> Document.Path.to_uri() |> Project.new()
+      start_supervised!({ModuleRegistry, project})
+
+      patch(EngineApi, :beam_metadata, fn _, _ ->
+        flunk("Compatible decoding must remain local")
+      end)
+
+      # Act
+      entries = [path] |> Beams.stream(project: project) |> Enum.map(&elem(&1, 0))
+      # Assert
+      assert Enum.any?(entries, &match?(%Entry{subject: ^module}, &1))
+    end
+
+    test "an unavailable runtime preserves the skipped BEAM manifest", %{tmp_dir: root} do
+      # Arrange
+      module = unique_module("UnavailableRuntime")
+
+      %{beam_paths: [path]} =
+        compile_source!(root, "defmodule #{inspect(module)}, do: nil",
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      project = root |> Document.Path.to_uri() |> Project.new()
+      patch(EngineApi, :beam_metadata, fn _, _ -> exit(:nodedown) end)
+      patch(:beam_lib, :chunks, fn _, _ -> {:error, :beam_lib, {:invalid_chunk, ~c"ExpT"}} end)
+      # Act
+      items = [path] |> Beams.stream(project: project) |> Enum.to_list()
+      # Assert
+      assert [{nil, [%{input_path: ^path, output_path: nil}]}] = items
+    end
+
+    test "uses the project runtime when the manager cannot decode exports", %{tmp_dir: root} do
+      # Arrange: OTP 27 rejects the OTP 29 ExpT chunk before it can read debug info.
+      module = unique_module("NewerRuntime")
+
+      %{beam_paths: [path]} =
+        compile_source!(
+          root,
+          """
+          defmodule #{inspect(module)} do
+            use GenServer
+            def init(value), do: {:ok, value}
+          end
+          """,
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      beam = File.read!(path)
+      {:ok, {^module, chunks}} = :beam_lib.chunks(beam, [:debug_info, :exports])
+      {:debug_info_v1, backend, data} = chunks[:debug_info]
+      {:ok, metadata} = backend.debug_info(:elixir_v1, module, data, [])
+      remote_result = {:ok, module, chunks[:exports], {:ok, metadata}}
+      project = root |> Document.Path.to_uri() |> Project.new()
+      start_supervised!({ModuleRegistry, project})
+      owner = self()
+
+      patch(EngineApi, :beam_metadata, fn ^project, ^beam ->
+        send(owner, :runtime_decode)
+        remote_result
+      end)
+
+      patch(:beam_lib, :chunks, fn _, _ -> {:error, :beam_lib, {:invalid_chunk, ~c"ExpT"}} end)
+
+      # Act
+      entries =
+        [path]
+        |> Beams.stream(project: project)
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.reject(&is_nil/1)
+
+      # Assert
+      assert_receive :runtime_decode
+
+      assert %Entry{metadata: %{via: :use}} =
+               Enum.find(entries, &(&1.subject == Formats.mfa(module, :child_spec, 1)))
+
+      assert {:ok, %{functions: functions}} = ModuleRegistry.module_exports(project, module)
+      assert {:child_spec, 1} in functions
+      refute_receive :runtime_decode
+    end
+
+    test "keeps GenServer child_spec as a generated workspace definition", %{tmp_dir: tmp_dir} do
+      # Arrange
+      module = unique_module("GenServerChildSpec")
+
+      source = """
+      defmodule #{inspect(module)} do
+        use GenServer, restart: :temporary
+        def init(value), do: {:ok, value}
+      end
+      """
+
+      # Act
+      %{entries: entries} =
+        index_source!(tmp_dir, source, expected_modules: [module], rewrite_source?: false)
+
+      child_spec = Enum.find(entries, &(&1.subject == Formats.mfa(module, :child_spec, 1)))
+
+      # Assert
+      assert %Entry{type: {:function, :public}, subtype: :definition} = child_spec
+      assert child_spec.metadata.original_mfa == Formats.mfa(GenServer, :child_spec, 1)
+      assert child_spec.metadata.via == :use
+      assert child_spec.range.start.line == 2
+    end
+
     test "uses native source paths from BEAM metadata", %{tmp_dir: tmp_dir} do
       module = unique_module("NativeSourcePath")
 
