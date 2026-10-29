@@ -11,7 +11,6 @@ defmodule Expert.Search.Indexer.Analyzer do
 
   require Logger
 
-  defdelegate aliases_at(analysis, position), to: Aliases, as: :at
   defdelegate imports_at(analysis, position), to: Imports, as: :at
   defdelegate import_module_for(analysis, position, fun, arity), to: Imports, as: :module_for
 
