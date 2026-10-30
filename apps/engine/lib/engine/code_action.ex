@@ -17,7 +17,6 @@ defmodule Engine.CodeAction do
     Handlers.AddAlias,
     Handlers.Require,
     Handlers.RemoveUnusedAlias,
-    Handlers.Refactorex,
     Handlers.CreateUndefinedFunction
   ]
 
@@ -27,9 +26,8 @@ defmodule Engine.CodeAction do
   ## Options
 
     * `defer_edits?` - when `true`, handlers supporting deferral return actions without edits,
-      carrying a `data` payload for a later `codeAction/resolve` request (see `resolve_refactor/3`).
-      Handlers without deferral support ignore the option and return their edits inline. Defaults
-      to `false`.
+      carrying a `data` payload for a later `codeAction/resolve` request. Handlers without deferral
+      support ignore the option and return their edits inline. Defaults to `false`.
   """
   @spec for_range(
           Document.t(),
@@ -47,16 +45,6 @@ defmodule Engine.CodeAction do
         []
       end
     end)
-  end
-
-  @doc """
-  Resolves the edits for a deferred refactor action, namely those listed by `Engine.CodeAction.Handlers.Refactorex`.
-  """
-  @spec resolve_refactor(Document.t(), Range.t(), String.t()) ::
-          {:ok, Forge.Document.Changes.t()} | :error
-
-  def resolve_refactor(%Document{} = doc, %Range{} = range, module_name) do
-    Handlers.Refactorex.resolve(doc, range, module_name)
   end
 
   defp handle_kinds?(_handler, :all), do: true
