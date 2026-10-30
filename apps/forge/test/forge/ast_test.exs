@@ -400,6 +400,74 @@ defmodule Forge.AstTest do
 
       assert log =~ "Spitfire crashed when parsing /path/to/file.ex"
     end
+
+    test "does not crash or log when parsing EEx template files" do
+      document =
+        Document.new(
+          "file:///project/priv/templates/phx.gen.auth/settings_live.ex",
+          """
+          defmodule <%= inspect context.web_module %>.<%= inspect Module.concat(schema.web_namespace, schema.alias) %>SettingsLive do
+            use <%= inspect context.web_module %>, :live_view
+            alias <%= inspect context.module %>
+          end
+          """,
+          0
+        )
+
+      log =
+        capture_log(fn ->
+          assert {:error, {[line: 1, column: 1], message}} = Ast.from(document)
+          assert message =~ "template files are not valid Elixir source"
+        end)
+
+      refute log =~ "Spitfire crashed"
+    end
+
+    test "does not crash or log when parsing non-template-path document with top-level EEx" do
+      document =
+        Document.new(
+          "file:///project/lib/templated.ex",
+          """
+          defmodule <%= inspect mod %> do
+            def foo, do: :bar
+          end
+          """,
+          0
+        )
+
+      log =
+        capture_log(fn ->
+          assert {:error, {[line: 1, column: 1], message}} = Ast.from(document)
+          assert message =~ "template files are not valid Elixir source"
+        end)
+
+      refute log =~ "Spitfire crashed"
+    end
+  end
+
+  describe "eex_template?/1" do
+    test "identifies top-level EEx template expressions" do
+      assert Ast.eex_template?("defmodule <%= mod %> do end")
+      assert Ast.eex_template?("<%= if true do %>\ndef foo, do: 1\n<% end %>")
+      assert Ast.eex_template?("defmodule Foo do\n  use <%= inspect mod %>\nend")
+    end
+
+    test "returns false for normal Elixir code and LiveView HEEx templates" do
+      refute Ast.eex_template?("defmodule Foo do def bar, do: 1 end")
+
+      liveview = """
+      defmodule MyLive do
+        def render(assigns) do
+          ~H"<div><%= @user %></div>"
+        end
+      end
+      """
+
+      refute Ast.eex_template?(liveview)
+      refute Ast.eex_template?("defmodule S do def text, do: \"hello <%= world %>\" end")
+      refute Ast.eex_template?("# A comment with <%= foo %>\ndefmodule Foo do end")
+      refute Ast.eex_template?("def foo(a), do: a < %Bar{val: 1}")
+    end
   end
 
   defp ast(s) do
