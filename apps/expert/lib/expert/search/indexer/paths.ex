@@ -79,7 +79,7 @@ defmodule Expert.Search.Indexer.Paths do
 
   defp source_files(root, excluded) do
     [root, "**", @indexable_extensions]
-    |> Forge.Path.glob()
+    |> Forge.Path.glob(exclude: excluded)
     |> Enum.reject(fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end)
     |> Enum.uniq()
   end
