@@ -4,27 +4,6 @@ defmodule Expert.Search.Indexer.Analysis.Aliases do
   alias Forge.Ast.Analysis.Scope
   alias Forge.Document.Position
 
-  @spec at(Analysis.t(), Position.t()) :: %{atom() => module()}
-  def at(%Analysis{} = analysis, %Position{} = position) do
-    case Analysis.scopes_at(analysis, position) do
-      [%Scope{} = scope | _] ->
-        scope
-        |> Scope.alias_map(position)
-        |> Enum.reduce(%{}, fn {as, %Alias{} = alias}, acc ->
-          segments = alias.module
-
-          if is_list(segments) and Enum.all?(segments, &is_atom/1) do
-            Map.put(acc, as, Alias.to_module(alias))
-          else
-            acc
-          end
-        end)
-
-      [] ->
-        %{}
-    end
-  end
-
   @type in_scope :: {[Alias.t()], pos_integer()}
 
   @spec in_scope(Analysis.t(), Position.t()) :: in_scope()
