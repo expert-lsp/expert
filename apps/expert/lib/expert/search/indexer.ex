@@ -7,6 +7,7 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
+  alias Expert.Search.Subject
   alias Forge.Project
 
   @entry_chunk_size 4_000
@@ -268,10 +269,10 @@ defmodule Expert.Search.Indexer do
 
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: {kind, _}})
        when kind in [:function, :macro],
-       do: {path, subject, subtype, kind}
+       do: {path, Subject.key(subject), subtype, kind}
 
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: type}),
-    do: {path, subject, subtype, type}
+    do: {path, Subject.key(subject), subtype, type}
 
   defp source_indexer(project) do
     fn path, source ->

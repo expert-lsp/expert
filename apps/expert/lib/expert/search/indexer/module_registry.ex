@@ -7,13 +7,14 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
 
   alias Expert.EngineApi
   alias Expert.Project.Store
+  alias Expert.Search.Indexer.BeamFile
   alias Forge.Project
 
-  @type exports :: %{functions: [{atom(), arity()}], macros: [{atom(), arity()}]}
+  @type stored_exports :: %{functions: BeamFile.exports(), macros: BeamFile.exports()}
   @type module_metadata :: %{
           application: atom() | nil,
           beam_path: Path.t() | nil,
-          exports: exports()
+          exports: stored_exports()
         }
 
   def start_link(%Project{} = project) do
@@ -80,26 +81,18 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     {:reply, :ok, table}
   end
 
-  @spec put(
-          Project.t(),
-          module(),
-          Path.t(),
-          atom() | nil,
-          [{atom(), arity()}]
-        ) :: :ok
+  @spec put(Project.t(), String.t(), Path.t(), atom() | nil, BeamFile.exports()) :: :ok
   def put(%Project{} = project, module, beam_path, application, beam_exports) do
     put_all(project, [{module, beam_path, application, beam_exports}])
   end
 
-  @spec put_all(
-          Project.t(),
-          [{module(), Path.t(), atom() | nil, [{atom(), arity()}]}]
-        ) :: :ok
+  @spec put_all(Project.t(), [{String.t(), Path.t(), atom() | nil, BeamFile.exports()}]) :: :ok
   def put_all(%Project{} = _project, []), do: :ok
 
   def put_all(%Project{} = project, modules) when is_list(modules) do
     objects =
-      Enum.map(modules, fn {module, beam_path, application, beam_exports} ->
+      Enum.map(modules, fn {module, beam_path, application, beam_exports}
+                           when is_binary(module) ->
         metadata = %{
           application: application,
           beam_path: Forge.Path.native(beam_path),
@@ -118,11 +111,11 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def application(nil, _module), do: nil
 
   def application(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
-      [{{:module, ^module}, %{application: nil}}] ->
+    case :ets.lookup(name(project), key(module)) do
+      [{_key, %{application: nil}}] ->
         engine_lookup(project, :application, module, nil)
 
-      [{{:module, ^module}, %{application: application}}] ->
+      [{_key, %{application: application}}] ->
         application
 
       [] ->
@@ -134,16 +127,16 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def available_module?(nil, _module), do: false
 
   def available_module?(%Project{} = project, module) when is_atom(module) do
-    :ets.member(name(project), {:module, module}) or
+    :ets.member(name(project), key(module)) or
       engine_lookup(project, :available_module?, module, false)
   end
 
-  @spec module_exports(Project.t() | nil, module()) :: {:ok, exports()} | :error
+  @spec module_exports(Project.t() | nil, module()) :: {:ok, stored_exports()} | :error
   def module_exports(nil, _module), do: :error
 
   def module_exports(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
-      [{{:module, ^module}, %{exports: exports}}] -> {:ok, exports}
+    case :ets.lookup(name(project), key(module)) do
+      [{_key, %{exports: exports}}] -> {:ok, exports}
       [] -> engine_lookup(project, :module_exports, module, :error)
     end
   end
@@ -152,8 +145,8 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def beam_path(nil, _module), do: nil
 
   def beam_path(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), {:module, module}) do
-      [{{:module, ^module}, %{beam_path: beam_path}}] -> beam_path
+    case :ets.lookup(name(project), key(module)) do
+      [{_key, %{beam_path: beam_path}}] -> beam_path
       [] -> nil
     end
   end
@@ -162,6 +155,8 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
 
   def exunit_module?(%Project{} = project, module),
     do: engine_lookup(project, :exunit_module?, module, false)
+
+  defp key(module), do: {:module, Atom.to_string(module)}
 
   defp engine_lookup(project, operation, module, default) do
     if Store.ready?(project) do
@@ -199,15 +194,11 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     Map.new(exports, fn {type, values} -> {type, Enum.sort(values)} end)
   end
 
-  defp classify_export({name, _arity}) when name in [:__info__, :module_info], do: :skip
+  defp classify_export({name, _arity}) when name in ["__info__", "module_info"], do: :skip
 
-  defp classify_export({name, arity}) when is_atom(name) and arity > 0 do
-    case Atom.to_string(name) do
-      "MACRO-" <> macro_name -> {:macro, {String.to_atom(macro_name), arity - 1}}
-      _function_name -> {:function, {name, arity}}
-    end
-  end
+  defp classify_export({"MACRO-" <> macro, arity}) when arity > 0,
+    do: {:macro, {macro, arity - 1}}
 
-  defp classify_export({name, arity}) when is_atom(name), do: {:function, {name, arity}}
+  defp classify_export({name, arity}) when is_binary(name), do: {:function, {name, arity}}
   defp classify_export(_export), do: :skip
 end
