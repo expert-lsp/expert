@@ -188,7 +188,13 @@ defmodule Engine.Build.State do
     Build.with_lock(fn ->
       Engine.broadcast(file_compile_requested(uri: document.uri))
 
-      {elapsed_us, result} = :timer.tc(fn -> compile_document(project, document) end)
+      {elapsed_us, {result, imported_calls}} =
+        :timer.tc(fn ->
+          Engine.Compilation.Tracer.document_compile(fn ->
+            compile_document(project, document)
+          end)
+        end)
+
       Code.purge_compiler_modules()
 
       elapsed_ms = to_ms(elapsed_us)
@@ -202,7 +208,9 @@ defmodule Engine.Build.State do
                 build_number: state.build_number,
                 status: :success,
                 uri: document.uri,
-                elapsed_ms: elapsed_ms
+                elapsed_ms: elapsed_ms,
+                document: document,
+                imported_calls: imported_calls
               )
 
             {message, diagnostics}
@@ -214,7 +222,9 @@ defmodule Engine.Build.State do
                 build_number: state.build_number,
                 status: :error,
                 uri: document.uri,
-                elapsed_ms: elapsed_ms
+                elapsed_ms: elapsed_ms,
+                document: document,
+                imported_calls: imported_calls
               )
 
             {message, diagnostics}

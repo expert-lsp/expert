@@ -11,6 +11,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   alias Expert.Search.Indexer.Metadata
   alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Ast.Analysis
+  alias Forge.Ast.Analysis.Scope
   alias Forge.Document.Position
   alias Forge.Search.Indexer.Entry
   alias Forge.Search.Indexer.Source.Block
@@ -22,6 +23,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
     :blocks,
     :block_hierarchy,
     :project,
+    :imported_calls,
     extractors: []
   ]
 
@@ -36,14 +38,37 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   ]
 
   def new(%Analysis{} = analysis, extractors \\ nil) do
-    new_reducer(analysis, extractors, nil)
+    new_reducer(analysis, extractors, nil, %{})
   end
 
   def new(%Analysis{} = analysis, extractors, project) do
-    new_reducer(analysis, extractors, project)
+    new_reducer(analysis, extractors, project, built_imported_calls(analysis, project))
   end
 
-  defp new_reducer(%Analysis{} = analysis, extractors, project) do
+  # calls traced from editor text come with the text
+  def new(%Analysis{} = analysis, extractors, project, imported_calls) do
+    new_reducer(analysis, extractors, project, imported_calls)
+  end
+
+  # a build's calls hold the positions of the file its module was compiled from
+  def built_imported_calls(_analysis, nil), do: %{}
+
+  def built_imported_calls(%Analysis{} = analysis, project) do
+    for module <- defined_modules(analysis),
+        {file, calls} <- [ModuleRegistry.imported_calls(project, module)],
+        file == analysis.document.path,
+        into: %{},
+        do: {module, calls}
+  end
+
+  def defined_modules(%Analysis{} = analysis) do
+    for %Scope{module: [_ | _] = segments} <- analysis.scopes,
+        Enum.all?(segments, &is_atom/1),
+        uniq: true,
+        do: Module.concat(segments)
+  end
+
+  defp new_reducer(%Analysis{} = analysis, extractors, project, imported_calls) do
     %__MODULE__{
       analysis: analysis,
       block_hierarchy: %{root: %{}},
@@ -51,6 +76,7 @@ defmodule Expert.Search.Indexer.Source.Reducer do
       blocks: [%{Block.root() | caller: analysis.document.path}],
       entries: [],
       extractors: extractors || @extractors,
+      imported_calls: imported_calls,
       position: {0, 0},
       project: project
     }
@@ -80,20 +106,16 @@ defmodule Expert.Search.Indexer.Source.Reducer do
       ),
       do: Analyzer.resolve_local_call(analysis, position, name, arity)
 
-  def resolve_local_call(
-        %__MODULE__{analysis: analysis} = reducer,
-        position,
-        name,
-        arity
-      ),
-      do:
-        Analyzer.resolve_local_call(
-          analysis,
-          position,
-          name,
-          arity,
-          &module_exports(reducer, &1)
-        )
+  def resolve_local_call(%__MODULE__{analysis: analysis} = reducer, position, name, arity) do
+    with {:ok, {module, function, ^arity}} <- imported_call(reducer, position),
+         true <- function == Atom.to_string(name),
+         {:ok, module} <- existing_module(module) do
+      {module, name, arity}
+    else
+      _ ->
+        Analyzer.resolve_local_call(analysis, position, name, arity, &module_exports(reducer, &1))
+    end
+  end
 
   def imports_at(%__MODULE__{analysis: analysis, project: nil}, position),
     do: Analyzer.imports_at(analysis, position)
@@ -103,6 +125,20 @@ defmodule Expert.Search.Indexer.Source.Reducer do
 
   def exunit_module?(%__MODULE__{project: project}, module),
     do: ModuleRegistry.exunit_module?(project, module)
+
+  defp imported_call(%__MODULE__{analysis: analysis} = reducer, %Position{} = position) do
+    with {:ok, module} <- Analyzer.current_module(analysis, position),
+         {:ok, calls} <- Map.fetch(reducer.imported_calls, module) do
+      Map.fetch(calls, {position.line, position.character})
+    end
+  end
+
+  # a module the manager never loaded or registered has no atom yet
+  defp existing_module(module) do
+    {:ok, String.to_existing_atom(module)}
+  rescue
+    ArgumentError -> :error
+  end
 
   defp module_exports(%__MODULE__{project: project}, module),
     do: ModuleRegistry.module_exports(project, module)

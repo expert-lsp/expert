@@ -24,7 +24,9 @@ defmodule Forge.EngineApi.Messages do
     uri: nil,
     status: :successful,
     diagnostics: [],
-    elapsed_ms: 0
+    elapsed_ms: 0,
+    document: nil,
+    imported_calls: []
 
   defrecord :file_deleted, project: nil, uri: nil
 
@@ -91,7 +93,9 @@ defmodule Forge.EngineApi.Messages do
             build_number: non_neg_integer(),
             uri: Forge.uri(),
             status: compile_status,
-            elapsed_ms: non_neg_integer
+            elapsed_ms: non_neg_integer,
+            document: Forge.Document.t(),
+            imported_calls: [{module(), [imported_call]}]
           )
 
   @type module_updated ::
@@ -101,6 +105,8 @@ defmodule Forge.EngineApi.Messages do
             macros: [name_and_arity],
             struct: field_list
           )
+
+  @type imported_call :: {pos_integer(), pos_integer(), String.t(), String.t(), arity()}
 
   @type project_diagnostics ::
           record(:project_diagnostics,

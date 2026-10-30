@@ -74,6 +74,35 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     refute ModuleRegistry.available_module?(project, Kernel)
   end
 
+  @tag :tmp_dir
+  test "reads a build's imported calls from next to the module's beam", %{tmp_dir: tmp_dir} do
+    project = project()
+    start_supervised!({ModuleRegistry, project})
+    file = Forge.Path.native("/lib/example.ex")
+    beam_path = Path.join(tmp_dir, "Elixir.Example.beam")
+
+    File.write!(
+      Path.join(tmp_dir, "Elixir.Example.imported_calls"),
+      :erlang.term_to_binary({file, [{3, 5, "Elixir.Built", "called", 1}]})
+    )
+
+    ModuleRegistry.put(project, Example, beam_path, :example, run: 0)
+
+    ModuleRegistry.put(
+      project,
+      Untraced,
+      Path.join(tmp_dir, "Elixir.Untraced.beam"),
+      :example,
+      []
+    )
+
+    assert {^file, %{{3, 5} => {"Elixir.Built", "called", 1}}} =
+             ModuleRegistry.imported_calls(project, Example)
+
+    assert ModuleRegistry.imported_calls(project, Untraced) == nil
+    assert ModuleRegistry.imported_calls(project, Unknown) == nil
+  end
+
   test "uses project runtime exports for implicit imports" do
     project = project()
     Expert.Project.Store.set_projects([project])

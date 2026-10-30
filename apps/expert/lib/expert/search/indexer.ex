@@ -5,6 +5,7 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.ManifestStore
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
+  alias Expert.Search.Indexer.Quoted
   alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
   alias Forge.Project
@@ -25,12 +26,18 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  def document(%Project{} = project, uri) do
-    with {:ok, document, analysis} <- Forge.Document.Store.fetch(uri, :analysis),
-         {:ok, entries} <-
-           Expert.Search.Indexer.Quoted.index_with_cleanup(analysis, project) do
-      {:ok, document.path, entries}
-    end
+  def document(%Project{} = project, %Forge.Document{} = document, imported_calls) do
+    imported_calls =
+      Map.new(imported_calls, fn {module, calls} ->
+        {module,
+         Map.new(calls, fn {line, column, imported_module, name, arity} ->
+           {{line, column}, {imported_module, name, arity}}
+         end)}
+      end)
+
+    analysis = Forge.Ast.analyze(document)
+    {:ok, entries} = Quoted.index_with_cleanup(analysis, project, imported_calls)
+    {:ok, document.path, entries}
   end
 
   defp build_index(%Project{} = project, opts) do

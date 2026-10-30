@@ -8,6 +8,7 @@ with :nonode@nohost <- Node.self() do
 end
 
 Engine.Module.Loader.start_link(nil)
+Engine.Compilation.Tracer.start_link(nil)
 ExUnit.configure(assert_receive_timeout: 1000)
 
 ExUnit.start(exclude: [:skip])

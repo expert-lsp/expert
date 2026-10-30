@@ -12,38 +12,38 @@ defmodule Expert.Search.Indexer.Quoted do
     end
   end
 
-  def index_with_cleanup(%Analysis{} = analysis, %Project{} = project) do
+  def index_with_cleanup(%Analysis{} = analysis, %Project{} = project, imported_calls) do
     ProcessCache.with_cleanup do
-      index(analysis, nil, project)
+      index(analysis, nil, project, imported_calls)
     end
   end
 
-  def index(analysis, extractors \\ nil), do: do_index(analysis, extractors, nil)
+  def index(analysis, extractors \\ nil), do: do_index(analysis, extractors, nil, nil)
 
-  def index(%Analysis{} = analysis, extractors, project) do
-    do_index(analysis, extractors, project)
+  def index(%Analysis{} = analysis, extractors, project, imported_calls) do
+    do_index(analysis, extractors, project, imported_calls)
   end
 
-  defp do_index(%Analysis{valid?: true} = analysis, extractors, nil) do
+  defp do_index(%Analysis{valid?: true} = analysis, extractors, nil, _imported_calls) do
     {:ok, extract_entries(analysis, extractors)}
   end
 
-  defp do_index(%Analysis{valid?: true} = analysis, extractors, project) do
-    {:ok, extract_entries(analysis, extractors, project)}
+  defp do_index(%Analysis{valid?: true} = analysis, extractors, project, imported_calls) do
+    {:ok, extract_entries(analysis, extractors, project, imported_calls)}
   end
 
-  defp do_index(%Analysis{valid?: false}, _extractors, _project), do: {:ok, []}
+  defp do_index(%Analysis{valid?: false}, _extractors, _project, _imported_calls), do: {:ok, []}
 
   def extract_entries(%Analysis{} = analysis, extractors) do
     do_extract_entries(analysis, Reducer.new(analysis, extractors))
   end
 
-  def extract_entries(
-        %Analysis{} = analysis,
-        extractors,
-        project
-      ) do
+  def extract_entries(%Analysis{} = analysis, extractors, project) do
     do_extract_entries(analysis, Reducer.new(analysis, extractors, project))
+  end
+
+  def extract_entries(%Analysis{} = analysis, extractors, project, imported_calls) do
+    do_extract_entries(analysis, Reducer.new(analysis, extractors, project, imported_calls))
   end
 
   defp do_extract_entries(%Analysis{} = analysis, reducer) do
