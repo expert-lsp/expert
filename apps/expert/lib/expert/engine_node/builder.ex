@@ -210,7 +210,12 @@ defmodule Expert.EngineNode.Builder do
 
     Process.flag(:trap_exit, true)
 
-    env = [{"MIX_ENV", "prod"} | env]
+    # The build script finds the user's archives from these before it replaces
+    # them with Expert's own.
+    user_mix_env =
+      for var <- ["MIX_HOME", "MIX_ARCHIVES"], value = System.get_env(var), do: {var, value}
+
+    env = [{"MIX_ENV", "prod"} | user_mix_env] ++ env
 
     Expert.Port.open_elixir_with_env(elixir, env,
       args: args,

@@ -10,6 +10,10 @@ readlink_f () {
   fi
 }
 
+# Expert's VM takes its flags from vm.args only. Flags from the editor's
+# environment, like Livebook's -epmd_module, would override Expert's own.
+unset ELIXIR_ERL_OPTIONS ERL_AFLAGS ERL_FLAGS ERL_ZFLAGS
+
 self=$(readlink_f "$0")
 bin_dir=$(dirname "$self")
 expr_arg="System.no_halt(true); Application.ensure_all_started(:xp_expert)"

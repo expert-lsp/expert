@@ -23,6 +23,7 @@ defmodule Engine.Bootstrap do
     Application.put_all_env(app_configs)
 
     maybe_append_hex_path()
+    append_user_archives(System.get_env("EXPERT_USER_ARCHIVES"))
 
     project_root = Project.root_path(project)
 
@@ -79,6 +80,29 @@ defmodule Engine.Bootstrap do
     case hex_path do
       [archives] -> Code.append_path(archives)
       _ -> :ok
+    end
+  end
+
+  # Projects can require the user's archives, like nerves_bootstrap. Hex comes
+  # from Expert's own archives instead, since the user's may be compiled for
+  # another Erlang/OTP version.
+  @doc false
+  def append_user_archives(nil), do: :ok
+
+  def append_user_archives(archives_path) do
+    case File.ls(archives_path) do
+      {:ok, entries} ->
+        for entry <- entries, not String.starts_with?(entry, "hex-") do
+          archives_path
+          |> Path.join(entry)
+          |> Mix.Local.archive_ebin()
+          |> Code.append_path()
+        end
+
+        :ok
+
+      {:error, _} ->
+        :ok
     end
   end
 
