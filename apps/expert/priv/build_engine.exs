@@ -28,6 +28,8 @@ for var <- ["MIX_ARCHIVES", "MIX_HOME", "MIX_REBAR3"] do
   end
 end
 
+user_archives = Mix.path_for(:archives)
+
 # Mix appends every archive to the code path when it starts and protocol
 # consolidation reads them all, so the user's archives, which may be compiled
 # for another Erlang/OTP version, must stay out of the build.
@@ -137,7 +139,8 @@ tooling_env = [
   {"MIX_INSTALL_DIR", expert_data_path},
   {"MIX_HOME", mix_home},
   {"MIX_ARCHIVES", mix_archives},
-  {"REBAR_CACHE_DIR", rebar_cache}
+  {"REBAR_CACHE_DIR", rebar_cache},
+  {"EXPERT_USER_ARCHIVES", user_archives}
 ]
 
 engine_meta =
