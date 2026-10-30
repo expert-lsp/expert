@@ -70,6 +70,7 @@ defmodule Expert.MixProject do
         cookie: "expert",
         steps: release_steps() ++ [&Burrito.wrap/1],
         burrito: [
+          plugin: "rel/burrito_plugin.zig",
           targets: [
             darwin_arm64: [os: :darwin, cpu: :aarch64],
             darwin_amd64: [os: :darwin, cpu: :x86_64],
