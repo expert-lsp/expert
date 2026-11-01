@@ -1,5 +1,9 @@
 ## Customize flags given to the VM: https://www.erlang.org/doc/man/erl.html
-## -mode/-name/-sname/-setcookie are configured via env vars, do not set them here
+## -name/-sname/-setcookie are configured via env vars, do not set them here
+
+## Load every module at boot. The plain release starts through `eval`, which
+## sets no mode and would otherwise load each module on its first use.
+-mode embedded
 
 ## Increase number of concurrent ports/sockets
 ##+Q 65536
