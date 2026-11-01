@@ -71,16 +71,6 @@ defmodule Expert.Search.Store do
     call_or_default(project, {:prefix, prefix, constraints}, [])
   end
 
-  @spec parent(Project.t(), Entry.t()) :: {:ok, Entry.t()} | {:error, term()} | nil
-  def parent(%Project{} = project, %Entry{} = entry) do
-    call_or_default(project, {:parent, entry}, nil)
-  end
-
-  @spec siblings(Project.t(), Entry.t()) :: {:ok, [Entry.t()]} | {:error, term()} | []
-  def siblings(%Project{} = project, %Entry{} = entry) do
-    call_or_default(project, {:siblings, entry}, [])
-  end
-
   @spec fuzzy(Project.t(), Entry.subject(), Entry.constraints()) ::
           {:ok, [Entry.t()]} | {:error, term()} | []
   def fuzzy(%Project{} = project, subject, constraints) do
@@ -275,20 +265,6 @@ defmodule Expert.Search.Store do
   def handle_call({:update, path, entries}, _from, {ref, %State{} = state}) do
     {reply, new_ref, new_state} = do_update(state, ref, path, entries)
     {:reply, reply, {new_ref, new_state}}
-  end
-
-  def handle_call({:parent, entry}, _from, {_, %State{} = state} = orig_state) do
-    state
-    |> State.parent(entry)
-    |> maybe_broadcast_loading(state)
-    |> then(&{:reply, &1, orig_state})
-  end
-
-  def handle_call({:siblings, entry}, _from, {_, %State{} = state} = orig_state) do
-    state
-    |> State.siblings(entry)
-    |> maybe_broadcast_loading(state)
-    |> then(&{:reply, &1, orig_state})
   end
 
   def handle_call(

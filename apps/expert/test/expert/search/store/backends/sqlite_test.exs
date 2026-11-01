@@ -221,7 +221,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[8]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[9]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -840,61 +840,6 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert {:ok, [[1, 1]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
-    end
-  end
-
-  describe "parent/2" do
-    test "returns the containing entry", %{project: project, runtime_versions: runtime_versions} do
-      path = "/blocks.ex"
-
-      parent = %Entry{
-        id: 1,
-        subject: Parent,
-        path: path,
-        type: :module,
-        subtype: :definition,
-        block_id: 1
-      }
-
-      child = %Entry{
-        id: 2,
-        subject: Parent.Child,
-        path: path,
-        type: :module,
-        subtype: :definition,
-        block_id: 2
-      }
-
-      structure = Entry.block_structure(path, %{1 => %{2 => %{}}})
-
-      pid =
-        start_supervised!(%{
-          id: :sqlite,
-          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
-        })
-
-      assert {:ok, :empty} = Sqlite.prepare(pid)
-      assert :ok = Sqlite.replace_all(project, [parent, child, structure])
-
-      assert {:ok, ^parent} = Sqlite.parent(project, child)
-    end
-  end
-
-  describe "structure_for_path/2" do
-    test "returns the block structure", %{project: project, runtime_versions: runtime_versions} do
-      path = "/blocks.ex"
-      structure = Entry.block_structure(path, %{1 => %{2 => %{}}})
-
-      pid =
-        start_supervised!(%{
-          id: :sqlite,
-          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
-        })
-
-      assert {:ok, :empty} = Sqlite.prepare(pid)
-      assert :ok = Sqlite.replace_all(project, [structure])
-
-      assert {:ok, %{1 => %{2 => %{}}}} = Sqlite.structure_for_path(project, path)
     end
   end
 

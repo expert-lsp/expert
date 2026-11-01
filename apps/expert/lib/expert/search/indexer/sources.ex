@@ -32,16 +32,11 @@ defmodule Expert.Search.Indexer.Sources do
   defp index_path(path, source_indexer, encode) do
     with {:ok, contents} <- File.read(path),
          {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
-         true <- has_search_entries?(entries),
          {:ok, manifest_entry} <- Manifest.Entry.source(path) do
       [{encode.(entries), manifest_entry}]
     else
       _ -> []
     end
-  end
-
-  defp has_search_entries?(entries) do
-    Enum.any?(entries, fn entry -> entry.subtype != :block_structure end)
   end
 
   defp stream_items([]), do: []

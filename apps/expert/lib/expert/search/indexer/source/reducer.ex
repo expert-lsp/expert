@@ -63,8 +63,10 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   end
 
   def entries(%__MODULE__{} = reducer) do
-    [hierarchy(reducer) | Enum.reverse(reducer.entries)]
+    Enum.reverse(reducer.entries)
   end
+
+  def block_structure(%__MODULE__{} = reducer), do: reducer.block_hierarchy
 
   def application(%__MODULE__{project: project}, module),
     do: ModuleRegistry.application(project, module)
@@ -128,10 +130,6 @@ defmodule Expert.Search.Indexer.Source.Reducer do
   def position(%__MODULE__{} = reducer) do
     {line, column} = reducer.position
     Position.new(reducer.analysis.document, line, column)
-  end
-
-  defp hierarchy(%__MODULE__{} = reducer) do
-    Entry.block_structure(reducer.analysis.document.path, reducer.block_hierarchy)
   end
 
   defp do_reduce(%__MODULE__{} = reducer, element) do

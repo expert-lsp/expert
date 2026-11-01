@@ -227,7 +227,7 @@ defmodule Expert.Search.Indexer.BeamsTest do
     test "preserves defdelegate metadata without dangling block ids", %{tmp_dir: tmp_dir} do
       module = unique_module("Delegate")
 
-      %{entries: entries, source_path: source_path} =
+      %{entries: entries} =
         index_source!(
           tmp_dir,
           """
@@ -259,13 +259,6 @@ defmodule Expert.Search.Indexer.BeamsTest do
                &(&1.subject == trim_mfa and &1.type == {:function, :public} and
                    &1.subtype == :definition)
              )
-
-      assert %Entry{subject: %{root: %{}}} =
-               Enum.find(
-                 entries,
-                 &(&1.path == source_path and &1.type == :metadata and
-                     &1.subtype == :block_structure)
-               )
     end
 
     test "preserves all callable defdelegate arities from default arguments", %{tmp_dir: tmp_dir} do

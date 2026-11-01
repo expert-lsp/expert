@@ -413,12 +413,11 @@ defmodule Expert.Search.Indexer do
 
   defp consume_entry(
          :source,
-         {:encoded, %{subtype: subtype} = entry, _row} = encoded,
+         {:encoded, %{subtype: :definition} = entry, _row} = encoded,
          entries,
          state
-       )
-       when subtype in [:definition, :block_structure] do
-    state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
+       ) do
+    state = %{state | source_keys: MapSet.put(state.source_keys, entry_identity(entry))}
 
     {[encoded | entries], state}
   end
@@ -428,15 +427,12 @@ defmodule Expert.Search.Indexer do
   end
 
   defp consume_entry(:beam, entry, entries, state) do
-    if MapSet.member?(state.source_keys, source_key(entry)) do
+    if MapSet.member?(state.source_keys, entry_identity(entry)) do
       {entries, state}
     else
       {[entry | entries], state}
     end
   end
-
-  defp source_key(%{path: path, subtype: :block_structure}), do: {:block_structure, path}
-  defp source_key(entry), do: {:entry, entry_identity(entry)}
 
   defp remember_manifest_entries(state, manifest_entries) do
     %{state | manifest_entries: Enum.reverse(manifest_entries, state.manifest_entries)}

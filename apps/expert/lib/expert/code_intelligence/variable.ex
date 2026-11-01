@@ -9,7 +9,8 @@ defmodule Expert.CodeIntelligence.Variable do
 
   @spec definition(Analysis.t(), Position.t(), atom()) :: {:ok, Entry.t()} | :error
   def definition(%Analysis{} = analysis, %Position{} = position, variable_name) do
-    with {:ok, block_structure, entries} <- index_variables(analysis),
+    with {:ok, block_structure, entries} <-
+           Indexer.Quoted.index_with_structure(analysis, @extractors),
          {:ok, %Entry{} = definition_entry} <-
            do_find_definition(variable_name, block_structure, entries, position) do
       {:ok, definition_entry}
@@ -26,7 +27,8 @@ defmodule Expert.CodeIntelligence.Variable do
         variable_name,
         include_definitions? \\ false
       ) do
-    with {:ok, block_structure, entries} <- index_variables(analysis),
+    with {:ok, block_structure, entries} <-
+           Indexer.Quoted.index_with_structure(analysis, @extractors),
          {:ok, entries} <-
            references_in(entries, block_structure, position, variable_name, include_definitions?) do
       entries
@@ -56,13 +58,6 @@ defmodule Expert.CodeIntelligence.Variable do
 
       _ ->
         :error
-    end
-  end
-
-  defp index_variables(%Analysis{} = analysis) do
-    with {:ok, entries} <- Indexer.Quoted.index(analysis, @extractors),
-         {[block_structure], entries} <- Enum.split_with(entries, &(&1.type == :metadata)) do
-      {:ok, block_structure.subject, entries}
     end
   end
 

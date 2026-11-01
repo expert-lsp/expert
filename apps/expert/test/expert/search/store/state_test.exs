@@ -45,9 +45,6 @@ defmodule Expert.Search.Store.StateTest do
     def find_by_paths(_project, _paths, _type, _subtype), do: []
     def path_to_ids(_project), do: %{}
     def definitions_for_fuzzy(_project), do: []
-    def siblings(_project, _entry), do: []
-    def parent(_project, _entry), do: nil
-    def structure_for_path(_project, _path), do: {:ok, %{}}
     def drop(_project), do: :ok
     def encode_entries(entries), do: entries
     def destroy(_project), do: :ok
@@ -85,9 +82,6 @@ defmodule Expert.Search.Store.StateTest do
     def find_by_paths(_project, _paths, _type, _subtype), do: []
     def path_to_ids(_project), do: %{}
     def definitions_for_fuzzy(_project), do: []
-    def siblings(_project, _entry), do: []
-    def parent(_project, _entry), do: nil
-    def structure_for_path(_project, _path), do: {:ok, %{}}
     def drop(_project), do: :ok
     def encode_entries(entries), do: entries
     def destroy(_project), do: :ok

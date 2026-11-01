@@ -10,10 +10,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
-  require Entry
   require Logger
 
-  @schema_version 8
+  @schema_version 9
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -162,21 +161,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     GenServer.call(name(project), {:find_by_paths, paths, type, subtype}, :infinity)
   end
 
-  @impl Backend
-  def structure_for_path(%Project{} = project, path) do
-    GenServer.call(name(project), {:structure_for_path, path}, :infinity)
-  end
-
-  @impl Backend
-  def siblings(%Project{} = project, %Entry{} = entry) do
-    GenServer.call(name(project), {:siblings, entry}, :infinity)
-  end
-
-  @impl Backend
-  def parent(%Project{} = project, %Entry{} = entry) do
-    GenServer.call(name(project), {:parent, entry}, :infinity)
-  end
-
   def start_link(%Project{} = project), do: start_link(project, [])
 
   def start_link(%Project{} = project, opts) when is_list(opts) do
@@ -289,15 +273,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   def handle_call({:find_by_paths, paths, type, subtype}, _from, %State{} = state),
     do: reply(do_find_by_paths(state, paths, type, subtype), state)
 
-  def handle_call({:structure_for_path, path}, _from, %State{} = state),
-    do: reply(do_structure_for_path(state, path), state)
-
-  def handle_call({:siblings, entry}, _from, %State{} = state),
-    do: reply(do_siblings(state, entry), state)
-
-  def handle_call({:parent, entry}, _from, %State{} = state),
-    do: reply(do_parent(state, entry), state)
-
   def handle_call(:destroy, _from, %State{} = state) do
     case reset_database_schema(state) do
       {:ok, _status} -> reply(:ok, state)
@@ -365,7 +340,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DELETE FROM refs"),
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
-         :ok <- exec(state, "DELETE FROM structures"),
          {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
          :ok <- create_indexes(state) do
       {:ok, result}
@@ -376,7 +350,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       when is_function(update, 1) and is_list(paths_to_clear) do
     transaction(state, fn ->
       with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths_to_clear),
-           :ok <- delete_structures_for_paths(state, paths_to_clear),
            {:ok, result} <- update.(fn entries -> insert_entries(state, entries) end) do
         {:ok, deleted_ids, result}
       end
@@ -397,7 +370,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp commit_index_update(%State{} = state, updated_entries, paths) do
     transaction(state, fn ->
       with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths),
-           :ok <- delete_structures_for_paths(state, paths),
            :ok <- insert_entries(state, updated_entries) do
         {:ok, deleted_ids}
       end
@@ -405,12 +377,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_delete_by_path(%State{} = state, path) do
-    transaction(state, fn ->
-      with {:ok, ids_to_delete} <- delete_entries_for_paths(state, [path]),
-           :ok <- delete_structures_for_paths(state, [path]) do
-        {:ok, ids_to_delete}
-      end
-    end)
+    transaction(state, fn -> delete_entries_for_paths(state, [path]) end)
   end
 
   def do_find_by_subject(%State{} = state, subject, type, subtype) do
@@ -619,64 +586,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  def do_structure_for_path(%State{} = state, path) do
-    case query(state, "SELECT structure FROM structures WHERE path = ? LIMIT 1", [path]) do
-      {:ok, [[structure_blob]]} -> {:ok, decode_term(structure_blob)}
-      {:ok, []} -> :error
-      {:error, _} = error -> error
-    end
-  end
-
-  def do_siblings(%State{} = state, %Entry{} = entry) do
-    block_id = block_id_key(entry.block_id)
-
-    with {:ok, rows} <-
-           query(
-             state,
-             """
-             #{@entries_select}
-             WHERE defs.block_id = ? AND defs.file_id = #{@file_id_of_path}
-             ORDER BY defs.id
-             """,
-             [block_id, entry.path]
-           ),
-         {:ok, references} <- block_references(state, entry, block_id) do
-      rows
-      |> Enum.map(&decode_entry/1)
-      |> Enum.concat(references)
-      |> Enum.sort_by(& &1.id)
-      |> Enum.filter(&same_block_type?(entry, &1))
-      |> Enum.uniq()
-      |> then(&{:ok, &1})
-    end
-  end
-
-  defp block_references(%State{}, %Entry{} = entry, _block_id) when Entry.is_block(entry),
-    do: {:ok, []}
-
-  defp block_references(%State{} = state, %Entry{} = entry, block_id) do
-    case refs_result(
-           state,
-           query_refs(state, "WHERE refs.file_id = #{@file_id_of_path}", [entry.path])
-         ) do
-      references when is_list(references) ->
-        {:ok, Enum.filter(references, &(block_id_key(&1.block_id) == block_id))}
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  def do_parent(%State{} = state, %Entry{} = entry) do
-    with {:ok, structure} <- do_structure_for_path(state, entry.path),
-         {:ok, child_path} <- child_path(structure, entry.block_id) do
-      child_path = if Entry.is_block(entry), do: tl(child_path), else: child_path
-      find_first_by_block_id(state, child_path)
-    end
-  end
-
-  def do_parent(%State{}, :root), do: :error
-
   def do_destroy(%State{} = state) do
     with :ok <- close_database(state) do
       remove_database_root(state)
@@ -768,13 +677,11 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS refs"),
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
-         :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- create_defs_table(state),
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_def_blobs_table(state),
-         :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
          :ok <- exec(state, "INSERT INTO schema (version) VALUES (?)", [@schema_version]) do
       {:ok, :empty}
@@ -788,10 +695,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS refs"),
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
-         :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
-         # earlier schema versions kept every entry in these
+         # earlier schema versions kept data in these
          :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- create_schema_table(state) do
       reset_schema(state)
     end
@@ -803,7 +710,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_def_blobs_table(state),
-         :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
          {:ok, result} <-
            query(state, "SELECT 1 FROM defs UNION ALL SELECT 1 FROM refs LIMIT 1") do
@@ -873,15 +779,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     """)
   end
 
-  defp create_structures_table(%State{} = state) do
-    exec(state, """
-    CREATE TABLE IF NOT EXISTS structures (
-      path TEXT PRIMARY KEY,
-      structure BLOB NOT NULL
-    )
-    """)
-  end
-
   @indexes [
     "defs_definitions_idx ON defs (subject, id, file_id, type_id)",
     "defs_caller_idx ON defs (caller, file_id, type_id) WHERE caller IS NOT NULL",
@@ -918,9 +815,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
     {order, groups} =
       Enum.reduce(entries, {[], %{}}, fn
-        %Entry{} = entry, {order, groups} when Entry.is_structure(entry) ->
-          {[entry | order], groups}
-
         %Entry{subtype: :reference} = entry, {order, groups} ->
           group = {entry.subject, entry.caller, entry.type, entry.path}
 
@@ -939,9 +833,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       {:refs, group} ->
         [first | _] = references = groups |> Map.fetch!(group) |> Enum.reverse()
         {:encoded, first, {:refs, refs_args(references, blobs)}}
-
-      %Entry{} = entry when Entry.is_structure(entry) ->
-        {:encoded, entry, nil}
 
       %Entry{} = entry ->
         {:encoded, entry, encode_row(entry)}
@@ -1008,18 +899,16 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_entries(%State{} = state, entries) do
-    %{structures: structures, refs: refs, definitions: definitions} =
+    %{refs: refs, definitions: definitions} =
       entries
       |> Enum.group_by(&row_kind/1)
-      |> Map.merge(%{structures: [], refs: [], definitions: []}, fn _kind, rows, [] -> rows end)
+      |> Map.merge(%{refs: [], definitions: []}, fn _kind, rows, [] -> rows end)
 
-    structures = Enum.map(structures, &entry_of/1)
     {plain_refs, encoded_refs} = Enum.split_with(refs, &match?(%Entry{}, &1))
     refs = encoded_refs ++ encode_entries(plain_refs)
 
     with :ok <- insert_entry_batches(state, definitions),
-         :ok <- insert_ref_batches(state, refs),
-         :ok <- insert_structures(state, structures) do
+         :ok <- insert_ref_batches(state, refs) do
       update_max_ids(state, max_ids(definitions, refs))
     end
   end
@@ -1065,7 +954,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp row_kind({:encoded, _entry, {:refs, _args}}), do: :refs
   defp row_kind({:encoded, entry, _row}), do: row_kind(entry)
-  defp row_kind(%Entry{} = entry) when Entry.is_structure(entry), do: :structures
   defp row_kind(%Entry{subtype: :reference}), do: :refs
   defp row_kind(%Entry{subtype: :definition}), do: :definitions
 
@@ -1109,9 +997,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       end
     end
   end
-
-  defp entry_of({:encoded, entry, _row}), do: entry
-  defp entry_of(%Entry{} = entry), do: entry
 
   defp insert_ref_batches(%State{}, []), do: :ok
 
@@ -1218,28 +1103,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     exec(state, sql, args)
   end
 
-  defp insert_structures(%State{}, []), do: :ok
-
-  defp insert_structures(%State{} = state, structures) do
-    structures
-    |> Enum.chunk_every(@insert_batch_size)
-    |> Enum.reduce_while(:ok, fn structures, :ok ->
-      case insert_structure_batch(state, structures) do
-        :ok -> {:cont, :ok}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp insert_structure_batch(%State{} = state, structures) do
-    sql =
-      "INSERT OR REPLACE INTO structures (path, structure) VALUES #{row_placeholders(structures, 2)}"
-
-    args = Enum.flat_map(structures, fn entry -> [entry.path, blob(entry.subject)] end)
-
-    exec(state, sql, args)
-  end
-
   defp entry_args(%Entry{} = entry) do
     [
       entry.id,
@@ -1328,19 +1191,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              "DELETE FROM def_blobs WHERE entry_key IN (#{placeholders(entry_keys)})",
              entry_keys
            ) do
-        :ok -> {:cont, :ok}
-        {:error, _} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp delete_structures_for_paths(%State{}, []), do: :ok
-
-  defp delete_structures_for_paths(%State{} = state, paths) do
-    paths
-    |> Enum.chunk_every(@sqlite_variable_limit)
-    |> Enum.reduce_while(:ok, fn chunk, :ok ->
-      case exec(state, "DELETE FROM structures WHERE path IN (#{placeholders(chunk)})", chunk) do
         :ok -> {:cont, :ok}
         {:error, _} = error -> {:halt, error}
       end
@@ -1591,38 +1441,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  defp child_path(structure, child_id) do
-    path =
-      Enum.reduce_while(structure, [], fn
-        {^child_id, _children}, children ->
-          {:halt, [child_id | children]}
-
-        {_, children}, path when map_size(children) == 0 ->
-          {:cont, path}
-
-        {current_id, children}, path ->
-          case child_path(children, child_id) do
-            {:ok, child_path} -> {:halt, [current_id | path] ++ Enum.reverse(child_path)}
-            :error -> {:cont, path}
-          end
-      end)
-
-    case path do
-      [] -> :error
-      path -> {:ok, Enum.reverse(path)}
-    end
-  end
-
-  defp find_first_by_block_id(%State{} = state, block_ids) do
-    Enum.reduce_while(block_ids, :error, fn block_id, failure ->
-      case do_find_by_ids(state, [block_id], :_, :_) do
-        [entry] -> {:halt, {:ok, entry}}
-        {:error, _} = error -> {:halt, error}
-        _ -> {:cont, failure}
-      end
-    end)
-  end
-
   defp subject_key(:_), do: :_
   defp subject_key(subject) when is_binary(subject), do: subject
   defp subject_key(subject) when is_atom(subject), do: inspect(subject)
@@ -1766,9 +1584,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   # costs far more than it saves.
   defp encode_term(term), do: :erlang.term_to_binary(term)
   defp decode_term(binary), do: :erlang.binary_to_term(binary)
-
-  defp same_block_type?(left_entry, right_entry),
-    do: Entry.is_block(left_entry) == Entry.is_block(right_entry)
 
   defp runtime_versions(%Project{} = project, opts) do
     Keyword.get_lazy(opts, :runtime_versions, fn -> EngineApi.runtime_versions(project) end)

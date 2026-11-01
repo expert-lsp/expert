@@ -34,8 +34,15 @@ defmodule Expert.Search.Indexer.Quoted do
 
   defp do_index(%Analysis{valid?: false}, _extractors, _project), do: {:ok, []}
 
+  def index_with_structure(%Analysis{valid?: true} = analysis, extractors) do
+    reducer = reduce(analysis, Reducer.new(analysis, extractors))
+    {:ok, Reducer.block_structure(reducer), Reducer.entries(reducer)}
+  end
+
+  def index_with_structure(%Analysis{valid?: false}, _extractors), do: :error
+
   def extract_entries(%Analysis{} = analysis, extractors) do
-    do_extract_entries(analysis, Reducer.new(analysis, extractors))
+    Reducer.entries(reduce(analysis, Reducer.new(analysis, extractors)))
   end
 
   def extract_entries(
@@ -43,16 +50,16 @@ defmodule Expert.Search.Indexer.Quoted do
         extractors,
         project
       ) do
-    do_extract_entries(analysis, Reducer.new(analysis, extractors, project))
+    Reducer.entries(reduce(analysis, Reducer.new(analysis, extractors, project)))
   end
 
-  defp do_extract_entries(%Analysis{} = analysis, reducer) do
+  defp reduce(%Analysis{} = analysis, reducer) do
     {_, reducer} =
       Macro.prewalk(analysis.ast, reducer, fn elem, reducer ->
         {reducer, elem} = Reducer.reduce(reducer, elem)
         {elem, reducer}
       end)
 
-    Reducer.entries(reducer)
+    reducer
   end
 end

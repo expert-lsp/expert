@@ -211,17 +211,14 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp entries_from_group(source_path, results, source_lines_by_path, opts) do
-    entries =
-      Enum.flat_map(results, fn
-        {:indexed, _source_path, metadata, manifest_entry} ->
-          entries_from_metadata(
-            metadata,
-            Map.get(source_lines_by_path, source_path, %{}),
-            application(manifest_entry, opts)
-          )
-      end)
-
-    [Entry.block_structure(source_path, %{root: %{}}) | entries]
+    Enum.flat_map(results, fn
+      {:indexed, _source_path, metadata, manifest_entry} ->
+        entries_from_metadata(
+          metadata,
+          Map.get(source_lines_by_path, source_path, %{}),
+          application(manifest_entry, opts)
+        )
+    end)
   end
 
   defp application(manifest_entry, opts) do
