@@ -4,6 +4,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   use GenServer
 
   alias Expert.EngineApi
+  alias Expert.Protocol.Conversions
   alias Expert.Search.Store.Backend
   alias Forge.Document.Position
   alias Forge.Document.Range
@@ -13,7 +14,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 8
+  @schema_version 9
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -37,7 +38,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   JOIN types ON types.id = defs.type_id
   """
   @refs_select """
-  SELECT files.path, refs.module, refs.name, types.type, refs.occurrences
+  SELECT files.path, refs.module, refs.name, types.type, refs.caller, refs.occurrences
   FROM refs
   JOIN files ON files.id = refs.file_id
   JOIN types ON types.id = refs.type_id
@@ -468,8 +469,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   # `clauses` and `args` only apply to `defs`. `refs` builds its own query from
-  # `selector`, and filters the decoded rows with it, since the caller is inside
-  # each row's blob.
+  # `selector`, and filters the decoded rows with it, since a prefix whose last
+  # byte cannot be incremented has no upper bound in SQL.
   defp find(%State{} = state, selector, clauses, args, type, subtype) do
     Enum.reduce_while(tables_for(subtype), [], fn table, found ->
       case table_entries(state, table, selector, clauses, args, type) do
@@ -531,7 +532,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     {["(" <> Enum.map_join(clauses, " OR ", &"(#{&1})") <> ")"], Enum.concat(args)}
   end
 
-  defp refs_constraint({:caller, _caller, path}), do: {["file_id = #{@file_id_of_path}"], [path]}
+  defp refs_constraint({:caller, caller, path}),
+    do: {["caller = ? AND file_id = #{@file_id_of_path}"], [caller, path]}
 
   defp refs_constraint({:paths, paths}),
     do: {["file_id IN (SELECT id FROM files WHERE path IN (#{placeholders(paths)}))"], paths}
@@ -557,7 +559,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp selector_matcher({:paths, _paths}), do: fn _entry -> true end
   defp selector_matcher({:subject, key}), do: &(subject_key(&1.subject) == key)
   defp selector_matcher({:prefix, key}), do: &String.starts_with?(subject_key(&1.subject), key)
-  defp selector_matcher({:caller, caller, _path}), do: &(&1.caller == caller)
+  defp selector_matcher({:caller, _caller, _path}), do: fn _entry -> true end
 
   defp selector_matcher({:subjects, keys}) do
     keys = MapSet.new(keys)
@@ -836,6 +838,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       module TEXT NOT NULL,
       name TEXT NOT NULL,
       type_id INTEGER NOT NULL,
+      caller TEXT,
       occurrences BLOB NOT NULL
     )
     """)
@@ -974,8 +977,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp refs_args([%Entry{} = first | _] = references, blobs) do
     {module, name} = split_subject(subject_key(first.subject))
 
-    occurrences = blob({first.caller, term_occurrences(references)})
-
     max_id = references |> Enum.map(& &1.id) |> Enum.max()
 
     [
@@ -984,8 +985,31 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       name,
       Map.fetch!(blobs, {:type, first.type}),
       max_id,
-      occurrences
+      first.caller,
+      {:blob, pack_occurrences(references, first.subject)}
     ]
+  end
+
+  # We store each occurrence as its line and column, the column as the client
+  # counts it too, so we can convert a reference for the client without reading
+  # its document. The module and name columns hold the subject as text, so an
+  # atom subject is stored with the row to read it back as is.
+  defp pack_occurrences(references, subject) do
+    atom = if is_atom(subject), do: encode_term(subject), else: ""
+
+    records =
+      Enum.map(references, fn %Entry{range: %Range{start: start_position, end: end_position}} ->
+        <<start_position.line::32, start_position.character::32,
+          utf16_character(start_position)::32, end_position.line::32, end_position.character::32,
+          utf16_character(end_position)::32>>
+      end)
+
+    IO.iodata_to_binary([<<byte_size(atom)::16, atom::binary>> | records])
+  end
+
+  defp utf16_character(%Position{} = position) do
+    {:ok, %{character: character}} = Conversions.to_lsp(position)
+    character
   end
 
   # "Mod.Sub.fun/2" -> {"Mod.Sub.", "fun/2"}, "fun/2" -> {"", "fun/2"}
@@ -1000,11 +1024,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         {binary_part(subject, 0, module_size),
          binary_part(subject, module_size, byte_size(subject) - module_size)}
     end
-  end
-
-  defp term_occurrences(references) do
-    for %Entry{} = entry <- references,
-        do: {entry.id, block_id_key(entry.block_id), entry_term(entry)}
   end
 
   defp insert_entries(%State{} = state, entries) do
@@ -1037,7 +1056,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
           max_ids
       end)
 
-    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _]}},
+    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _, _]}},
                                   max_ids ->
       Map.update(max_ids, path, max_id, &max(&1, max_id))
     end)
@@ -1133,13 +1152,20 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
          {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))) do
       args =
-        Enum.flat_map(rows, fn [path, module, name, type, _max_id, occurrences] ->
-          [Map.fetch!(file_ids, path), module, name, Map.fetch!(type_ids, type), occurrences]
+        Enum.flat_map(rows, fn [path, module, name, type, _max_id, caller, occurrences] ->
+          [
+            Map.fetch!(file_ids, path),
+            module,
+            name,
+            Map.fetch!(type_ids, type),
+            caller,
+            occurrences
+          ]
         end)
 
       sql = """
-      INSERT INTO refs (file_id, module, name, type_id, occurrences)
-      VALUES #{row_placeholders(rows, 5)}
+      INSERT INTO refs (file_id, module, name, type_id, caller, occurrences)
+      VALUES #{row_placeholders(rows, 6)}
       """
 
       exec(state, sql, args)
@@ -1280,12 +1306,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              "SELECT entry_key, id FROM defs WHERE file_id IN (#{file_ids_of_paths(paths)})",
              paths
            ),
-         {:ok, reference_rows} <-
-           query(
-             state,
-             "SELECT occurrences FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})",
-             paths
-           ),
          :ok <- delete_def_blobs_for_rows(state, rows),
          :ok <-
            exec(
@@ -1296,23 +1316,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <-
            exec(state, "DELETE FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})", paths),
          :ok <- exec(state, "DELETE FROM files WHERE path IN (#{placeholders(paths)})", paths) do
-      reference_ids =
-        Enum.flat_map(reference_rows, &occurrence_ids/1)
-
       deleted_ids =
         rows
         |> Enum.map(fn [_entry_key, id] -> id end)
-        |> Enum.concat(reference_ids)
         |> Enum.reject(&is_nil/1)
 
       {:ok, deleted_ids}
     end
-  end
-
-  defp occurrence_ids([occurrences]) do
-    {_caller, occurrences} = decode_term(occurrences)
-
-    for {id, _block_id, _term} <- occurrences, do: id
   end
 
   defp delete_def_blobs_for_rows(%State{}, []), do: :ok
@@ -1669,13 +1679,35 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     )
   end
 
-  defp decode_references([path, module, name, type_blob, occurrences]) do
-    subject_key = module <> name
-    {caller, occurrences} = decode_term(occurrences)
+  defp decode_references([
+         path,
+         module,
+         name,
+         type_blob,
+         caller,
+         <<atom_size::16, atom::binary-size(atom_size), records::binary>>
+       ]) do
+    subject = if atom == "", do: module <> name, else: decode_term(atom)
     type = decode_term(type_blob)
 
-    for {id, block_id, entry_term} <- occurrences do
-      decode_entry(id, path, subject_key, caller, type, :reference, block_id, entry_term)
+    for <<start_line::32, start_character::32, start_utf16::32, end_line::32, end_character::32,
+          end_utf16::32 <- records>> do
+      %Entry{
+        block_id: :root,
+        path: path,
+        range: %Range{
+          start: %Position{
+            line: start_line,
+            character: start_character,
+            utf16_character: start_utf16
+          },
+          end: %Position{line: end_line, character: end_character, utf16_character: end_utf16}
+        },
+        subject: subject,
+        caller: caller,
+        subtype: :reference,
+        type: type
+      }
     end
   end
 
