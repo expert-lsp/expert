@@ -3,7 +3,7 @@ defmodule Expert.Search.Indexer.Paths do
   alias Forge.Document
   alias Forge.Project
 
-  @indexable_extensions "*.{ex,exs}"
+  @indexable_extensions [".ex", ".exs"]
 
   defstruct source_paths: [], beam_paths: [], applications: %{}
 
@@ -78,10 +78,34 @@ defmodule Expert.Search.Indexer.Paths do
   end
 
   defp source_files(root, excluded) do
-    [root, "**", @indexable_extensions]
-    |> Forge.Path.glob(exclude: excluded)
-    |> Enum.reject(fn path -> Enum.any?(excluded, &Forge.Path.contains?(path, &1)) end)
+    excluded = MapSet.new(excluded, &Forge.Path.normalize/1)
+
+    root
+    |> Forge.Path.normalize()
+    |> source_files_in(excluded)
+    |> Enum.sort()
+    |> Forge.Path.native_paths()
     |> Enum.uniq()
+  end
+
+  defp source_files_in(dir, excluded) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        Enum.flat_map(entries, fn
+          "." <> _ ->
+            []
+
+          entry ->
+            path = Path.join(dir, entry)
+
+            if MapSet.member?(excluded, path),
+              do: [],
+              else: source_files_in(path, excluded)
+        end)
+
+      {:error, _} ->
+        if String.ends_with?(dir, @indexable_extensions), do: [dir], else: []
+    end
   end
 
   defp application_beams(build_path, apps) do
