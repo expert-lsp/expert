@@ -99,7 +99,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @impl Backend
   def replace_all(%Project{} = project, entries) when is_list(entries) do
     replacement = fn write_batch ->
-      with :ok <- write_batch.(entries) do
+      with :ok <- write_batch.([encode_batch(entries)]) do
         {:ok, :ok}
       end
     end
@@ -323,7 +323,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   def do_insert(%State{} = state, entries) when is_list(entries) do
     transaction(state, fn ->
-      insert_entries(state, entries)
+      insert_batches(state, [encode_batch(entries)])
     end)
   end
 
@@ -376,7 +376,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DELETE FROM names"),
          :ok <- exec(state, "DELETE FROM structures"),
          :ok <- exec(state, "DELETE FROM integrations"),
-         {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
+         {:ok, result} <- replacement.(fn batches -> insert_batches(state, batches) end),
          :ok <- create_indexes(state) do
       {:ok, result}
     end
@@ -387,7 +387,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     transaction(state, fn ->
       with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths_to_clear),
            :ok <- delete_structures_for_paths(state, paths_to_clear),
-           {:ok, result} <- update.(fn entries -> insert_entries(state, entries) end) do
+           {:ok, result} <- update.(fn batches -> insert_batches(state, batches) end) do
         {:ok, deleted_ids, result}
       end
     end)
@@ -408,7 +408,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     transaction(state, fn ->
       with {:ok, deleted_ids} <- delete_entries_for_paths(state, paths),
            :ok <- delete_structures_for_paths(state, paths),
-           :ok <- insert_entries(state, updated_entries) do
+           :ok <- insert_batches(state, [encode_batch(updated_entries)]) do
         {:ok, deleted_ids}
       end
     end)
@@ -991,40 +991,50 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @impl Backend
-  def encode_entries(entries) do
+  def encode_batch(entries) do
+    {integrations, entries} = Enum.split_with(entries, &(&1.subtype == :integration))
     blobs = shared_blobs(entries)
     {folded, entries} = fold_call_sites(entries)
 
-    {order, groups} =
-      Enum.reduce(entries, {[], %{}}, fn
-        %Entry{} = entry, {order, groups} when Entry.is_structure(entry) ->
-          {[entry | order], groups}
+    {definitions, order, groups, structures} =
+      Enum.reduce(entries, {[], [], %{}, []}, fn
+        %Entry{} = entry, {definitions, order, groups, structures}
+        when Entry.is_structure(entry) ->
+          {definitions, order, groups, [entry | structures]}
 
-        %Entry{subtype: :reference} = entry, {order, groups} ->
+        %Entry{subtype: :reference} = entry, {definitions, order, groups, structures} ->
           group = {entry.subject, entry.caller, entry.type, entry.path}
 
           case groups do
-            %{^group => references} -> {order, %{groups | group => [entry | references]}}
-            %{} -> {[{:refs, group} | order], Map.put(groups, group, [entry])}
+            %{^group => references} ->
+              {definitions, order, %{groups | group => [entry | references]}, structures}
+
+            %{} ->
+              {definitions, [group | order], Map.put(groups, group, [entry]), structures}
           end
 
-        %Entry{} = entry, {order, groups} ->
-          {[entry | order], groups}
+        %Entry{subtype: :definition} = entry, {definitions, order, groups, structures} ->
+          {[{entry, encode_row(entry)} | definitions], order, groups, structures}
+
+        %Entry{subtype: subtype}, _acc ->
+          raise ArgumentError,
+                "entries can only be definitions or references, got #{inspect(subtype)}"
       end)
 
-    order
-    |> Enum.reverse()
-    |> Enum.map(fn
-      {:refs, group} ->
-        [first | _] = references = groups |> Map.fetch!(group) |> Enum.reverse()
-        {:encoded, first, {:refs, refs_args(references, folded, blobs)}}
+    definitions = Enum.reverse(definitions)
 
-      %Entry{} = entry when Entry.is_structure(entry) ->
-        {:encoded, entry, nil}
+    refs =
+      for group <- Enum.reverse(order),
+          do: groups |> Map.fetch!(group) |> Enum.reverse() |> refs_args(folded, blobs)
 
-      %Entry{} = entry ->
-        {:encoded, entry, encode_row(entry)}
-    end)
+    %{
+      definitions: definitions,
+      refs: refs,
+      structures: Enum.reverse(structures),
+      integrations: integrations,
+      rows: length(definitions) + length(refs) + length(structures) + length(integrations),
+      max_ids: max_ids(definitions, refs, integrations)
+    }
   end
 
   # "Mod.Sub.fun/2" -> "Mod.Sub"
@@ -1140,42 +1150,35 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  defp insert_entries(%State{} = state, entries) do
-    %{structures: structures, refs: refs, definitions: definitions, integrations: integrations} =
-      entries
-      |> Enum.group_by(&row_kind/1)
-      |> Map.merge(
-        %{structures: [], refs: [], definitions: [], integrations: []},
-        fn _kind, rows, [] -> rows end
-      )
-
-    structures = Enum.map(structures, &entry_of/1)
-    {plain_refs, encoded_refs} = Enum.split_with(refs, &match?(%Entry{}, &1))
-    refs = encoded_refs ++ encode_entries(plain_refs)
-
-    with :ok <- insert_entry_batches(state, definitions),
-         :ok <- insert_ref_batches(state, refs),
-         :ok <- insert_structures(state, structures),
-         :ok <- insert_integrations(state, Enum.map(integrations, &entry_of/1)) do
-      update_max_ids(state, max_ids(definitions ++ integrations, refs))
+  defp insert_batches(%State{} = state, batches) do
+    with :ok <- insert_entry_batches(state, Enum.flat_map(batches, & &1.definitions)),
+         :ok <- insert_ref_batches(state, Enum.flat_map(batches, & &1.refs)),
+         :ok <- insert_structures(state, Enum.flat_map(batches, & &1.structures)),
+         :ok <- insert_integrations(state, Enum.flat_map(batches, & &1.integrations)) do
+      update_max_ids(state, Enum.reduce(batches, %{}, &merge_max_ids(&2, &1.max_ids)))
     end
   end
 
-  defp max_ids(definitions, refs) do
+  defp merge_max_ids(max_ids, batch_max_ids) do
+    Map.merge(max_ids, batch_max_ids, fn _path, id, batch_id -> max(id, batch_id) end)
+  end
+
+  defp max_ids(definitions, refs, integrations) do
     max_ids =
-      Enum.reduce(definitions, %{}, fn
-        {:encoded, _entry, {[id, path | _], _blob}}, max_ids when is_integer(id) ->
+      Enum.reduce(integrations, %{}, fn entry, max_ids ->
+        Map.update(max_ids, entry.path, entry.id, &max(&1, entry.id))
+      end)
+
+    max_ids =
+      Enum.reduce(definitions, max_ids, fn
+        {_entry, {[id, path | _], _blob}}, max_ids when is_integer(id) ->
           Map.update(max_ids, path, id, &max(&1, id))
 
-        %Entry{id: id, path: path}, max_ids when is_integer(id) ->
-          Map.update(max_ids, path, id, &max(&1, id))
-
-        _row, max_ids ->
+        _definition, max_ids ->
           max_ids
       end)
 
-    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _, _]}},
-                                  max_ids ->
+    Enum.reduce(refs, max_ids, fn [path, _, _, _, max_id, _, _], max_ids ->
       Map.update(max_ids, path, max_id, &max(&1, max_id))
     end)
   end
@@ -1200,20 +1203,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  defp row_kind({:encoded, _entry, {:refs, _args}}), do: :refs
-  defp row_kind({:encoded, entry, _row}), do: row_kind(entry)
-  defp row_kind(%Entry{} = entry) when Entry.is_structure(entry), do: :structures
-  defp row_kind(%Entry{subtype: :reference}), do: :refs
-  defp row_kind(%Entry{subtype: :definition}), do: :definitions
-  defp row_kind(%Entry{subtype: :integration}), do: :integrations
-
-  defp row_kind(%Entry{subtype: subtype}),
-    do:
-      raise(
-        ArgumentError,
-        "entries can only be definitions, references or integrations, got #{inspect(subtype)}"
-      )
-
   defp insert_entry_batches(%State{}, []), do: :ok
 
   defp insert_entry_batches(%State{} = state, entries) do
@@ -1227,8 +1216,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  defp insert_entry_batch(%State{} = state, batch) do
-    rows = encode_rows(batch)
+  defp insert_entry_batch(%State{} = state, definitions) do
+    rows = Enum.map(definitions, fn {_entry, row} -> row end)
 
     with {:ok, entry_key} <- next_entry_key(state),
          {:ok, file_ids} <- file_ids(state, Enum.map(rows, fn {[_id, path | _], _} -> path end)),
@@ -1248,19 +1237,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  defp entry_of({:encoded, entry, _row}), do: entry
-  defp entry_of(%Entry{} = entry), do: entry
-
   defp insert_ref_batches(%State{}, []), do: :ok
 
   defp insert_ref_batches(%State{} = state, refs) do
     refs
     |> Stream.chunk_every(@insert_batch_size)
     |> Enum.reduce_while(:ok, fn batch, :ok ->
-      case insert_ref_batch(
-             state,
-             Enum.map(batch, fn {:encoded, _entry, {:refs, args}} -> args end)
-           ) do
+      case insert_ref_batch(state, batch) do
         :ok -> {:cont, :ok}
         {:error, _} = error -> {:halt, error}
       end
@@ -1326,10 +1309,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp existing_names(%State{} = state, texts) do
     query(state, "SELECT text, id FROM names WHERE text IN (#{placeholders(texts)})", texts)
   end
-
-  defp encode_rows(batch), do: Enum.map(batch, &encode_row/1)
-
-  defp encode_row({:encoded, _entry, row}), do: row
 
   defp encode_row(%Entry{} = entry) do
     {entry_args(entry), build_entry_blob(entry)}
