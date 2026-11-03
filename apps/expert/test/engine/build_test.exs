@@ -80,7 +80,6 @@ defmodule Engine.BuildTest do
   describe "compiling a project" do
     test "sends a message when complete " do
       {:ok, project} = with_project(:project_metadata)
-      patch(Engine.Build.Project, :maybe_load_modules, :ok)
       EngineApi.schedule_compile(project, true)
 
       assert_receive project_compiled(status: :success), @project_compile_timeout
@@ -174,7 +173,6 @@ defmodule Engine.BuildTest do
   describe "when compiling a project that has warnings" do
     test "it reports them" do
       {:ok, project} = with_project(:compilation_warnings)
-      patch(Engine.Build.Project, :maybe_load_modules, :ok)
       EngineApi.schedule_compile(project, true)
 
       assert_receive project_compiled(status: :success), @project_compile_timeout
@@ -699,7 +697,6 @@ defmodule Engine.BuildTest do
     describe "exceptions during compilation" do
       test "compiling a project with callback errors" do
         {:ok, project} = with_project(:compilation_callback_errors)
-        patch(Engine.Build.Project, :maybe_load_modules, :ok)
         EngineApi.schedule_compile(project, false)
         assert_receive project_compiled(status: :error), @project_compile_timeout
         assert_receive project_diagnostics(diagnostics: [diagnostic])
