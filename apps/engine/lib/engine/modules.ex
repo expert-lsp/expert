@@ -37,6 +37,31 @@ defmodule Engine.Modules do
     end
   end
 
+  @doc "Decodes index metadata using the project's BEAM and Elixir versions."
+  def beam_metadata(beam) when is_binary(beam) do
+    case :beam_lib.chunks(beam, [:debug_info, :exports]) do
+      {:ok, {module, chunks}} ->
+        metadata =
+          case chunks[:debug_info] do
+            {:debug_info_v1, backend, data} -> backend.debug_info(:elixir_v1, module, data, [])
+            _ -> :error
+          end
+
+        metadata =
+          case metadata do
+            {:ok, value} when is_map(value) -> {:ok, value}
+            _ -> :error
+          end
+
+        {:ok, module, chunks[:exports] || [], metadata}
+
+      _ ->
+        :error
+    end
+  catch
+    _kind, _reason -> :error
+  end
+
   def exunit_module?(module) when is_atom(module) do
     Loader.ensure_loaded?(module) and
       (function_exported?(module, :__ex_unit__, 1) or function_exported?(module, :__ex_unit__, 2))

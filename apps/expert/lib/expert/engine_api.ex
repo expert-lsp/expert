@@ -179,6 +179,9 @@ defmodule Expert.EngineApi do
   def project_configuration(%Project{} = engine_project, %Project{} = configured_project),
     do: call(engine_project, Engine.Mix, :project_configuration, [configured_project])
 
+  def beam_metadata(%Project{} = project, beam) when is_binary(beam),
+    do: call(project, Engine.Modules, :beam_metadata, [beam])
+
   defp runtime_call(%Project{} = project, module, function, arguments),
     do: call(project, module, function, arguments)
 
