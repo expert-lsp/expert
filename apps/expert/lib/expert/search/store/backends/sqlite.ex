@@ -14,7 +14,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 9
+  @schema_version 10
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -425,8 +425,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       subjects
       |> Enum.map(&subject_key/1)
       |> Enum.uniq()
-      # each subject is two arguments in the refs query, its module and its name
-      |> Stream.chunk_every(div(query_chunk_size(type, subtype), 2))
+      # each subject is three arguments in the refs query: its module, its name
+      # and the module of calls to it
+      |> Stream.chunk_every(div(query_chunk_size(type, subtype), 3))
       |> Enum.reduce_while([], fn subjects, batches ->
         selector = {:subjects, subjects}
 
@@ -492,7 +493,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp table_entries(%State{} = state, :refs, selector, _clauses, _args, type) do
     {clauses, args} = refs_constraint(selector)
-    {clauses, args} = add_type_constraint(clauses, args, type)
+    {clauses, args} = refs_type_constraint(clauses, args, type)
     where = where_clause(Enum.join(clauses, " AND "))
 
     case refs_result(state, query_refs(state, where, args)) do
@@ -501,17 +502,27 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  defp refs_type_constraint(clauses, args, :module) do
+    clause = "type_id IN (SELECT id FROM types WHERE type IN (?, ?))"
+    {clauses ++ [clause], args ++ [blob(:module), blob({:function, :usage})]}
+  end
+
+  defp refs_type_constraint(clauses, args, type), do: add_type_constraint(clauses, args, type)
+
   defp refs_constraint(:all), do: {[], []}
 
   defp refs_constraint({:subject, key}) do
     {module, name} = split_subject(key)
-    {["module = ? AND name = ?"], [module, name]}
+    {["((module = ? AND name = ?) OR module = ?)"], [module, name, key <> "."]}
   end
 
   defp refs_constraint({:subjects, keys}) do
     pairs = Enum.map(keys, &split_subject/1)
     values = Enum.map_join(pairs, ", ", fn _pair -> "(?, ?)" end)
-    {["(module, name) IN (VALUES #{values})"], Enum.flat_map(pairs, &Tuple.to_list/1)}
+    modules = Enum.map(keys, &(&1 <> "."))
+
+    {["((module, name) IN (VALUES #{values}) OR module IN (#{placeholders(modules)}))"],
+     Enum.flat_map(pairs, &Tuple.to_list/1) ++ modules}
   end
 
   # Subjects starting with `prefix` either have a module starting with it, or
@@ -559,7 +570,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp selector_matcher({:paths, _paths}), do: fn _entry -> true end
   defp selector_matcher({:subject, key}), do: &(subject_key(&1.subject) == key)
   defp selector_matcher({:prefix, key}), do: &String.starts_with?(subject_key(&1.subject), key)
-  defp selector_matcher({:caller, _caller, _path}), do: fn _entry -> true end
+  defp selector_matcher({:caller, caller, _path}), do: &(&1.caller == caller)
 
   defp selector_matcher({:subjects, keys}) do
     keys = MapSet.new(keys)
@@ -918,6 +929,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @impl Backend
   def encode_entries(entries) do
     blobs = shared_blobs(entries)
+    {folded, entries} = fold_call_sites(entries)
 
     {order, groups} =
       Enum.reduce(entries, {[], %{}}, fn
@@ -941,7 +953,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     |> Enum.map(fn
       {:refs, group} ->
         [first | _] = references = groups |> Map.fetch!(group) |> Enum.reverse()
-        {:encoded, first, {:refs, refs_args(references, blobs)}}
+        {:encoded, first, {:refs, refs_args(references, folded, blobs)}}
 
       %Entry{} = entry when Entry.is_structure(entry) ->
         {:encoded, entry, nil}
@@ -974,10 +986,43 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  defp refs_args([%Entry{} = first | _] = references, blobs) do
+  # The module reference of a remote call starts where the call does and has
+  # no caller of its own, so it is stored inside the call's occurrence.
+  defp fold_call_sites(entries) do
+    calls =
+      for %Entry{subtype: :reference, type: {:function, :usage}, range: %Range{}} = call <-
+            entries,
+          into: %{},
+          do: {call_site(call, call_module_key(subject_key(call.subject))), call.id}
+
+    {modules, kept} = Enum.split_with(entries, &folded?(&1, calls))
+    folded = Map.new(modules, &{Map.fetch!(calls, call_site(&1, subject_key(&1.subject))), &1})
+    {folded, kept}
+  end
+
+  defp folded?(
+         %Entry{subtype: :reference, type: :module, caller: nil, range: %Range{}} = module,
+         calls
+       ),
+       do: is_map_key(calls, call_site(module, subject_key(module.subject)))
+
+  defp folded?(%Entry{}, _calls), do: false
+
+  defp call_site(%Entry{range: %Range{start: start_position}} = entry, module),
+    do: {entry.path, module, start_position.line, start_position.character}
+
+  defp refs_args([%Entry{} = first | _] = references, folded, blobs) do
     {module, name} = split_subject(subject_key(first.subject))
 
-    max_id = references |> Enum.map(& &1.id) |> Enum.max()
+    max_id =
+      references
+      |> Enum.flat_map(fn %Entry{id: id} ->
+        case folded do
+          %{^id => %Entry{id: module_id}} -> [id, module_id]
+          %{} -> [id]
+        end
+      end)
+      |> Enum.max()
 
     [
       first.path,
@@ -986,25 +1031,30 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       Map.fetch!(blobs, {:type, first.type}),
       max_id,
       first.caller,
-      {:blob, pack_occurrences(references, first.subject)}
+      {:blob, pack_occurrences(references, folded)}
     ]
   end
 
   # We store each occurrence as its line and column, the column as the client
   # counts it too, so we can convert a reference for the client without reading
-  # its document. The module and name columns hold the subject as text, so an
-  # atom subject is stored with the row to read it back as is.
-  defp pack_occurrences(references, subject) do
-    atom = if is_atom(subject), do: encode_term(subject), else: ""
+  # its document. A call's module reference starts where the call does, so
+  # only its end is stored, and an end at the call's start means there is none.
+  defp pack_occurrences(references, folded) do
+    references
+    |> Enum.map(fn %Entry{id: id, range: %Range{} = range} ->
+      module_end =
+        case folded do
+          %{^id => %Entry{range: %Range{end: module_end}}} -> module_end
+          %{} -> range.start
+        end
 
-    records =
-      Enum.map(references, fn %Entry{range: %Range{start: start_position, end: end_position}} ->
-        <<start_position.line::32, start_position.character::32,
-          utf16_character(start_position)::32, end_position.line::32, end_position.character::32,
-          utf16_character(end_position)::32>>
-      end)
+      [encode_position(range.start), encode_position(range.end), encode_position(module_end)]
+    end)
+    |> IO.iodata_to_binary()
+  end
 
-    IO.iodata_to_binary([<<byte_size(atom)::16, atom::binary>> | records])
+  defp encode_position(%Position{} = position) do
+    <<position.line::32, position.character::32, utf16_character(position)::32>>
   end
 
   defp utf16_character(%Position{} = position) do
@@ -1679,37 +1729,50 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     )
   end
 
-  defp decode_references([
-         path,
-         module,
-         name,
-         type_blob,
-         caller,
-         <<atom_size::16, atom::binary-size(atom_size), records::binary>>
-       ]) do
-    subject = if atom == "", do: module <> name, else: decode_term(atom)
-    type = decode_term(type_blob)
+  defp decode_references([path, module, name, type_blob, caller, records]) do
+    reference = %Entry{
+      block_id: :root,
+      path: path,
+      subject: module <> name,
+      caller: caller,
+      subtype: :reference,
+      type: decode_term(type_blob)
+    }
 
-    for <<start_line::32, start_character::32, start_utf16::32, end_line::32, end_character::32,
-          end_utf16::32 <- records>> do
-      %Entry{
-        block_id: :root,
-        path: path,
-        range: %Range{
-          start: %Position{
-            line: start_line,
-            character: start_character,
-            utf16_character: start_utf16
-          },
-          end: %Position{line: end_line, character: end_character, utf16_character: end_utf16}
-        },
-        subject: subject,
-        caller: caller,
-        subtype: :reference,
-        type: type
-      }
+    for <<start_position::binary-size(12), end_position::binary-size(12),
+          module_end::binary-size(12) <- records>>,
+        entry <-
+          occurrence_entries(
+            reference,
+            module,
+            decode_position(start_position),
+            decode_position(end_position),
+            decode_position(module_end)
+          ),
+        do: entry
+  end
+
+  defp occurrence_entries(%Entry{} = reference, module, start_position, end_position, module_end) do
+    call = %Entry{reference | range: %Range{start: start_position, end: end_position}}
+
+    if module_end == start_position do
+      [call]
+    else
+      [
+        call,
+        %Entry{
+          reference
+          | subject: binary_part(module, 0, byte_size(module) - 1),
+            caller: nil,
+            type: :module,
+            range: %Range{start: start_position, end: module_end}
+        }
+      ]
     end
   end
+
+  defp decode_position(<<line::32, character::32, utf16_character::32>>),
+    do: %Position{line: line, character: character, utf16_character: utf16_character}
 
   defp decode_entry(id, path, subject_key, caller, type, subtype, block_id, entry_term) do
     {subject_override, application, lines, block_range, range, metadata} = entry_term

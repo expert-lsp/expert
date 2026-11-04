@@ -27,10 +27,20 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
   end
 
   defp stored(%Entry{subtype: :reference} = entry) do
-    %Entry{entry | id: nil, block_id: :root, application: nil, range: kept(entry.range)}
+    %Entry{
+      entry
+      | id: nil,
+        block_id: :root,
+        application: nil,
+        subject: stored_subject(entry.subject),
+        range: kept(entry.range)
+    }
   end
 
   defp stored(%Entry{} = entry), do: entry
+
+  defp stored_subject(subject) when is_atom(subject), do: inspect(subject)
+  defp stored_subject(subject), do: subject
 
   defp kept(%Range{start: start_position, end: end_position}) do
     %Range{start: kept(start_position), end: kept(end_position)}
@@ -253,7 +263,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[9]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[10]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -428,23 +438,23 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
       result = Exqlite.Basic.exec(conn, "SELECT count(*) FROM refs")
-      assert {:ok, [[4]], _columns} = Exqlite.Basic.rows(result)
+      assert {:ok, [[3]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
 
-      key = fn entry -> {entry.subject, entry.range.start.line} end
+      key = fn entry -> {stored_subject(entry.subject), entry.range.start.line} end
       keys = fn found -> found |> Enum.map(key) |> Enum.sort() end
 
       assert Enum.sort_by(Sqlite.find_by_paths(project, [path], :_, :_), key) ==
                entries |> Enum.map(&stored/1) |> Enum.sort_by(key)
 
       assert keys.(Sqlite.find_by_subject(project, Referenced.Target, :module, :reference)) == [
-               {Referenced.Target, 3},
-               {Referenced.Target, 4}
+               {"Referenced.Target", 3},
+               {"Referenced.Target", 4}
              ]
 
       assert keys.(Sqlite.find_by_subject(project, Referenced.Target, :_, :_)) == [
-               {Referenced.Target, 3},
-               {Referenced.Target, 4}
+               {"Referenced.Target", 3},
+               {"Referenced.Target", 4}
              ]
 
       assert keys.(Sqlite.find_by_subject(project, "Referenced.Target.run/1", :_, :_)) == [
@@ -453,16 +463,16 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert keys.(Sqlite.find_by_subject(project, :_, :module, :reference)) ==
                Enum.sort([
-                 {Referenced.Target, 3},
-                 {Referenced.Target, 4},
-                 {Referenced.Target.Inner, 5}
+                 {"Referenced.Target", 3},
+                 {"Referenced.Target", 4},
+                 {"Referenced.Target.Inner", 5}
                ])
 
       assert keys.(Sqlite.find_by_prefix(project, "Referenced.Target", :module, :reference)) ==
                Enum.sort([
-                 {Referenced.Target, 3},
-                 {Referenced.Target, 4},
-                 {Referenced.Target.Inner, 5}
+                 {"Referenced.Target", 3},
+                 {"Referenced.Target", 4},
+                 {"Referenced.Target.Inner", 5}
                ])
 
       assert keys.(Sqlite.find_by_prefix(project, "Referenced.Target", :_, :_)) ==
@@ -477,9 +487,9 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
                )
              ) ==
                Enum.sort([
-                 {Referenced.Target, 3},
-                 {Referenced.Target, 4},
-                 {Referenced.Target.Inner, 5}
+                 {"Referenced.Target", 3},
+                 {"Referenced.Target", 4},
+                 {"Referenced.Target.Inner", 5}
                ])
 
       assert keys.(Sqlite.find_by_caller(project, "Referenced.Caller.go/0", path, :_, :_)) ==
@@ -1257,6 +1267,176 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Sqlite.replace_all(project, [one, two, three])
 
       assert [^three, ^one, ^three] = Sqlite.find_by_ids(project, [3, 1, 3], :_, :definition)
+    end
+  end
+
+  describe "replace_all/2 with a remote call" do
+    test "stores the call's module reference inside the call and reads both back", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      document = Forge.Document.new("file:///call.ex", "  Target.Mod.run(1)\n", 1)
+      call_range = Range.new(Position.new(document, 1, 3), Position.new(document, 1, 20))
+      module_range = Range.new(Position.new(document, 1, 3), Position.new(document, 1, 13))
+
+      call = %Entry{
+        id: 1,
+        path: "/call.ex",
+        subject: "Target.Mod.run/1",
+        type: {:function, :usage},
+        subtype: :reference,
+        caller: "Caller.go/0",
+        block_id: 7,
+        range: call_range
+      }
+
+      module = %Entry{
+        id: 2,
+        path: "/call.ex",
+        subject: Target.Mod,
+        type: :module,
+        subtype: :reference,
+        block_id: 7,
+        range: module_range
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [call, module])
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+      result = Exqlite.Basic.exec(conn, "SELECT module, name, caller FROM refs")
+
+      assert {:ok, [["Target.Mod.", "run/1", "Caller.go/0"]], _columns} =
+               Exqlite.Basic.rows(result)
+
+      assert :ok = Exqlite.Basic.close(conn)
+
+      assert [found_call] = Sqlite.find_by_subject(project, "Target.Mod.run/1", :_, :reference)
+      assert found_call == stored(call)
+
+      assert [found_module] = Sqlite.find_by_subject(project, Target.Mod, :module, :reference)
+      assert found_module == stored(module)
+      assert found_module.caller == nil
+
+      assert [^found_call, ^found_module] =
+               Sqlite.find_by_paths(project, ["/call.ex"], :_, :reference)
+
+      assert [^found_module] = Sqlite.find_by_prefix(project, "Target.M", :module, :reference)
+      assert [^found_call] = Sqlite.find_by_caller(project, "Caller.go/0", "/call.ex", :_, :_)
+      assert Sqlite.path_to_ids(project) == %{"/call.ex" => 2}
+    end
+  end
+
+  describe "replace_all/2 with qualified and unqualified calls of one function" do
+    test "keeps both occurrences in one row and reads a module reference only for the qualified one",
+         %{project: project, runtime_versions: runtime_versions} do
+      document = Forge.Document.new("file:///calls.ex", "  Target.Mod.run(1)\n  run(2)\n", 1)
+
+      reference = fn id, type, subject, line, from, to ->
+        %Entry{
+          id: id,
+          path: "/calls.ex",
+          subject: subject,
+          type: type,
+          subtype: :reference,
+          caller: "Caller.go/0",
+          block_id: :root,
+          range: Range.new(Position.new(document, line, from), Position.new(document, line, to))
+        }
+      end
+
+      qualified = reference.(1, {:function, :usage}, "Target.Mod.run/1", 1, 3, 20)
+      module = %{reference.(2, :module, Target.Mod, 1, 3, 13) | caller: nil}
+      unqualified = reference.(3, {:function, :usage}, "Target.Mod.run/1", 2, 3, 9)
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [qualified, module, unqualified])
+
+      {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+      result = Exqlite.Basic.exec(conn, "SELECT length(occurrences) FROM refs")
+      assert {:ok, [[72]], _columns} = Exqlite.Basic.rows(result)
+      assert :ok = Exqlite.Basic.close(conn)
+
+      assert Sqlite.find_by_subject(project, "Target.Mod.run/1", :_, :reference) ==
+               Enum.map([qualified, unqualified], &stored/1)
+
+      assert Sqlite.find_by_subject(project, Target.Mod, :module, :reference) == [stored(module)]
+      assert Sqlite.path_to_ids(project) == %{"/calls.ex" => 3}
+    end
+  end
+
+  describe "replace_all/2 with a remote call after non-ASCII text" do
+    test "keeps the client's columns for the call and its module reference", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      prefix = "  \"h😀llo\" <> "
+      document = Forge.Document.new("file:///utf16.ex", prefix <> "Target.Mod.run(1)\n", 1)
+      call_start = String.length(prefix) + 1
+      module_end = call_start + String.length("Target.Mod")
+      call_end = call_start + String.length("Target.Mod.run(1)")
+      position = &Position.new(document, 1, &1)
+
+      call = %Entry{
+        id: 1,
+        path: "/utf16.ex",
+        subject: "Target.Mod.run/1",
+        type: {:function, :usage},
+        subtype: :reference,
+        caller: "Caller.go/0",
+        block_id: :root,
+        range: Range.new(position.(call_start), position.(call_end))
+      }
+
+      module = %Entry{
+        id: 2,
+        path: "/utf16.ex",
+        subject: Target.Mod,
+        type: :module,
+        subtype: :reference,
+        block_id: :root,
+        range: Range.new(position.(call_start), position.(module_end))
+      }
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      assert :ok = Sqlite.replace_all(project, [call, module])
+
+      utf16 = fn %Position{} = original ->
+        {:ok, %{character: character}} = Expert.Protocol.Conversions.to_lsp(original)
+        character
+      end
+
+      assert [found_call] = Sqlite.find_by_subject(project, "Target.Mod.run/1", :_, :reference)
+      assert [found_module] = Sqlite.find_by_subject(project, Target.Mod, :module, :reference)
+
+      assert found_call.range.start.utf16_character == utf16.(call.range.start)
+      assert found_call.range.end.utf16_character == utf16.(call.range.end)
+      assert found_module.range.start.utf16_character == utf16.(module.range.start)
+      assert found_module.range.end.utf16_character == utf16.(module.range.end)
+
+      assert found_module.range.end.utf16_character - found_module.range.start.utf16_character ==
+               10
+
+      assert found_module.range.end.character - found_module.range.start.character == 10
+      assert found_module.range.start.utf16_character == found_module.range.start.character
     end
   end
 
