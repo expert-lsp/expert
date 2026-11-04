@@ -4,7 +4,6 @@ defmodule Expert.Search.Store.StateTest do
   import ExUnit.CaptureLog
   import Forge.Test.Fixtures
 
-  alias Expert.Search.Fuzzy
   alias Expert.Search.Store.State
   alias Forge.Search.Indexer.Entry
 
@@ -47,7 +46,8 @@ defmodule Expert.Search.Store.StateTest do
     def modules(_project), do: []
     def replace_modules(_project, _modules), do: :ok
     def update_modules(_project, _modules, _paths_to_clear), do: :ok
-    def definitions_for_fuzzy(_project), do: []
+    def search_definitions(_project, "Needle", :module, _excluded_roots), do: [entry(2)]
+    def search_definitions(_project, _substring, _type, _excluded_roots), do: []
     def siblings(_project, _entry), do: []
     def parent(_project, _entry), do: nil
     def structure_for_path(_project, _path), do: {:ok, %{}}
@@ -90,7 +90,7 @@ defmodule Expert.Search.Store.StateTest do
     def modules(_project), do: []
     def replace_modules(_project, _modules), do: :ok
     def update_modules(_project, _modules, _paths_to_clear), do: :ok
-    def definitions_for_fuzzy(_project), do: []
+    def search_definitions(_project, _substring, _type, _excluded_roots), do: []
     def siblings(_project, _entry), do: []
     def parent(_project, _entry), do: nil
     def structure_for_path(_project, _path), do: {:ok, %{}}
@@ -139,30 +139,21 @@ defmodule Expert.Search.Store.StateTest do
     assert {:error, :busy} = State.by_caller(state, "error", path, [])
   end
 
-  test "all reduces backend entries and fuzzy uses in-memory ids" do
-    project = project()
-
-    fuzzy_entry = %Entry{
-      id: 2,
-      subject: QueryBackend.FuzzyNeedle,
-      path: "/query_backend.ex",
-      type: :module,
-      subtype: :definition,
-      block_id: :root
-    }
-
-    state = %State{
-      State.new(project, QueryBackend)
-      | loaded?: true,
-        fuzzy: Fuzzy.from_entries(project, [fuzzy_entry])
-    }
+  test "all reduces backend entries" do
+    state = %State{State.new(project(), QueryBackend) | loaded?: true}
 
     assert {:ok, [%Entry{id: 1}]} = State.all(state, type: :module, subtype: :definition)
 
     assert {:ok, [%Entry{id: 3}]} =
              State.all(state, paths: ["/query_backend.ex"], type: :module, subtype: :definition)
+  end
+
+  test "fuzzy only searches definitions" do
+    state = %State{State.new(project(), QueryBackend) | loaded?: true}
 
     assert {:ok, [%Entry{id: 2}]} =
              State.fuzzy(state, "Needle", type: :module, subtype: :definition)
+
+    assert {:ok, []} = State.fuzzy(state, "Needle", type: :module, subtype: :reference)
   end
 end

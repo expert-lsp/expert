@@ -22,6 +22,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   # limit.
   @sqlite_variable_limit 32_766
   @insert_batch_size 4_000
+  @search_limit 256
   @file_id_of_path "(SELECT id FROM files WHERE path = ?)"
   @entries_select """
   SELECT
@@ -105,8 +106,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @impl Backend
-  def definitions_for_fuzzy(%Project{} = project) do
-    GenServer.call(name(project), :definitions_for_fuzzy, :infinity)
+  def search_definitions(%Project{} = project, substring, type, excluded_roots) do
+    GenServer.call(
+      name(project),
+      {:search_definitions, substring, type, excluded_roots},
+      :infinity
+    )
   end
 
   @impl Backend
@@ -283,8 +288,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   def handle_call({:update_modules, modules, paths_to_clear}, _from, %State{} = state),
     do: reply(do_update_modules(state, modules, paths_to_clear), state)
 
-  def handle_call(:definitions_for_fuzzy, _from, %State{} = state),
-    do: reply(do_find_definitions_for_fuzzy(state), state)
+  def handle_call(
+        {:search_definitions, substring, type, excluded_roots},
+        _from,
+        %State{} = state
+      ),
+      do: reply(do_search_definitions(state, substring, type, excluded_roots), state)
 
   def handle_call({:replace_all, replacement}, _from, %State{} = state),
     do: reply(do_replace_all(state, replacement), state)
@@ -384,30 +393,45 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  def do_find_definitions_for_fuzzy(%State{} = state) do
+  def do_search_definitions(%State{} = state, substring, type, excluded_roots) do
+    literal = escape_like(substring)
+    last_segment = "%." <> literal
+    function_name = "%." <> literal <> "/%"
+
+    {clauses, args} =
+      add_type_constraint(["defs.subject LIKE ? ESCAPE '\\'"], ["%" <> literal <> "%"], type)
+
+    root_clauses = Enum.map(excluded_roots, fn _root -> "instr(files.path, ?) <> 1" end)
+
+    # LIKE ignores ASCII case and instr doesn't, so instr ranks the case that was typed higher.
     sql = """
-    SELECT defs.id, files.path, defs.subject, types.type
+    SELECT defs.id
     FROM defs
     JOIN files ON files.id = defs.file_id
-    JOIN types ON types.id = defs.type_id
+    WHERE #{Enum.join(clauses ++ root_clauses, " AND ")}
+    ORDER BY
+      CASE
+        WHEN defs.subject LIKE ? ESCAPE '\\'
+          OR defs.subject LIKE ? ESCAPE '\\'
+          OR defs.subject LIKE ? ESCAPE '\\' THEN 0
+        WHEN instr(defs.subject, ?) > 0 THEN 1
+        ELSE 2
+      END,
+      length(defs.subject),
+      defs.subject,
+      defs.id
+    LIMIT #{@search_limit}
     """
 
-    case query(state, sql) do
-      {:ok, rows} ->
-        Enum.map(rows, fn [id, path, subject, type_blob] ->
-          %Entry{
-            id: id,
-            path: path,
-            subject: subject,
-            type: decode_term(type_blob),
-            subtype: :definition
-          }
-        end)
+    rank_args = [literal, last_segment, function_name, substring]
 
-      {:error, _} = error ->
-        error
+    case query(state, sql, args ++ excluded_roots ++ rank_args) do
+      {:ok, rows} -> do_find_by_ids(state, Enum.map(rows, &hd/1), type, :definition)
+      {:error, _} = error -> error
     end
   end
+
+  defp escape_like(text), do: String.replace(text, ["\\", "%", "_"], &("\\" <> &1))
 
   def do_replace_all(%State{} = state, replacement) when is_function(replacement, 1) do
     with {:ok, result} <- transaction(state, fn -> replace_entries(state, replacement) end),
@@ -829,9 +853,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     sort_workers = min(max(System.schedulers_online() - 1, 0), 4)
 
     with :ok <- exec(state, "PRAGMA busy_timeout = #{@busy_timeout_ms}"),
-         :ok <- exec(state, "PRAGMA synchronous = NORMAL"),
-         :ok <- exec(state, "PRAGMA threads = #{sort_workers}") do
-      exec(state, "PRAGMA case_sensitive_like = ON")
+         :ok <- exec(state, "PRAGMA synchronous = NORMAL") do
+      exec(state, "PRAGMA threads = #{sort_workers}")
     end
   end
 

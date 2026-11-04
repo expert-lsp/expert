@@ -61,9 +61,9 @@ defmodule Expert.Search.StoreTest do
 
     assert :ok = Store.replace(project, [old_entry])
 
-    update = fn write_batch, write_state ->
-      with {:ok, write_state} <- write_batch.([Store.encode_batch([new_entry])], write_state) do
-        {:ok, :updated, write_state}
+    update = fn write_batch ->
+      with :ok <- write_batch.([Store.encode_batch([new_entry])]) do
+        {:ok, :updated}
       end
     end
 
