@@ -14,7 +14,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 10
+  @schema_version 11
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -38,15 +38,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   JOIN types ON types.id = defs.type_id
   """
   @refs_select """
-  SELECT files.path, refs.module, refs.name, types.type, refs.caller, refs.occurrences
+  SELECT files.path, modules.text, names.text, types.type, callers.text, refs.occurrences
   FROM refs
   JOIN files ON files.id = refs.file_id
   JOIN types ON types.id = refs.type_id
+  JOIN names AS modules ON modules.id = refs.module_id
+  JOIN names ON names.id = refs.name_id
+  LEFT JOIN names AS callers ON callers.id = refs.caller_id
   """
+  @name_id "(SELECT id FROM names WHERE text = ?)"
   @busy_timeout_ms Application.compile_env(:expert, :search_store_sqlite_busy_timeout_ms, 5_000)
 
   defmodule State do
-    defstruct [:conn, :database_path, :project, :runtime_versions]
+    defstruct [:conn, :database_path, :project, :runtime_versions, :names]
   end
 
   @impl Backend
@@ -233,7 +237,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
      %State{
        database_path: database_path,
        project: project,
-       runtime_versions: runtime_versions
+       runtime_versions: runtime_versions,
+       # We store names in an ets cache for the duration of the index run so we avoid
+       # running INSERT OR IGNORE thuosands of times
+       names: :ets.new(:names, [:set, :private])
      }}
   end
 
@@ -366,6 +373,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DELETE FROM refs"),
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
+         :ok <- exec(state, "DELETE FROM names"),
          :ok <- exec(state, "DELETE FROM structures"),
          {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
          :ok <- create_indexes(state) do
@@ -513,16 +521,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp refs_constraint({:subject, key}) do
     {module, name} = split_subject(key)
-    {["((module = ? AND name = ?) OR module = ?)"], [module, name, key <> "."]}
+
+    {["((module_id = #{@name_id} AND name_id = #{@name_id}) OR module_id = #{@name_id})"],
+     [module, name, key <> "."]}
   end
 
   defp refs_constraint({:subjects, keys}) do
     pairs = Enum.map(keys, &split_subject/1)
-    values = Enum.map_join(pairs, ", ", fn _pair -> "(?, ?)" end)
+    values = Enum.map_join(pairs, ", ", fn _pair -> "(#{@name_id}, #{@name_id})" end)
     modules = Enum.map(keys, &(&1 <> "."))
 
-    {["((module, name) IN (VALUES #{values}) OR module IN (#{placeholders(modules)}))"],
-     Enum.flat_map(pairs, &Tuple.to_list/1) ++ modules}
+    {[
+       "((module_id, name_id) IN (VALUES #{values}) OR module_id IN (SELECT id FROM names WHERE text IN (#{placeholders(modules)})))"
+     ], Enum.flat_map(pairs, &Tuple.to_list/1) ++ modules}
   end
 
   # Subjects starting with `prefix` either have a module starting with it, or
@@ -535,7 +546,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       end
 
     {clauses, args} =
-      [starts_with("module", prefix)]
+      [named_with("module_id", prefix)]
       |> Enum.concat(Enum.map(splits, fn {module, rest} -> in_module(module, rest) end))
       |> Enum.concat([in_module("", prefix)])
       |> Enum.unzip()
@@ -544,14 +555,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp refs_constraint({:caller, caller, path}),
-    do: {["caller = ? AND file_id = #{@file_id_of_path}"], [caller, path]}
+    do: {["caller_id = #{@name_id} AND file_id = #{@file_id_of_path}"], [caller, path]}
 
   defp refs_constraint({:paths, paths}),
     do: {["file_id IN (SELECT id FROM files WHERE path IN (#{placeholders(paths)}))"], paths}
 
   defp in_module(module, name_prefix) do
-    {clause, args} = starts_with("name", name_prefix)
-    {"module = ? AND " <> clause, [module | args]}
+    {clause, args} = named_with("name_id", name_prefix)
+    {"module_id = #{@name_id} AND " <> clause, [module | args]}
+  end
+
+  defp named_with(column, prefix) do
+    {clause, args} = starts_with("text", prefix)
+    {"#{column} IN (SELECT id FROM names WHERE #{clause})", args}
   end
 
   defp starts_with(column, prefix) do
@@ -781,11 +797,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS refs"),
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS names"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- create_defs_table(state),
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
+         :ok <- create_names_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
@@ -815,6 +833,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
+         :ok <- create_names_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_indexes(state),
@@ -846,11 +865,22 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     CREATE TABLE IF NOT EXISTS refs (
       ref_key INTEGER PRIMARY KEY,
       file_id INTEGER NOT NULL,
-      module TEXT NOT NULL,
-      name TEXT NOT NULL,
+      module_id INTEGER NOT NULL REFERENCES names(id),
+      name_id INTEGER NOT NULL REFERENCES names(id),
       type_id INTEGER NOT NULL,
-      caller TEXT,
+      caller_id INTEGER REFERENCES names(id),
       occurrences BLOB NOT NULL
+    )
+    """)
+  end
+
+  # NOTE(doorgan): module, function and caller names are normalized into a `names`
+  # table to save on disk space. They tend to repeat a lot.
+  defp create_names_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS names (
+      id INTEGER PRIMARY KEY,
+      text TEXT NOT NULL UNIQUE
     )
     """)
   end
@@ -902,7 +932,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     "defs_id_idx ON defs (id, type_id)",
     "defs_file_block_idx ON defs (file_id, block_id, id)",
     "defs_type_idx ON defs (type_id)",
-    "refs_subject_idx ON refs (module, name, type_id)",
+    "refs_subject_idx ON refs (module_id, name_id, type_id)",
     "refs_file_idx ON refs (file_id)"
   ]
 
@@ -1199,27 +1229,63 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_ref_batch(%State{} = state, rows) do
+    texts =
+      for [_path, module, name, _type, _max_id, caller, _occurrences] <- rows,
+          text <- [module, name, caller],
+          is_binary(text),
+          do: text
+
     with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
-         {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))) do
+         {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))),
+         {:ok, name_ids} <- name_ids(state, texts) do
       args =
         Enum.flat_map(rows, fn [path, module, name, type, _max_id, caller, occurrences] ->
           [
             Map.fetch!(file_ids, path),
-            module,
-            name,
+            Map.fetch!(name_ids, module),
+            Map.fetch!(name_ids, name),
             Map.fetch!(type_ids, type),
-            caller,
+            caller && Map.fetch!(name_ids, caller),
             occurrences
           ]
         end)
 
       sql = """
-      INSERT INTO refs (file_id, module, name, type_id, caller, occurrences)
+      INSERT INTO refs (file_id, module_id, name_id, type_id, caller_id, occurrences)
       VALUES #{row_placeholders(rows, 6)}
       """
 
       exec(state, sql, args)
     end
+  end
+
+  defp name_ids(%State{names: names} = state, texts) do
+    texts = Enum.uniq(texts)
+
+    with :ok <- insert_names(state, Enum.reject(texts, &:ets.member(names, &1))) do
+      {:ok, Map.new(texts, &{&1, :ets.lookup_element(names, &1, 2)})}
+    end
+  end
+
+  defp insert_names(%State{}, []), do: :ok
+
+  defp insert_names(%State{names: names} = state, texts) do
+    with {:ok, inserted} <-
+           query(
+             state,
+             "INSERT OR IGNORE INTO names (text) VALUES #{row_placeholders(texts, 1)} RETURNING text, id",
+             texts
+           ),
+         {:ok, existing} <- existing_names(state, texts -- Enum.map(inserted, &hd/1)) do
+      :ets.insert(names, Enum.map(inserted ++ existing, &List.to_tuple/1))
+      :ok
+    end
+  end
+
+  defp existing_names(%State{}, []), do: {:ok, []}
+
+  defp existing_names(%State{} = state, texts) do
+    query(state, "SELECT text, id FROM names WHERE text IN (#{placeholders(texts)})", texts)
   end
 
   defp encode_rows(batch), do: Enum.map(batch, &encode_row/1)
@@ -1492,20 +1558,26 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp transaction(%State{} = state, fun) do
     with :ok <- exec(state, "BEGIN IMMEDIATE") do
-      case fun.() do
-        :ok ->
-          commit_transaction(state, :ok)
+      result =
+        case fun.() do
+          :ok ->
+            commit_transaction(state, :ok)
 
-        {:ok, _} = result ->
-          commit_transaction(state, result)
+          {:ok, _} = result ->
+            commit_transaction(state, result)
 
-        {:ok, _, _} = result ->
-          commit_transaction(state, result)
+          {:ok, _, _} = result ->
+            commit_transaction(state, result)
 
-        {:error, _} = error ->
-          exec(state, "ROLLBACK")
-          error
-      end
+          {:error, _} = error ->
+            exec(state, "ROLLBACK")
+            error
+        end
+
+      # The rowids learned in this transaction are undone by its rollback or
+      # deleted by a later replace, so none survive it.
+      :ets.delete_all_objects(state.names)
+      result
     end
   end
 

@@ -263,7 +263,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[10]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[11]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -1310,11 +1310,21 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Sqlite.replace_all(project, [call, module])
 
       {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
-      result = Exqlite.Basic.exec(conn, "SELECT module, name, caller FROM refs")
+
+      result =
+        Exqlite.Basic.exec(conn, """
+        SELECT modules.text, names.text, callers.text
+        FROM refs
+        JOIN names AS modules ON modules.id = refs.module_id
+        JOIN names ON names.id = refs.name_id
+        JOIN names AS callers ON callers.id = refs.caller_id
+        """)
 
       assert {:ok, [["Target.Mod.", "run/1", "Caller.go/0"]], _columns} =
                Exqlite.Basic.rows(result)
 
+      result = Exqlite.Basic.exec(conn, "SELECT COUNT(*) FROM names")
+      assert {:ok, [[3]], _columns} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
 
       assert [found_call] = Sqlite.find_by_subject(project, "Target.Mod.run/1", :_, :reference)
@@ -1437,6 +1447,76 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert found_module.range.end.character - found_module.range.start.character == 10
       assert found_module.range.start.utf16_character == found_module.range.start.character
+    end
+  end
+
+  describe "apply_index_update/3 with references to a shared subject" do
+    test "keeps the name ids of rows written earlier, across a restart", %{
+      project: project,
+      runtime_versions: runtime_versions
+    } do
+      document = Forge.Document.new("file:///shared.ex", "  Shared.Mod.run(1)\n", 1)
+      range = Range.new(Position.new(document, 1, 3), Position.new(document, 1, 20))
+
+      reference = fn id, path ->
+        %Entry{
+          id: id,
+          path: path,
+          subject: "Shared.Mod.run/1",
+          type: {:function, :usage},
+          subtype: :reference,
+          caller: "Caller.go/0",
+          block_id: :root,
+          range: range
+        }
+      end
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+
+      assert :ok =
+               Sqlite.replace_all(project, [
+                 reference.(1, "/first.ex"),
+                 reference.(2, "/second.ex")
+               ])
+
+      names_before = fn ->
+        {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
+        result = Exqlite.Basic.exec(conn, "SELECT id, text FROM names ORDER BY id")
+        {:ok, rows, _columns} = Exqlite.Basic.rows(result)
+        :ok = Exqlite.Basic.close(conn)
+        rows
+      end
+
+      names = names_before.()
+      assert length(names) == 3
+
+      :ok = stop_supervised!(:sqlite)
+
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :stale} = Sqlite.prepare(pid)
+      assert {:ok, []} = Sqlite.apply_index_update(project, [reference.(3, "/second.ex")], [])
+
+      assert names == names_before.()
+
+      assert ["/first.ex", "/second.ex"] =
+               project
+               |> Sqlite.find_by_subject("Shared.Mod.run/1", :_, :reference)
+               |> Enum.map(& &1.path)
+               |> Enum.sort()
+
+      assert [%Entry{path: "/second.ex"}] =
+               Sqlite.find_by_caller(project, "Caller.go/0", "/second.ex", :_, :_)
     end
   end
 
