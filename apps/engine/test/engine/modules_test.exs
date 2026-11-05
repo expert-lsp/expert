@@ -4,6 +4,16 @@ defmodule Engine.ModulesTest do
 
   alias Engine.Modules
 
+  describe "from_string/1" do
+    test "returns an existing module" do
+      assert {:ok, Enum} = Modules.from_string("Elixir.Enum")
+    end
+
+    test "rejects an unknown module" do
+      assert :error = Modules.from_string("Elixir.UnknownModule#{System.unique_integer()}")
+    end
+  end
+
   describe "simple prefixes" do
     test "specifying a prefix with a string" do
       found = Modules.with_prefix("En")
