@@ -44,6 +44,12 @@ defmodule Engine.Modules do
 
   def exunit_module?(_module), do: false
 
+  def from_string(module_name) when is_binary(module_name) do
+    {:ok, String.to_existing_atom(module_name)}
+  rescue
+    ArgumentError -> :error
+  end
+
   def exports(module) when is_atom(module) do
     with {:module, ^module} <- Loader.ensure_loaded(module),
          true <- function_exported?(module, :__info__, 1) do
