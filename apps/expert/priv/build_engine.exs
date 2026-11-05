@@ -28,6 +28,14 @@ for var <- ["MIX_ARCHIVES", "MIX_HOME", "MIX_REBAR3"] do
   end
 end
 
+user_archives = Mix.path_for(:archives)
+
+# Mix appends every archive to the code path when it starts and protocol
+# consolidation reads them all, so the user's archives, which may be compiled
+# for another Erlang/OTP version, must stay out of the build.
+System.put_env("MIX_HOME", mix_home)
+System.put_env("MIX_ARCHIVES", mix_archives)
+
 # Mix's partitioned deps.compile starts fresh OS processes that do not inherit
 # the in_project build/deps/lockfile paths used by this script.
 System.put_env("MIX_OS_DEPS_COMPILE_PARTITION_COUNT", "1")
@@ -131,7 +139,8 @@ tooling_env = [
   {"MIX_INSTALL_DIR", expert_data_path},
   {"MIX_HOME", mix_home},
   {"MIX_ARCHIVES", mix_archives},
-  {"REBAR_CACHE_DIR", rebar_cache}
+  {"REBAR_CACHE_DIR", rebar_cache},
+  {"EXPERT_USER_ARCHIVES", user_archives}
 ]
 
 engine_meta =
