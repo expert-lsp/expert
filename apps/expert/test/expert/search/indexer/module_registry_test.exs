@@ -40,7 +40,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     :code.purge(module)
     :code.delete(module)
     beam_path = Path.join(beam_dir, Atom.to_string(module) <> ".beam")
-    spy(File)
+    spy(Expert.File)
 
     project = project()
     start_supervised!({ModuleRegistry, project})
@@ -49,7 +49,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     |> Beams.stream(project: project, applications: %{beam_dir => :registry_app})
     |> Enum.to_list()
 
-    beam_reads = Enum.filter(history(File), &match?({:read, [^beam_path]}, &1))
+    beam_reads = Enum.filter(history(Expert.File), &match?({:read, [^beam_path]}, &1))
     assert [{:read, [^beam_path]}] = beam_reads
     assert ModuleRegistry.available_module?(project, module)
     assert ModuleRegistry.application(project, module) == :registry_app
