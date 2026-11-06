@@ -8,6 +8,7 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
   import Forge.Test.RangeSupport
 
   alias Expert.EngineApi
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Source
   alias Expert.Search.Store
   alias Forge.Document
@@ -18,6 +19,8 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
     test_pid = self()
 
     Engine.set_project(project)
+    start_supervised!({Expert.Project.Store, []})
+    start_supervised!({ModuleRegistry, project})
 
     patch(EngineApi, :call, fn ^project, Engine, :resolve_entity, [analysis, position] ->
       send(test_pid, {:engine_resolve_entity, position})
