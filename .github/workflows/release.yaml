@@ -44,7 +44,7 @@ jobs:
 
   build:
     needs: [release, draft]
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     if: ${{ needs.release.outputs.release_created }}
