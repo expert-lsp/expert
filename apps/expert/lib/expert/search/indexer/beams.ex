@@ -235,7 +235,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp metadata_from_beam({beam_path, beam_stat}, opts) do
     application = Map.get(Keyword.get(opts, :applications, %{}), Path.dirname(beam_path))
 
-    with {:ok, beam} <- File.read(beam_path),
+    with {:ok, beam} <- Expert.File.read(beam_path),
          {:ok, module, exports, debug_metadata_result} <- metadata_from_binary(beam) do
       results =
         case debug_metadata_result do

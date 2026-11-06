@@ -30,7 +30,7 @@ defmodule Expert.Search.Indexer.Sources do
   end
 
   defp index_path(path, source_indexer, encode) do
-    with {:ok, contents} <- File.read(path),
+    with {:ok, contents} <- Expert.File.read(path),
          {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
          true <- has_search_entries?(entries),
          {:ok, manifest_entry} <- Manifest.Entry.source(path) do
