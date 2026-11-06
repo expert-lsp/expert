@@ -150,8 +150,6 @@ jobs:
             target: linux_amd64
           - name: macos-15
             target: darwin_arm64
-          - name: macos-14
-            target: darwin_amd64
 
         include:
           - elixir: "1.17.3"
