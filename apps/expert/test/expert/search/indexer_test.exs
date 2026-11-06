@@ -49,6 +49,12 @@ defmodule Expert.Search.IndexerTest do
     end
 
     def insert(entries) do
+      entries =
+        Enum.map(entries, fn
+          {:encoded, entry, _row} -> entry
+          entry -> entry
+        end)
+
       record_call({:insert, entries})
       set_entries(entries() ++ entries)
       :ok
