@@ -9,8 +9,7 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
   alias Expert.EngineApi
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
-  alias Expert.Search.Indexer.Manifest
-  alias Expert.Search.Indexer.ManifestStore
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Store
   alias Expert.Search.Subject
   alias Forge.Ast.Analysis
@@ -32,6 +31,7 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
     project = project(:navigations)
     path = file_path(project, Path.join("lib", "my_definition.ex"))
     uri = Document.Path.ensure_uri(path)
+    start_supervised!({ModuleRegistry, project})
     {:ok, project: project, uri: uri}
   end
 
@@ -101,22 +101,6 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
 
       path = file_path(project, Path.join("lib", "uses.ex"))
       {:ok, request} = build_request(path, 4, 25)
-      document = Document.Container.context_document(request, nil)
-
-      entry = %Entry{
-        subject: Subject.mfa(MyDefinition, :greet, 1),
-        type: {:function, :usage},
-        subtype: :reference,
-        path: path,
-        range:
-          Document.Range.new(
-            Document.Position.new(document, 5, 5),
-            Document.Position.new(document, 5, 32)
-          )
-      }
-
-      patch(Store, :all, {:ok, [entry]})
-
       assert {:ok, []} = handle(request, project)
     end
 
@@ -150,16 +134,13 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
           path: "/reference.ex"
       }
 
-      {:ok, manifest_entry} = Manifest.Entry.source(path)
-      patch(ManifestStore, :load, {:ok, Manifest.new([manifest_entry])})
-      patch(Store, :all, {:ok, [definition]})
       patch(Store, :prefix, {:ok, [reference]})
 
       assert {:ok, [%Location{} = location]} = handle(request, project)
       assert Location.uri(location) == Document.Path.ensure_uri(reference.path)
     end
 
-    test "uses the Engine instead of stale entries for a dirty document", %{project: project} do
+    test "takes the symbol under the cursor from the document's text", %{project: project} do
       test_pid = self()
       path = file_path(project, Path.join("lib", "uses.ex"))
       uri = Document.Path.ensure_uri(path)
@@ -181,8 +162,8 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
       {:ok, request} = build_request(path, 2, 9)
       document = Document.Container.context_document(request, nil)
 
-      stale_entry = %Entry{
-        subject: Subject.mfa(Old, :foo, 0),
+      reference = %Entry{
+        subject: Subject.mfa(New, :foo, 0),
         type: {:function, :usage},
         subtype: :reference,
         path: path,
@@ -193,19 +174,16 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
           )
       }
 
-      patch(Store, :all, {:ok, [stale_entry]})
-      patch(Store, :prefix, {:ok, [stale_entry]})
-
-      patch(EngineApi, :resolve_entity, fn ^project, _analysis, _position ->
-        send(test_pid, :engine_fallback)
-        {:error, :unresolved}
+      patch(Store, :prefix, fn ^project, subject, _constraints ->
+        send(test_pid, {:prefix, subject})
+        {:ok, [reference]}
       end)
 
-      Expert.Project.Store.transition(project, :ready)
-      on_exit(fn -> Expert.Project.Store.transition(project, :pending) end)
+      patch(EngineApi, :resolve_entity, fn _, _, _ -> flunk("called the Engine") end)
 
-      assert {:ok, []} = handle(request, project)
-      assert_receive :engine_fallback
+      assert {:ok, [%Location{}]} = handle(request, project)
+      prefix = Subject.mfa(New, :foo, "")
+      assert_receive {:prefix, ^prefix}
     end
   end
 end
