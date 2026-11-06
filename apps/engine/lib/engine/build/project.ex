@@ -67,6 +67,7 @@ defmodule Engine.Build.Project do
       Mix.Task.clear()
       Progress.report(token, message: "Compiling #{Project.display_name(project)}")
       result = compile_in_isolation(force?)
+      Engine.Compilation.Tracer.prune_imported_calls(Mix.Project.build_path())
       maybe_load_modules()
       Engine.Mix.ensure_hex_and_rebar()
       Mix.Task.run(:loadpaths)

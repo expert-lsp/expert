@@ -93,7 +93,7 @@ defmodule Expert.Search.Indexer.QuotedTest do
 
       for code <- codes do
         {position, analysis, entries} = entries_at(project, code)
-        {:ok, all} = Quoted.index_with_cleanup(analysis, project)
+        {:ok, all} = Quoted.index_with_cleanup(analysis, project, %{})
 
         containing =
           for entry <- all,
