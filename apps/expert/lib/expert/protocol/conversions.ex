@@ -100,6 +100,11 @@ defmodule Expert.Protocol.Conversions do
     end
   end
 
+  def to_lsp(%ElixirPosition{utf16_character: character} = position)
+      when is_integer(character) do
+    {:ok, %LSPosition{line: position.line - position.starting_index, character: character}}
+  end
+
   def to_lsp(%ElixirPosition{} = position) do
     elixir_character = position.character
     line_count = position.document_line_count
