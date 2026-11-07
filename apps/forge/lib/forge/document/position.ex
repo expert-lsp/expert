@@ -23,7 +23,9 @@ defmodule Forge.Document.Position do
     valid?: false,
     context_line: nil,
     document_line_count: 0,
-    starting_index: 1
+    starting_index: 1,
+    # Used to convert positions when the original context_line is not available
+    utf16_character: nil
   ]
 
   @type line :: non_neg_integer()
@@ -36,6 +38,7 @@ defmodule Forge.Document.Position do
           document_line_count: non_neg_integer(),
           line: line(),
           starting_index: non_neg_integer(),
+          utf16_character: character() | nil,
           valid?: boolean()
         }
 

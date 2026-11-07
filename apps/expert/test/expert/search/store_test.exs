@@ -129,21 +129,35 @@ defmodule Expert.Search.StoreTest do
     assert {:error, :busy} = Store.exact_many(project, ["Foo.Bar"], [])
   end
 
-  test "by_caller returns only matching occurrences", %{project: project} do
+  @tag :tmp_dir
+  test "by_caller returns only matching occurrences", %{project: project, tmp_dir: tmp_dir} do
+    path = Path.join(tmp_dir, "core.ex")
+
+    blank_lines = String.duplicate(String.duplicate(" ", 20) <> "\n", 3)
+    document = Forge.Document.new("file:///core.ex", blank_lines, 1)
+
+    range = fn line ->
+      Forge.Document.Range.new(
+        Forge.Document.Position.new(document, line, 1),
+        Forge.Document.Position.new(document, line, 19)
+      )
+    end
+
     first = %Entry{
       id: 1,
       block_id: :root,
-      path: "/core.ex",
+      path: path,
+      range: range.(1),
       caller: "Core.public/1",
       subject: "Core.private/2",
       type: {:function, :usage},
       subtype: :reference
     }
 
-    second = %{first | id: 2, subject: "Core.Piece.new/2"}
-    repeated = %{second | id: 3, block_id: 123}
+    second = %{first | id: 2, range: range.(2), subject: "Core.Piece.new/2"}
+    repeated = %{second | id: 3, range: range.(3), block_id: 123}
     other_caller = %{first | id: 4, caller: "Core.public/2"}
-    other_path = %{first | id: 5, path: "/other/core.ex"}
+    other_path = %{first | id: 5, path: Path.join(tmp_dir, "other/core.ex")}
     no_caller = %{first | id: 6, caller: nil}
     definition = %{first | id: 7, subtype: :definition}
     other_type = %{first | id: 8, type: :module}
@@ -162,19 +176,37 @@ defmodule Expert.Search.StoreTest do
 
     spy(Exqlite.Basic)
 
+    kept = fn %Forge.Document.Position{line: line, character: character} ->
+      %Forge.Document.Position{line: line, character: character, utf16_character: character - 1}
+    end
+
+    stored = fn %Entry{subtype: :reference, range: range} = entry ->
+      range = %Forge.Document.Range{start: kept.(range.start), end: kept.(range.end)}
+      %Entry{entry | id: nil, block_id: :root, application: nil, range: range}
+    end
+
+    [first, second, repeated, other_type] =
+      Enum.map([first, second, repeated, other_type], stored)
+
+    by_line = & &1.range.start.line
+
     assert {:ok, matches} =
-             Store.by_caller(project, "Core.public/1", "/core.ex",
+             Store.by_caller(project, "Core.public/1", path,
                type: {:function, :usage},
                subtype: :reference
              )
 
-    assert [^first, ^second, ^repeated] = Enum.sort_by(matches, & &1.id)
+    assert [^first, ^second, ^repeated] = Enum.sort_by(matches, by_line)
     assert_called(Exqlite.Basic.exec(_, _, _), 1)
 
-    assert {:ok, matches} = Store.by_caller(project, "Core.public/1", "/core.ex")
-    assert [^first, ^second, ^repeated, ^definition, ^other_type] = Enum.sort_by(matches, & &1.id)
-    assert {:ok, []} = Store.by_caller(project, "Core.public", "/core.ex")
-    assert {:ok, []} = Store.by_caller(project, "Core.public/1", "/missing.ex")
+    assert {:ok, matches} = Store.by_caller(project, "Core.public/1", path)
+    {[^definition], references} = Enum.split_with(matches, &(&1.subtype == :definition))
+
+    assert [^other_type, ^first, ^second, ^repeated] =
+             Enum.sort_by(references, &{by_line.(&1), &1.type})
+
+    assert {:ok, []} = Store.by_caller(project, "Core.public", path)
+    assert {:ok, []} = Store.by_caller(project, "Core.public/1", Path.join(tmp_dir, "missing.ex"))
   end
 
   test "by_caller follows store availability and propagates SQL failures", %{project: project} do
@@ -262,7 +294,14 @@ defmodule Expert.Search.StoreTest do
   end
 
   defp reference(opts) do
-    %Entry{definition(opts) | subtype: :reference}
+    %Entry{
+      definition(opts)
+      | subtype: :reference,
+        range: %Forge.Document.Range{
+          start: %Forge.Document.Position{line: 1, character: 1},
+          end: %Forge.Document.Position{line: 1, character: 8}
+        }
+    }
   end
 
   defp runtime_versions, do: %{erlang: "engine-erlang", elixir: "engine-elixir"}

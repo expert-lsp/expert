@@ -96,5 +96,11 @@ defmodule Expert.Protocol.ConversionsTest do
       assert {:ok, pos} = Conversions.to_lsp(ex_position(doc, 2, 2))
       assert %LSPosition{character: 1, line: 1} == pos
     end
+
+    test "utf-16 character without a line" do
+      position = %ExPosition{line: 2, character: 3, utf16_character: 5}
+      assert {:ok, pos} = Conversions.to_lsp(position)
+      assert %LSPosition{character: 5, line: 1} == pos
+    end
   end
 end

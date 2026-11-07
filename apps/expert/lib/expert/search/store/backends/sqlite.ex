@@ -4,6 +4,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   use GenServer
 
   alias Expert.EngineApi
+  alias Expert.Protocol.Conversions
   alias Expert.Search.Store.Backend
   alias Forge.Document.Position
   alias Forge.Document.Range
@@ -13,7 +14,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 9
+  @schema_version 10
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -37,15 +38,19 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   JOIN types ON types.id = defs.type_id
   """
   @refs_select """
-  SELECT files.path, refs.module, refs.name, types.type, refs.occurrences
+  SELECT files.path, modules.text, names.text, types.type, callers.text, refs.occurrences
   FROM refs
   JOIN files ON files.id = refs.file_id
   JOIN types ON types.id = refs.type_id
+  JOIN names AS modules ON modules.id = refs.module_id
+  JOIN names ON names.id = refs.name_id
+  LEFT JOIN names AS callers ON callers.id = refs.caller_id
   """
+  @name_id "(SELECT id FROM names WHERE text = ?)"
   @busy_timeout_ms Application.compile_env(:expert, :search_store_sqlite_busy_timeout_ms, 5_000)
 
   defmodule State do
-    defstruct [:conn, :database_path, :project, :runtime_versions]
+    defstruct [:conn, :database_path, :project, :runtime_versions, :names]
   end
 
   @impl Backend
@@ -232,7 +237,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
      %State{
        database_path: database_path,
        project: project,
-       runtime_versions: runtime_versions
+       runtime_versions: runtime_versions,
+       # We store names in an ets cache for the duration of the index run so we avoid
+       # running INSERT OR IGNORE thousands of times
+       names: :ets.new(:names, [:set, :private])
      }}
   end
 
@@ -365,6 +373,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DELETE FROM refs"),
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
+         :ok <- exec(state, "DELETE FROM names"),
          :ok <- exec(state, "DELETE FROM structures"),
          :ok <- exec(state, "DELETE FROM integrations"),
          {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
@@ -425,8 +434,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       subjects
       |> Enum.map(&subject_key/1)
       |> Enum.uniq()
-      # each subject is two arguments in the refs query, its module and its name
-      |> Stream.chunk_every(div(query_chunk_size(type, subtype), 2))
+      # each subject is three arguments in the refs query: its module, its name
+      # and the module of calls to it
+      |> Stream.chunk_every(div(query_chunk_size(type, subtype), 3))
       |> Enum.reduce_while([], fn subjects, batches ->
         selector = {:subjects, subjects}
 
@@ -469,8 +479,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   # `clauses` and `args` only apply to `defs`. `refs` builds its own query from
-  # `selector`, and filters the decoded rows with it, since the caller is inside
-  # each row's blob.
+  # `selector`, and filters the decoded rows with it, since a prefix whose last
+  # byte cannot be incremented has no upper bound in SQL.
   defp find(%State{} = state, selector, clauses, args, type, subtype) do
     Enum.reduce_while(tables_for(subtype), [], fn table, found ->
       case table_entries(state, table, selector, clauses, args, type) do
@@ -493,7 +503,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp table_entries(%State{} = state, :refs, selector, _clauses, _args, type) do
     {clauses, args} = refs_constraint(selector)
-    {clauses, args} = add_type_constraint(clauses, args, type)
+    {clauses, args} = refs_type_constraint(clauses, args, type)
     where = where_clause(Enum.join(clauses, " AND "))
 
     case refs_result(state, query_refs(state, where, args)) do
@@ -516,17 +526,30 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
+  defp refs_type_constraint(clauses, args, :module) do
+    clause = "type_id IN (SELECT id FROM types WHERE type IN (?, ?))"
+    {clauses ++ [clause], args ++ [blob(:module), blob({:function, :usage})]}
+  end
+
+  defp refs_type_constraint(clauses, args, type), do: add_type_constraint(clauses, args, type)
+
   defp refs_constraint(:all), do: {[], []}
 
   defp refs_constraint({:subject, key}) do
     {module, name} = split_subject(key)
-    {["module = ? AND name = ?"], [module, name]}
+
+    {["((module_id = #{@name_id} AND name_id = #{@name_id}) OR module_id = #{@name_id})"],
+     [module, name, key <> "."]}
   end
 
   defp refs_constraint({:subjects, keys}) do
     pairs = Enum.map(keys, &split_subject/1)
-    values = Enum.map_join(pairs, ", ", fn _pair -> "(?, ?)" end)
-    {["(module, name) IN (VALUES #{values})"], Enum.flat_map(pairs, &Tuple.to_list/1)}
+    values = Enum.map_join(pairs, ", ", fn _pair -> "(#{@name_id}, #{@name_id})" end)
+    modules = Enum.map(keys, &(&1 <> "."))
+
+    {[
+       "((module_id, name_id) IN (VALUES #{values}) OR module_id IN (SELECT id FROM names WHERE text IN (#{placeholders(modules)})))"
+     ], Enum.flat_map(pairs, &Tuple.to_list/1) ++ modules}
   end
 
   # Subjects starting with `prefix` either have a module starting with it, or
@@ -539,7 +562,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       end
 
     {clauses, args} =
-      [starts_with("module", prefix)]
+      [named_with("module_id", prefix)]
       |> Enum.concat(Enum.map(splits, fn {module, rest} -> in_module(module, rest) end))
       |> Enum.concat([in_module("", prefix)])
       |> Enum.unzip()
@@ -547,14 +570,20 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     {["(" <> Enum.map_join(clauses, " OR ", &"(#{&1})") <> ")"], Enum.concat(args)}
   end
 
-  defp refs_constraint({:caller, _caller, path}), do: {["file_id = #{@file_id_of_path}"], [path]}
+  defp refs_constraint({:caller, caller, path}),
+    do: {["caller_id = #{@name_id} AND file_id = #{@file_id_of_path}"], [caller, path]}
 
   defp refs_constraint({:paths, paths}),
     do: {["file_id IN (SELECT id FROM files WHERE path IN (#{placeholders(paths)}))"], paths}
 
   defp in_module(module, name_prefix) do
-    {clause, args} = starts_with("name", name_prefix)
-    {"module = ? AND " <> clause, [module | args]}
+    {clause, args} = named_with("name_id", name_prefix)
+    {"module_id = #{@name_id} AND " <> clause, [module | args]}
+  end
+
+  defp named_with(column, prefix) do
+    {clause, args} = starts_with("text", prefix)
+    {"#{column} IN (SELECT id FROM names WHERE #{clause})", args}
   end
 
   defp starts_with(column, prefix) do
@@ -784,12 +813,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS refs"),
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS names"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
          :ok <- exec(state, "DROP TABLE IF EXISTS integrations"),
          :ok <- create_defs_table(state),
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
+         :ok <- create_names_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_integrations_table(state),
@@ -821,6 +852,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
+         :ok <- create_names_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
          :ok <- create_integrations_table(state),
@@ -853,10 +885,22 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     CREATE TABLE IF NOT EXISTS refs (
       ref_key INTEGER PRIMARY KEY,
       file_id INTEGER NOT NULL,
-      module TEXT NOT NULL,
-      name TEXT NOT NULL,
+      module_id INTEGER NOT NULL,
+      name_id INTEGER NOT NULL,
       type_id INTEGER NOT NULL,
+      caller_id INTEGER,
       occurrences BLOB NOT NULL
+    )
+    """)
+  end
+
+  # NOTE(doorgan): module, function and caller names are normalized into a `names`
+  # table to save on disk space. They tend to repeat a lot.
+  defp create_names_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS names (
+      id INTEGER PRIMARY KEY,
+      text TEXT NOT NULL UNIQUE
     )
     """)
   end
@@ -920,7 +964,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     "defs_id_idx ON defs (id, type_id)",
     "defs_file_block_idx ON defs (file_id, block_id, id)",
     "defs_type_idx ON defs (type_id)",
-    "refs_subject_idx ON refs (module, name, type_id)",
+    "refs_subject_idx ON refs (module_id, name_id, type_id)",
     "refs_file_idx ON refs (file_id)",
     "integrations_subject_idx ON integrations (subject)",
     "integrations_file_idx ON integrations (file_id)"
@@ -949,6 +993,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   @impl Backend
   def encode_entries(entries) do
     blobs = shared_blobs(entries)
+    {folded, entries} = fold_call_sites(entries)
 
     {order, groups} =
       Enum.reduce(entries, {[], %{}}, fn
@@ -972,7 +1017,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     |> Enum.map(fn
       {:refs, group} ->
         [first | _] = references = groups |> Map.fetch!(group) |> Enum.reverse()
-        {:encoded, first, {:refs, refs_args(references, blobs)}}
+        {:encoded, first, {:refs, refs_args(references, folded, blobs)}}
 
       %Entry{} = entry when Entry.is_structure(entry) ->
         {:encoded, entry, nil}
@@ -1005,12 +1050,43 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  defp refs_args([%Entry{} = first | _] = references, blobs) do
+  # The module reference of a remote call starts where the call does and has
+  # no caller of its own, so it is stored inside the call's occurrence.
+  defp fold_call_sites(entries) do
+    calls =
+      for %Entry{subtype: :reference, type: {:function, :usage}, range: %Range{}} = call <-
+            entries,
+          into: %{},
+          do: {call_site(call, call_module_key(subject_key(call.subject))), call.id}
+
+    {modules, kept} = Enum.split_with(entries, &folded?(&1, calls))
+    folded = Map.new(modules, &{Map.fetch!(calls, call_site(&1, subject_key(&1.subject))), &1})
+    {folded, kept}
+  end
+
+  defp folded?(
+         %Entry{subtype: :reference, type: :module, caller: nil, range: %Range{}} = module,
+         calls
+       ),
+       do: is_map_key(calls, call_site(module, subject_key(module.subject)))
+
+  defp folded?(%Entry{}, _calls), do: false
+
+  defp call_site(%Entry{range: %Range{start: start_position}} = entry, module),
+    do: {entry.path, module, start_position.line, start_position.character}
+
+  defp refs_args([%Entry{} = first | _] = references, folded, blobs) do
     {module, name} = split_subject(subject_key(first.subject))
 
-    occurrences = blob({first.caller, term_occurrences(references)})
-
-    max_id = references |> Enum.map(& &1.id) |> Enum.max()
+    max_id =
+      references
+      |> Enum.flat_map(fn %Entry{id: id} ->
+        case folded do
+          %{^id => %Entry{id: module_id}} -> [id, module_id]
+          %{} -> [id]
+        end
+      end)
+      |> Enum.max()
 
     [
       first.path,
@@ -1018,8 +1094,36 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       name,
       Map.fetch!(blobs, {:type, first.type}),
       max_id,
-      occurrences
+      first.caller,
+      {:blob, pack_occurrences(references, folded)}
     ]
+  end
+
+  # We store each occurrence as its line and column, the column as the client
+  # counts it too, so we can convert a reference for the client without reading
+  # its document. A call's module reference starts where the call does, so
+  # only its end is stored, and an end at the call's start means there is none.
+  defp pack_occurrences(references, folded) do
+    references
+    |> Enum.map(fn %Entry{id: id, range: %Range{} = range} ->
+      module_end =
+        case folded do
+          %{^id => %Entry{range: %Range{end: module_end}}} -> module_end
+          %{} -> range.start
+        end
+
+      [encode_position(range.start), encode_position(range.end), encode_position(module_end)]
+    end)
+    |> IO.iodata_to_binary()
+  end
+
+  defp encode_position(%Position{} = position) do
+    <<position.line::32, position.character::32, utf16_character(position)::32>>
+  end
+
+  defp utf16_character(%Position{} = position) do
+    {:ok, %{character: character}} = Conversions.to_lsp(position)
+    character
   end
 
   # "Mod.Sub.fun/2" -> {"Mod.Sub.", "fun/2"}, "fun/2" -> {"", "fun/2"}
@@ -1034,11 +1138,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         {binary_part(subject, 0, module_size),
          binary_part(subject, module_size, byte_size(subject) - module_size)}
     end
-  end
-
-  defp term_occurrences(references) do
-    for %Entry{} = entry <- references,
-        do: {entry.id, block_id_key(entry.block_id), entry_term(entry)}
   end
 
   defp insert_entries(%State{} = state, entries) do
@@ -1075,7 +1174,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
           max_ids
       end)
 
-    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _]}},
+    Enum.reduce(refs, max_ids, fn {:encoded, _entry, {:refs, [path, _, _, _, max_id, _, _]}},
                                   max_ids ->
       Map.update(max_ids, path, max_id, &max(&1, max_id))
     end)
@@ -1169,20 +1268,63 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_ref_batch(%State{} = state, rows) do
+    texts =
+      for [_path, module, name, _type, _max_id, caller, _occurrences] <- rows,
+          text <- [module, name, caller],
+          is_binary(text),
+          do: text
+
     with {:ok, file_ids} <- file_ids(state, Enum.map(rows, &hd/1)),
-         {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))) do
+         {:ok, type_ids} <- type_ids(state, Enum.map(rows, &Enum.at(&1, 3))),
+         {:ok, name_ids} <- name_ids(state, texts) do
       args =
-        Enum.flat_map(rows, fn [path, module, name, type, _max_id, occurrences] ->
-          [Map.fetch!(file_ids, path), module, name, Map.fetch!(type_ids, type), occurrences]
+        Enum.flat_map(rows, fn [path, module, name, type, _max_id, caller, occurrences] ->
+          [
+            Map.fetch!(file_ids, path),
+            Map.fetch!(name_ids, module),
+            Map.fetch!(name_ids, name),
+            Map.fetch!(type_ids, type),
+            caller && Map.fetch!(name_ids, caller),
+            occurrences
+          ]
         end)
 
       sql = """
-      INSERT INTO refs (file_id, module, name, type_id, occurrences)
-      VALUES #{row_placeholders(rows, 5)}
+      INSERT INTO refs (file_id, module_id, name_id, type_id, caller_id, occurrences)
+      VALUES #{row_placeholders(rows, 6)}
       """
 
       exec(state, sql, args)
     end
+  end
+
+  defp name_ids(%State{names: names} = state, texts) do
+    texts = Enum.uniq(texts)
+
+    with :ok <- insert_names(state, Enum.reject(texts, &:ets.member(names, &1))) do
+      {:ok, Map.new(texts, &{&1, :ets.lookup_element(names, &1, 2)})}
+    end
+  end
+
+  defp insert_names(%State{}, []), do: :ok
+
+  defp insert_names(%State{names: names} = state, texts) do
+    with {:ok, inserted} <-
+           query(
+             state,
+             "INSERT OR IGNORE INTO names (text) VALUES #{row_placeholders(texts, 1)} RETURNING text, id",
+             texts
+           ),
+         {:ok, existing} <- existing_names(state, texts -- Enum.map(inserted, &hd/1)) do
+      :ets.insert(names, Enum.map(inserted ++ existing, &List.to_tuple/1))
+      :ok
+    end
+  end
+
+  defp existing_names(%State{}, []), do: {:ok, []}
+
+  defp existing_names(%State{} = state, texts) do
+    query(state, "SELECT text, id FROM names WHERE text IN (#{placeholders(texts)})", texts)
   end
 
   defp encode_rows(batch), do: Enum.map(batch, &encode_row/1)
@@ -1346,12 +1488,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              "SELECT entry_key, id FROM defs WHERE file_id IN (#{file_ids_of_paths(paths)})",
              paths
            ),
-         {:ok, reference_rows} <-
-           query(
-             state,
-             "SELECT occurrences FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})",
-             paths
-           ),
          :ok <- delete_def_blobs_for_rows(state, rows),
          :ok <-
            exec(
@@ -1368,23 +1504,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
              paths
            ),
          :ok <- exec(state, "DELETE FROM files WHERE path IN (#{placeholders(paths)})", paths) do
-      reference_ids =
-        Enum.flat_map(reference_rows, &occurrence_ids/1)
-
       deleted_ids =
         rows
         |> Enum.map(fn [_entry_key, id] -> id end)
-        |> Enum.concat(reference_ids)
         |> Enum.reject(&is_nil/1)
 
       {:ok, deleted_ids}
     end
-  end
-
-  defp occurrence_ids([occurrences]) do
-    {_caller, occurrences} = decode_term(occurrences)
-
-    for {id, _block_id, _term} <- occurrences, do: id
   end
 
   defp delete_def_blobs_for_rows(%State{}, []), do: :ok
@@ -1504,20 +1630,26 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp transaction(%State{} = state, fun) do
     with :ok <- exec(state, "BEGIN IMMEDIATE") do
-      case fun.() do
-        :ok ->
-          commit_transaction(state, :ok)
+      result =
+        case fun.() do
+          :ok ->
+            commit_transaction(state, :ok)
 
-        {:ok, _} = result ->
-          commit_transaction(state, result)
+          {:ok, _} = result ->
+            commit_transaction(state, result)
 
-        {:ok, _, _} = result ->
-          commit_transaction(state, result)
+          {:ok, _, _} = result ->
+            commit_transaction(state, result)
 
-        {:error, _} = error ->
-          exec(state, "ROLLBACK")
-          error
-      end
+          {:error, _} = error ->
+            exec(state, "ROLLBACK")
+            error
+        end
+
+      # The rowids learned in this transaction are undone by its rollback or
+      # deleted by a later replace, so none survive it.
+      :ets.delete_all_objects(state.names)
+      result
     end
   end
 
@@ -1741,15 +1873,50 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     )
   end
 
-  defp decode_references([path, module, name, type_blob, occurrences]) do
-    subject_key = module <> name
-    {caller, occurrences} = decode_term(occurrences)
-    type = decode_term(type_blob)
+  defp decode_references([path, module, name, type_blob, caller, records]) do
+    reference = %Entry{
+      block_id: :root,
+      path: path,
+      subject: module <> name,
+      caller: caller,
+      subtype: :reference,
+      type: decode_term(type_blob)
+    }
 
-    for {id, block_id, entry_term} <- occurrences do
-      decode_entry(id, path, subject_key, caller, type, :reference, block_id, entry_term)
+    for <<start_position::binary-size(12), end_position::binary-size(12),
+          module_end::binary-size(12) <- records>>,
+        entry <-
+          occurrence_entries(
+            reference,
+            module,
+            decode_position(start_position),
+            decode_position(end_position),
+            decode_position(module_end)
+          ),
+        do: entry
+  end
+
+  defp occurrence_entries(%Entry{} = reference, module, start_position, end_position, module_end) do
+    call = %Entry{reference | range: %Range{start: start_position, end: end_position}}
+
+    if module_end == start_position do
+      [call]
+    else
+      [
+        call,
+        %Entry{
+          reference
+          | subject: binary_part(module, 0, byte_size(module) - 1),
+            caller: nil,
+            type: :module,
+            range: %Range{start: start_position, end: module_end}
+        }
+      ]
     end
   end
+
+  defp decode_position(<<line::32, character::32, utf16_character::32>>),
+    do: %Position{line: line, character: character, utf16_character: utf16_character}
 
   defp decode_entry(id, path, subject_key, caller, type, subtype, block_id, entry_term) do
     {subject_override, application, lines, block_range, range, metadata} = entry_term
