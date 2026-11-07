@@ -44,6 +44,9 @@ defmodule Expert.Search.Store.StateTest do
     def find_by_paths(_project, ["/query_backend.ex"], :module, :definition), do: [entry(3)]
     def find_by_paths(_project, _paths, _type, _subtype), do: []
     def path_to_ids(_project), do: %{}
+    def modules(_project), do: []
+    def replace_modules(_project, _modules), do: :ok
+    def update_modules(_project, _modules, _paths_to_clear), do: :ok
     def definitions_for_fuzzy(_project), do: []
     def siblings(_project, _entry), do: []
     def parent(_project, _entry), do: nil
@@ -84,6 +87,9 @@ defmodule Expert.Search.Store.StateTest do
     def find_by_ids(_project, _ids, _type, _subtype), do: []
     def find_by_paths(_project, _paths, _type, _subtype), do: []
     def path_to_ids(_project), do: %{}
+    def modules(_project), do: []
+    def replace_modules(_project, _modules), do: :ok
+    def update_modules(_project, _modules, _paths_to_clear), do: :ok
     def definitions_for_fuzzy(_project), do: []
     def siblings(_project, _entry), do: []
     def parent(_project, _entry), do: nil

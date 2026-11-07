@@ -187,6 +187,22 @@ defmodule Expert.Search.Store.State do
     state.backend.path_to_ids(state.project)
   end
 
+  def modules(%__MODULE__{} = state) do
+    state.backend.modules(state.project)
+  end
+
+  def replace_modules(%__MODULE__{} = state, modules) do
+    with :ok <- state.backend.replace_modules(state.project, modules) do
+      maybe_sync(state)
+    end
+  end
+
+  def update_modules(%__MODULE__{} = state, modules, paths_to_clear) do
+    with :ok <- state.backend.update_modules(state.project, modules, paths_to_clear) do
+      maybe_sync(state)
+    end
+  end
+
   def resolve_mfa(%__MODULE__{} = state, module, function, arity) do
     mfa = Forge.Formats.mfa(module, function, arity)
 

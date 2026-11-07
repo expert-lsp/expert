@@ -31,6 +31,7 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
     project = project(:navigations)
     path = file_path(project, Path.join("lib", "my_definition.ex"))
     uri = Document.Path.ensure_uri(path)
+    patch(Store, :modules, fn ^project -> [] end)
     start_supervised!({ModuleRegistry, project})
     {:ok, project: project, uri: uri}
   end
