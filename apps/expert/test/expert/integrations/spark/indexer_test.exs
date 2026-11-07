@@ -6,6 +6,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
 
   alias Expert.Integrations
   alias Expert.Integrations.Spark.Callbacks
+  alias Expert.Search.Indexer.BeamFile
   alias Forge.Search.Indexer.Entry
 
   setup_all do
@@ -27,12 +28,14 @@ defmodule Expert.Integrations.Spark.IndexerTest do
     :ok
   end
 
-  @tag :tmp_dir
-  test "indexes DSL structure and values without documentation", %{tmp_dir: tmp_dir} do
+  setup do
     compiler_options = Code.compiler_options()
     Code.compiler_options(debug_info: true)
     on_exit(fn -> Code.compiler_options(compiler_options) end)
+  end
 
+  @tag :tmp_dir
+  test "indexes DSL structure and values without documentation", %{tmp_dir: tmp_dir} do
     suffix = System.unique_integer([:positive])
     dsl = Module.concat(__MODULE__, "Dsl#{suffix}")
     extension = Module.concat(__MODULE__, "Extension#{suffix}")
@@ -417,8 +420,48 @@ defmodule Expert.Integrations.Spark.IndexerTest do
     end
   end
 
+  @tag :tmp_dir
+  test "indexes a behaviour implementation without creating its atoms", %{tmp_dir: tmp_dir} do
+    suffix = System.unique_integer([:positive])
+    behaviour = "Expert.Integrations.Spark.IndexerTest.AtomFreeBehaviour#{suffix}"
+    module = "Expert.Integrations.Spark.IndexerTest.AtomFree#{suffix}"
+    function = "never_seen_before_#{suffix}"
+    source_path = Path.join(tmp_dir, "atom_free.ex")
+
+    File.write!(source_path, """
+    defmodule #{behaviour} do
+      @callback #{function}(term()) :: term()
+    end
+
+    defmodule #{module} do
+      @behaviour #{behaviour}
+
+      @doc "Returns the value."
+      def #{function}(value), do: value
+    end
+    """)
+
+    elixirc = System.find_executable("elixirc") || raise "could not find elixirc"
+    {_output, 0} = System.cmd(elixirc, ["-o", tmp_dir, source_path], stderr_to_stdout: true)
+    beam = File.read!(Path.join(tmp_dir, "Elixir.#{module}.beam"))
+    {:ok, _module, exports, {:ok, metadata}} = BeamFile.read(beam)
+
+    entries = Integrations.index_beam(project(), beam, exports, metadata, source_path)
+    relation = "Elixir.#{behaviour}/Elixir.#{module}"
+
+    assert Enum.any?(
+             entries,
+             &(&1.subject == Entry.integration_subject("spark", :behaviour, relation))
+           )
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom("Elixir." <> module) end
+    assert_raise ArgumentError, fn -> String.to_existing_atom("Elixir." <> behaviour) end
+    assert_raise ArgumentError, fn -> String.to_existing_atom(function) end
+  end
+
   defp index(binary, module, source_path) do
-    {:ok, {^module, [attributes: attributes]}} = :beam_lib.chunks(binary, [:attributes])
+    module_name = Atom.to_string(module)
+    {:ok, ^module_name, exports, {:ok, metadata}} = BeamFile.read(binary)
     project = project()
 
     patch(Callbacks, :fetch, fn _project, _beam, callback_module, function ->
@@ -430,12 +473,7 @@ defmodule Expert.Integrations.Spark.IndexerTest do
       end
     end)
 
-    Integrations.index_beam(
-      project,
-      binary,
-      %{module: module, attributes: attributes},
-      source_path
-    )
+    Integrations.index_beam(project, binary, exports, metadata, source_path)
   end
 
   defp metadata(entries, subject) do

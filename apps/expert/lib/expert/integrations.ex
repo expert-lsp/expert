@@ -3,19 +3,20 @@ defmodule Expert.Integrations do
   Registers built-in integrations.
   """
 
+  alias Expert.Search.Indexer.BeamFile
   alias Forge.Ast.Env
   alias Forge.Document.Range
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
-  @callback index(Project.t(), binary(), map(), String.t()) :: [Entry.t()]
+  @callback index(Project.t(), binary(), BeamFile.exports(), map(), String.t()) :: [Entry.t()]
 
   @callback complete(Env.t()) ::
               {:augment | :override, [{struct(), [atom()]}], boolean(), [atom()]} | :ignore
 
   @callback hover(Env.t()) :: [{String.t(), Range.t()}]
 
-  @optional_callbacks index: 4, complete: 1, hover: 1
+  @optional_callbacks index: 5, complete: 1, hover: 1
 
   @integrations [
     {Expert.Integrations.Spark.Indexer, [:index]},
@@ -39,8 +40,8 @@ defmodule Expert.Integrations do
 
   def indexer_module_names, do: @indexer_module_names
 
-  def index_beam(project, binary, metadata, source_path) do
-    Enum.flat_map(@beam_indexers, & &1.index(project, binary, metadata, source_path))
+  def index_beam(project, binary, exports, metadata, source_path) do
+    Enum.flat_map(@beam_indexers, & &1.index(project, binary, exports, metadata, source_path))
   end
 
   def complete(env) do
