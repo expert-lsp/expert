@@ -355,6 +355,23 @@ let
         in
         drv;
 
+      gen_stage =
+        let
+          version = "1.3.2";
+          drv = buildMix {
+            inherit version;
+            name = "gen_stage";
+            appConfigPath = ./config;
+
+            src = fetchHex {
+              inherit version;
+              pkg = "gen_stage";
+              sha256 = "0ffae547fa777b3ed889a6b9e1e64566217413d018cabd825f786e843ffe63e7";
+            };
+          };
+        in
+        drv;
+
       hex_core =
         let
           version = "0.20.1";

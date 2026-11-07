@@ -12,7 +12,7 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Store
   alias Forge.Project
 
-  @entry_chunk_size 4_000
+  @rows_per_write 4_000
 
   def create_index(%Project{} = project, opts \\ []) when is_list(opts) do
     with :ok <- ManifestStore.invalidate(project),
@@ -141,13 +141,8 @@ defmodule Expert.Search.Indexer do
         beam_manifest_entries
       )
 
-    stream =
-      source_paths
-      |> Sources.stream(source_indexer(project), &Store.encode_entries/1)
-      |> tag_stream(:source)
-      |> Stream.concat(tag_stream(beam_items, :beam))
-
-    with {:ok, state} <- refresh_store(stream, paths_to_clear, new_stream_state(), project) do
+    with {:ok, state} <-
+           refresh_store(source_paths, beam_items, paths_to_clear, new_stream_state(), project) do
       manifest = Manifest.apply_update(manifest, plan, manifest_entries(state))
 
       {:ok, manifest}
@@ -155,29 +150,29 @@ defmodule Expert.Search.Indexer do
   end
 
   defp beam_items_and_siblings(plan, manifest, paths, project) do
-    beam_items =
-      plan.beam_paths_to_index
-      |> Beams.stream(project: project, applications: paths.applications)
-      |> Enum.to_list()
+    beam_items = beam_items(plan.beam_paths_to_index, paths.applications, project)
 
     manifest_entries =
-      Enum.flat_map(beam_items, fn {_entry, entries} -> entries end)
+      Enum.flat_map(beam_items, fn {_batch, entries} -> entries end)
 
     sibling_paths = beam_sibling_paths(plan, manifest, paths, manifest_entries)
 
     if sibling_paths == [] do
       {beam_items, manifest_entries, []}
     else
-      sibling_items =
-        sibling_paths
-        |> Beams.stream(project: project, applications: paths.applications)
-        |> Enum.to_list()
+      sibling_items = beam_items(sibling_paths, paths.applications, project)
 
       sibling_manifest_entries =
-        Enum.flat_map(sibling_items, fn {_entry, entries} -> entries end)
+        Enum.flat_map(sibling_items, fn {_batch, entries} -> entries end)
 
       {beam_items ++ sibling_items, manifest_entries ++ sibling_manifest_entries, sibling_paths}
     end
+  end
+
+  defp beam_items(beam_paths, applications, project) do
+    beam_paths
+    |> Beams.stream(project: project, applications: applications)
+    |> Enum.to_list()
   end
 
   defp paths_for_project(%Project{} = project, opts) do
@@ -324,19 +319,22 @@ defmodule Expert.Search.Indexer do
          applications,
          current_source_paths
        ) do
-    beam_items =
-      beam_paths
-      |> Beams.stream(project: project, applications: applications)
-      |> Enum.to_list()
+    beam_items = beam_items(beam_paths, applications, project)
 
     beam_manifest_entries =
-      Enum.flat_map(beam_items, fn {_entry, manifest_entries} -> manifest_entries end)
+      Enum.flat_map(beam_items, fn {_batch, manifest_entries} -> manifest_entries end)
 
     source_paths =
       include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
 
+    index_stream(source_paths, beam_items, project)
+  end
+
+  # The source workers are linked to the process that builds this stream, so it
+  # has to be the store's callback, which consumes it.
+  defp index_stream(source_paths, beam_items, project) do
     source_paths
-    |> Sources.stream(source_indexer(project), &Store.encode_entries/1)
+    |> Sources.stream(source_indexer(project), &Store.encode_batch/1)
     |> tag_stream(:source)
     |> Stream.concat(tag_stream(beam_items, :beam))
   end
@@ -355,7 +353,7 @@ defmodule Expert.Search.Indexer do
   end
 
   defp tag_stream(stream, origin) do
-    Stream.map(stream, fn {entry, manifest_entries} -> {origin, entry, manifest_entries} end)
+    Stream.map(stream, fn {batch, manifest_entries} -> {origin, batch, manifest_entries} end)
   end
 
   defp new_stream_state do
@@ -378,9 +376,11 @@ defmodule Expert.Search.Indexer do
     end
   end
 
-  defp refresh_store(stream, paths_to_clear, state, project) do
+  defp refresh_store(source_paths, beam_items, paths_to_clear, state, project) do
     update = fn write_batch, write_state ->
-      stream_into_store(stream, state, write_batch, write_state)
+      source_paths
+      |> index_stream(beam_items, project)
+      |> stream_into_store(state, write_batch, write_state)
     end
 
     case Store.apply_index_update(project, update, paths_to_clear) do
@@ -404,57 +404,62 @@ defmodule Expert.Search.Indexer do
 
   defp stream_into_store(stream, state, write_batch, write_state) do
     result =
-      stream
-      |> Stream.chunk_every(@entry_chunk_size)
-      |> Enum.reduce_while({state, write_state}, fn chunk, {state, write_state} ->
-        {entries, state} = consume_chunk(chunk, state)
-
-        case write_batch.(entries, write_state) do
-          {:ok, write_state} -> {:cont, {state, write_state}}
-          {:error, _reason} = error -> {:halt, error}
-        end
+      Enum.reduce_while(stream, {state, write_state, [], 0}, fn item, acc ->
+        buffer_item(item, acc, write_batch)
       end)
 
     case result do
-      {:error, _reason} = error -> error
-      {state, write_state} -> {:ok, state, write_state}
+      {:error, _reason} = error ->
+        error
+
+      {state, write_state, [], 0} ->
+        {:ok, state, write_state}
+
+      {state, write_state, batches, _rows} ->
+        with {:ok, write_state} <- write_batch.(Enum.reverse(batches), write_state) do
+          {:ok, state, write_state}
+        end
     end
   end
 
-  defp consume_chunk(chunk, state) do
-    {entries, state} =
-      Enum.reduce(chunk, {[], state}, fn {origin, entry, manifest_entries}, {entries, state} ->
-        state = remember_manifest_entries(state, manifest_entries)
-        consume_entry(origin, entry, entries, state)
+  defp buffer_item(item, {state, write_state, batches, rows}, write_batch) do
+    {batch, state} = consume_item(item, state)
+    batches = [batch | batches]
+    rows = rows + batch.rows
+
+    if rows < @rows_per_write do
+      {:cont, {state, write_state, batches, rows}}
+    else
+      case write_batch.(Enum.reverse(batches), write_state) do
+        {:ok, write_state} -> {:cont, {state, write_state, [], 0}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end
+  end
+
+  # Source definitions win over the same definitions read from BEAM files,
+  # which are written after all source batches.
+  defp consume_item({:source, batch, manifest_entries}, state) do
+    source_keys =
+      Enum.reduce(batch.definitions, state.source_keys, fn {entry, _row}, keys ->
+        MapSet.put(keys, source_key(entry))
       end)
 
-    {Enum.reverse(entries), state}
+    source_keys = Enum.reduce(batch.structures, source_keys, &MapSet.put(&2, source_key(&1)))
+    state = remember_manifest_entries(state, manifest_entries)
+
+    {batch, %{state | source_keys: source_keys}}
   end
 
-  defp consume_entry(_origin, nil, entries, state), do: {entries, state}
+  # Encoding BEAM entries any earlier keeps their rows on the store's heap for
+  # the whole source phase and slows every collection in it.
+  defp consume_item({:beam, entries, manifest_entries}, state) do
+    entries =
+      Enum.reject(entries, fn entry ->
+        entry.subtype != :reference and MapSet.member?(state.source_keys, source_key(entry))
+      end)
 
-  defp consume_entry(
-         :source,
-         {:encoded, %{subtype: subtype} = entry, _row} = encoded,
-         entries,
-         state
-       )
-       when subtype in [:definition, :block_structure] do
-    state = %{state | source_keys: MapSet.put(state.source_keys, source_key(entry))}
-
-    {[encoded | entries], state}
-  end
-
-  defp consume_entry(:source, {:encoded, _entry, _row} = encoded, entries, state) do
-    {[encoded | entries], state}
-  end
-
-  defp consume_entry(:beam, entry, entries, state) do
-    if MapSet.member?(state.source_keys, source_key(entry)) do
-      {entries, state}
-    else
-      {[entry | entries], state}
-    end
+    {Store.encode_batch(entries), remember_manifest_entries(state, manifest_entries)}
   end
 
   defp source_key(%{path: path, subtype: :block_structure}), do: {:block_structure, path}

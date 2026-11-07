@@ -12,7 +12,7 @@ defmodule Expert.Search.Indexer.Beams do
   alias Forge.Search.Indexer.Source.Block
 
   @beam_index_concurrency 16
-  @beam_index_chunk_bytes 128 * 1024
+  @beam_chunk_size 24
 
   def stream(paths, opts \\ []) when is_list(paths) do
     paths
@@ -20,29 +20,27 @@ defmodule Expert.Search.Indexer.Beams do
     |> Stream.flat_map(& &1)
   end
 
+  defp result_chunks([], _opts), do: Stream.concat([])
+
   defp result_chunks(paths, opts) do
-    {beams, total_bytes} = stat_beams(paths)
+    total = length(paths)
 
-    if beams == [] do
-      Stream.concat([])
-    else
-      beams
-      |> beam_chunks()
-      |> Task.async_stream(&index_beam_chunk(&1, opts),
-        max_concurrency: @beam_index_concurrency,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.transform(
-        fn -> start_progress("Indexing dependencies metadata") end,
-        fn task_result, progress ->
-          {chunk_bytes, items} = task_result!(task_result)
+    paths
+    |> Enum.chunk_every(@beam_chunk_size)
+    |> Task.async_stream(&{length(&1), index_beam_chunk(stat_beams(&1), opts)},
+      max_concurrency: @beam_index_concurrency,
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Stream.transform(
+      fn -> start_progress("Indexing dependencies metadata") end,
+      fn task_result, progress ->
+        {count, items} = task_result!(task_result)
 
-          {[items], report_progress(progress, chunk_bytes, total_bytes, "Indexing dependencies")}
-        end,
-        &complete_progress/1
-      )
-    end
+        {[items], report_progress(progress, count, total, "Indexing dependencies")}
+      end,
+      &complete_progress/1
+    )
   end
 
   def extract_definitions_from_binary(beam, source_path)
@@ -79,39 +77,10 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp stat_beams(paths) do
-    Enum.reduce(paths, {[], 0}, fn path, {beams, total_bytes} ->
-      case File.stat(path) do
-        {:ok, %File.Stat{} = stat} ->
-          {[{path, stat} | beams], total_bytes + stat.size}
-
-        _ ->
-          {beams, total_bytes}
-      end
-    end)
+    for path <- paths, {:ok, %File.Stat{} = stat} <- [Expert.File.stat(path)], do: {path, stat}
   end
 
-  defp beam_chunks(beams) do
-    {chunks, current_chunk} =
-      Enum.reduce(beams, {[], {0, []}}, fn beam, {chunks, {chunk_bytes, chunk_beams}} ->
-        chunk_bytes = chunk_bytes + beam_size(beam)
-        chunk_beams = [beam | chunk_beams]
-
-        if chunk_bytes >= @beam_index_chunk_bytes do
-          {[{chunk_bytes, chunk_beams} | chunks], {0, []}}
-        else
-          {chunks, {chunk_bytes, chunk_beams}}
-        end
-      end)
-
-    case current_chunk do
-      {0, []} -> chunks
-      {_chunk_bytes, [_ | _]} = chunk -> [chunk | chunks]
-    end
-  end
-
-  defp beam_size({_path, %File.Stat{size: size}}), do: size
-
-  defp index_beam_chunk({chunk_bytes, beams}, opts) do
+  defp index_beam_chunk(beams, opts) do
     {results, modules} =
       beams
       |> Enum.map(&metadata_from_beam(&1, opts))
@@ -124,9 +93,7 @@ defmodule Expert.Search.Indexer.Beams do
       |> List.flatten()
       |> entries_and_manifest_entries(opts)
 
-    items = stream_items(entries, manifest_entries)
-
-    {chunk_bytes, items}
+    [{entries, manifest_entries}]
   end
 
   defp register_modules(nil, _modules), do: :ok
@@ -135,12 +102,6 @@ defmodule Expert.Search.Indexer.Beams do
     modules
     |> Enum.reject(&is_nil/1)
     |> then(&ModuleRegistry.put_all(project, &1))
-  end
-
-  defp stream_items([], manifest_entries), do: [{nil, manifest_entries}]
-
-  defp stream_items([entry | entries], manifest_entries) do
-    [{entry, manifest_entries} | Enum.map(entries, &{&1, []})]
   end
 
   defp entries_and_manifest_entries(results, opts) do
@@ -173,16 +134,21 @@ defmodule Expert.Search.Indexer.Beams do
     {token, 0, System.monotonic_time(:millisecond)}
   end
 
+  # Clients only show the percentage, and one report per file reaches them as
+  # one notification per file.
   defp report_progress({token, current, start_time}, size, total, message) do
+    previous = percentage(current, total)
     current = current + size
+    percentage = percentage(current, total)
 
-    if token do
-      percentage = if total > 0, do: min(100, div(current * 100, total)), else: 0
+    if token && percentage != previous do
       Progress.report(token, message: message, percentage: percentage)
     end
 
     {token, current, start_time}
   end
+
+  defp percentage(current, total), do: min(100, div(current * 100, total))
 
   defp complete_progress({token, _current, start_time}) do
     elapsed = System.monotonic_time(:millisecond) - start_time
@@ -287,7 +253,7 @@ defmodule Expert.Search.Indexer.Beams do
   end
 
   defp stat_source(source_path) when is_binary(source_path) do
-    case File.stat(source_path) do
+    case Expert.File.stat(source_path) do
       {:ok, %File.Stat{} = stat} -> {:ok, stat}
       _ -> :error
     end

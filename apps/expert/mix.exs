@@ -122,6 +122,7 @@ defmodule Expert.MixProject do
       {:exqlite, "~> 0.36.0"},
       {:forge, path: "../forge"},
       {:gen_lsp, "~> 0.11.4"},
+      {:gen_stage, "~> 1.3"},
       {:hex_core, "~> 0.10"},
       {:jason, "~> 1.4"},
       {:patch, "~> 0.15", runtime: false, only: [:dev, :test]},

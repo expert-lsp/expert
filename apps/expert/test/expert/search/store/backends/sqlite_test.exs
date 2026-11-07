@@ -299,7 +299,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert [^entry] = Sqlite.find_by_subject(project, Persisted.Module, :_, :_)
     end
 
-    test "persists entries returned by encode_entries/1 the same as plain entries", %{
+    test "persists batches from encode_batch/1 the same as plain entries", %{
       project: project,
       runtime_versions: runtime_versions
     } do
@@ -323,10 +323,13 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert {:ok, :empty} = Sqlite.prepare(pid)
 
-      encoded = Sqlite.encode_entries(entries)
-      assert Enum.all?(encoded, &match?({:encoded, %Entry{}, _row}, &1))
+      replacement = fn write_batch ->
+        with :ok <- write_batch.([Sqlite.encode_batch(entries)]) do
+          {:ok, :replaced}
+        end
+      end
 
-      assert :ok = Sqlite.replace_all(project, encoded)
+      assert {:ok, :replaced} = Sqlite.replace_all(project, replacement)
 
       assert Enum.sort_by(
                Sqlite.find_by_subject(project, :_, {:function, :public}, :definition),
@@ -360,7 +363,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
         })
 
       assert {:ok, :empty} = Sqlite.prepare(pid)
-      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries([reference]))
+      assert :ok = Sqlite.replace_all(project, [reference])
 
       assert [%Entry{range: range}] = Sqlite.find_by_subject(project, "Foo.bar/0", :_, :_)
       assert %Position{character: 7, utf16_character: 7} = range.start
@@ -434,7 +437,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
         })
 
       assert {:ok, :empty} = Sqlite.prepare(pid)
-      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries(entries))
+      assert :ok = Sqlite.replace_all(project, entries)
 
       {:ok, conn} = Exqlite.Basic.open(Sqlite.database_path(project, runtime_versions))
       result = Exqlite.Basic.exec(conn, "SELECT count(*) FROM refs")
@@ -531,8 +534,11 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       spy(Exqlite.Basic)
 
       replacement = fn write_batch ->
-        with :ok <- write_batch.([%Entry{old_entry | id: 3, subject: New.Module}]),
-             :ok <- write_batch.([invalid_entry]) do
+        with :ok <-
+               write_batch.([
+                 Sqlite.encode_batch([%Entry{old_entry | id: 3, subject: New.Module}])
+               ]),
+             :ok <- write_batch.([Sqlite.encode_batch([invalid_entry])]) do
           {:ok, :replaced}
         end
       end
@@ -727,12 +733,55 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, :empty} = Sqlite.prepare(pid)
 
       replacement = fn write_batch ->
-        with :ok <- write_batch.(entries) do
+        with :ok <- write_batch.([Sqlite.encode_batch(entries)]) do
           {:ok, :replaced}
         end
       end
 
       assert {:ok, :replaced} = Sqlite.replace_all(project, replacement)
+    end
+  end
+
+  describe "encode_batch/1" do
+    test "groups a file's rows by table and reports their count and max id" do
+      definition = %Entry{
+        id: 1,
+        subject: "Batch.run/0",
+        path: "/batch.ex",
+        type: {:function, :public},
+        subtype: :definition,
+        block_id: :root
+      }
+
+      references =
+        for id <- [2, 3] do
+          %Entry{
+            id: id,
+            subject: "Batch.Target.go/0",
+            path: "/batch.ex",
+            type: {:function, :usage},
+            subtype: :reference,
+            caller: "Batch.run/0",
+            block_id: :root,
+            range: %Range{
+              start: %Position{line: id, character: 1},
+              end: %Position{line: id, character: 10}
+            }
+          }
+        end
+
+      structure = Entry.block_structure("/batch.ex", %{root: %{}})
+
+      batch = Sqlite.encode_batch([definition | references] ++ [structure])
+
+      assert [{^definition, _row}] = batch.definitions
+
+      assert [["/batch.ex", "Batch.Target.", "go/0", _type, 3, "Batch.run/0", _occurrences]] =
+               batch.refs
+
+      assert [^structure] = batch.structures
+      assert batch.rows == 3
+      assert batch.max_ids == %{"/batch.ex" => 3}
     end
   end
 
@@ -888,7 +937,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert {:ok, []} = Sqlite.apply_index_update(project, [old_entry], [])
 
       update = fn write_batch ->
-        with :ok <- write_batch.([new_entry]) do
+        with :ok <- write_batch.([Sqlite.encode_batch([new_entry])]) do
           {:ok, :updated}
         end
       end
@@ -1713,7 +1762,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
     } do
       prefix = Entry.integration_subject_prefix("test", :dsl)
 
-      assert :ok = Sqlite.replace_all(project, Sqlite.encode_entries([entry]))
+      assert :ok = Sqlite.replace_all(project, [entry])
 
       assert [entry] == Sqlite.find_by_subject(project, entry.subject, :metadata, :integration)
       assert [entry] == Sqlite.find_by_prefix(project, prefix, :metadata, :integration)

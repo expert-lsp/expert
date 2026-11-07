@@ -2,31 +2,49 @@ defmodule Expert.Search.Indexer.Sources do
   alias Expert.Progress
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.Source
+  alias Expert.Search.Indexer.Sources.Worker
 
   require Logger
 
   def stream(paths, source_indexer \\ &Source.index/2, encode \\ &Function.identity/1)
-      when is_list(paths) do
-    {sized_paths, total_bytes} = stat_paths(paths)
 
-    if sized_paths == [] do
-      Stream.concat([])
-    else
-      sized_paths
-      |> Task.async_stream(
-        fn {path, size} -> {size, index_path(path, source_indexer, encode)} end,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Stream.transform(
-        fn -> start_progress("Indexing source code") end,
-        fn task_result, progress ->
-          {size, result} = task_result!(task_result)
-          {stream_items(result), report_progress(progress, size, total_bytes, "Indexing")}
-        end,
-        &complete_progress(&1, length(sized_paths))
-      )
-    end
+  def stream([], _source_indexer, _encode), do: Stream.concat([])
+
+  def stream(paths, source_indexer, encode) when is_list(paths) do
+    total = length(paths)
+
+    paths
+    |> index_stages(&index_path(&1, source_indexer, encode))
+    |> Stream.transform(
+      fn -> start_progress("Indexing source code") end,
+      fn result, progress -> {result, report_progress(progress, 1, total, "Indexing")} end,
+      &complete_progress(&1, total)
+    )
+  end
+
+  # With demand forwarded any earlier, a small project's producer is drained and
+  # gone before the last workers subscribe to it.
+  defp index_stages(paths, index) do
+    {:ok, producer} =
+      GenStage.from_enumerable(paths, demand: :accumulate, on_cancel: :stop)
+
+    workers =
+      for _ <- 1..System.schedulers_online() do
+        {:ok, worker} = Worker.start_link(producer, index)
+
+        {:ok, _subscription} =
+          GenStage.sync_subscribe(worker,
+            to: producer,
+            max_demand: 10,
+            min_demand: 5,
+            cancel: :transient
+          )
+
+        {worker, max_demand: 200, cancel: :temporary}
+      end
+
+    GenStage.demand(producer, :forward)
+    GenStage.stream(workers)
   end
 
   defp index_path(path, source_indexer, encode) do
@@ -34,7 +52,7 @@ defmodule Expert.Search.Indexer.Sources do
          {:ok, [_ | _] = entries} <- source_indexer.(path, contents),
          true <- has_search_entries?(entries),
          {:ok, manifest_entry} <- Manifest.Entry.source(path) do
-      [{encode.(entries), manifest_entry}]
+      [{encode.(entries), [manifest_entry]}]
     else
       _ -> []
     end
@@ -43,31 +61,6 @@ defmodule Expert.Search.Indexer.Sources do
   defp has_search_entries?(entries) do
     Enum.any?(entries, fn entry -> entry.subtype != :block_structure end)
   end
-
-  defp stream_items([]), do: []
-
-  defp stream_items([{[entry | entries], manifest_entry}]) do
-    [{entry, [manifest_entry]} | Enum.map(entries, &{&1, []})]
-  end
-
-  defp stat_paths(paths) do
-    sized_paths = Enum.map(paths, fn path -> {path, file_size(path)} end)
-    total_bytes = sized_paths |> Enum.map(fn {_path, size} -> size end) |> Enum.sum()
-
-    {sized_paths, total_bytes}
-  end
-
-  defp file_size(path) do
-    case File.stat(path) do
-      {:ok, %File.Stat{size: size}} -> size
-      _ -> 0
-    end
-  end
-
-  defp task_result!({:ok, result}), do: result
-
-  defp task_result!({:exit, reason}),
-    do: raise("Indexing task failed: #{Exception.format_exit(reason)}")
 
   defp start_progress(title) do
     token =
@@ -79,16 +72,21 @@ defmodule Expert.Search.Indexer.Sources do
     {token, 0, System.monotonic_time(:millisecond)}
   end
 
+  # Clients only show the percentage, and one report per file reaches them as
+  # one notification per file.
   defp report_progress({token, current, start_time}, size, total, message) do
+    previous = percentage(current, total)
     current = current + size
+    percentage = percentage(current, total)
 
-    if token do
-      percentage = if total > 0, do: min(100, div(current * 100, total)), else: 0
+    if token && percentage != previous do
       Progress.report(token, message: message, percentage: percentage)
     end
 
     {token, current, start_time}
   end
+
+  defp percentage(current, total), do: min(100, div(current * 100, total))
 
   defp complete_progress({token, _current, start_time}, path_count) do
     elapsed = System.monotonic_time(:millisecond) - start_time

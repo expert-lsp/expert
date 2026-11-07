@@ -6,4 +6,11 @@ defmodule Expert.File do
   else
     def read(path), do: File.read(path)
   end
+
+  def stat(path) do
+    case :file.read_file_info(path, [:raw, time: :universal]) do
+      {:ok, info} -> {:ok, File.Stat.from_record(info)}
+      {:error, _} = error -> error
+    end
+  end
 end

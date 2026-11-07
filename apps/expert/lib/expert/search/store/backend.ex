@@ -16,8 +16,16 @@ defmodule Expert.Search.Store.Backend do
   @type type_query :: Entry.entry_type() | wildcard()
   @type subtype_query :: Entry.entry_subtype() | wildcard()
   @type block_structure :: %{Entry.block_id() => block_structure()} | %{}
+  @type batch :: %{
+          definitions: [{Entry.t(), term()}],
+          refs: [term()],
+          structures: [Entry.t()],
+          integrations: [Entry.t()],
+          rows: non_neg_integer(),
+          max_ids: %{Path.t() => Entry.entry_id()}
+        }
   @type replacement(result) ::
-          (([Entry.t()] -> :ok | {:error, term()}) ->
+          (([batch()] -> :ok | {:error, term()}) ->
              {:ok, result} | {:error, term()})
   @callback new(Project.t()) :: {:ok, priv_state()} | {:error, any()}
   @callback prepare(priv_state()) :: {:ok, load_state()} | {:error, any()}
@@ -59,7 +67,7 @@ defmodule Expert.Search.Store.Backend do
               [Entry.t()] | :error | {:ok, [Entry.t()]} | {:error, any()}
   @callback parent(Project.t(), Entry.t()) :: {:ok, Entry.t()} | :error | {:error, any()}
 
-  @callback encode_entries([Entry.t()]) :: [{:encoded, Entry.t(), term()}]
+  @callback encode_batch([Entry.t()]) :: batch()
 
   @optional_callbacks sync: 1
 end

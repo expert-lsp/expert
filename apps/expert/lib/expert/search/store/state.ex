@@ -292,9 +292,9 @@ defmodule Expert.Search.Store.State do
       )
       when is_function(update, 2) and is_list(paths_to_clear) do
     wrapped_update = fn write_batch ->
-      write_and_update_fuzzy = fn entries, fuzzy ->
-        with :ok <- write_batch.(entries) do
-          {:ok, Fuzzy.add(fuzzy, Enum.map(entries, &entry_of/1))}
+      write_and_update_fuzzy = fn batches, fuzzy ->
+        with :ok <- write_batch.(batches) do
+          {:ok, Fuzzy.add(fuzzy, definitions(batches))}
         end
       end
 
@@ -366,6 +366,7 @@ defmodule Expert.Search.Store.State do
     end
   end
 
-  defp entry_of({:encoded, entry, _row}), do: entry
-  defp entry_of(entry), do: entry
+  defp definitions(batches) do
+    for batch <- batches, {entry, _row} <- batch.definitions, do: entry
+  end
 end
