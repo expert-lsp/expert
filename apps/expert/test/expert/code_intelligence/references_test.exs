@@ -20,6 +20,7 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
 
     Engine.set_project(project)
     start_supervised!({Expert.Project.Store, []})
+    patch(Store, :modules, fn ^project -> [] end)
     start_supervised!({ModuleRegistry, project})
 
     patch(EngineApi, :call, fn ^project, Engine, :resolve_entity, [analysis, position] ->

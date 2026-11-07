@@ -1,5 +1,6 @@
 defmodule Expert.Search.Indexer.QuotedTest do
   use ExUnit.Case, async: false
+  use Patch
 
   import Forge.Test.CodeSigil
   import Forge.Test.CursorSupport
@@ -7,6 +8,7 @@ defmodule Expert.Search.Indexer.QuotedTest do
 
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Quoted
+  alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Document.Range
   alias Forge.Search.Indexer.Entry
@@ -17,6 +19,7 @@ defmodule Expert.Search.Indexer.QuotedTest do
     project = project()
     Engine.set_project(project)
     start_supervised!({Expert.Project.Store, []})
+    patch(Store, :modules, fn ^project -> [] end)
     start_supervised!({ModuleRegistry, project})
     {:ok, project: project}
   end
