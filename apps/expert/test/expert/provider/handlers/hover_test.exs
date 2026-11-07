@@ -1,5 +1,6 @@
 defmodule Expert.Provider.Handlers.HoverTest do
   use ExUnit.Case, async: false
+  use Patch
 
   import Forge.Test.CodeSigil
   import Forge.Test.CursorSupport
@@ -7,6 +8,7 @@ defmodule Expert.Provider.Handlers.HoverTest do
 
   alias Expert.Document.Context
   alias Expert.EngineApi
+  alias Expert.Integrations
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers
   alias Expert.Search
@@ -52,6 +54,48 @@ defmodule Expert.Provider.Handlers.HoverTest do
     start_supervised!(Engine.ApplicationCache)
     :persistent_term.erase(Expert.Configuration)
     :ok
+  end
+
+  test "combines integration and generic hover documentation", %{project: project} do
+    patch(Integrations, :hover, fn env ->
+      [{"Integration documentation", hover_range(env.document, 1, 2, 1, 6)}]
+    end)
+
+    patch(EngineApi, :resolve_entity, {:error, :not_found})
+
+    patch(EngineApi, :hover, fn _project, document, _position ->
+      {:ok, "Generic documentation", hover_range(document, 1, 1, 1, 7)}
+    end)
+
+    assert {:ok, %Structures.Hover{contents: contents, range: range}} = hover(project, "|option")
+    assert contents.kind == "markdown"
+    assert contents.value =~ "Generic documentation"
+    assert contents.value =~ "Integration documentation"
+    assert contents.value =~ "---"
+    assert range.start.character == 1
+    assert range.end.character == 7
+  end
+
+  test "deduplicates identical integration and generic hover documentation", %{project: project} do
+    patch(Integrations, :hover, fn env ->
+      [{"Same documentation", hover_range(env.document, 1, 1, 1, 7)}]
+    end)
+
+    patch(EngineApi, :resolve_entity, {:error, :not_found})
+
+    patch(EngineApi, :hover, fn _project, document, _position ->
+      {:ok, "Same documentation", hover_range(document, 1, 1, 1, 7)}
+    end)
+
+    assert {:ok, %Structures.Hover{contents: %{value: "Same documentation"}}} =
+             hover(project, "|option")
+  end
+
+  defp hover_range(document, start_line, start_character, end_line, end_character) do
+    Forge.Document.Range.new(
+      Position.new(document, start_line, start_character),
+      Position.new(document, end_line, end_character)
+    )
   end
 
   # compiles and writes beam files in the given project

@@ -13,7 +13,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 8
+  @schema_version 9
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
   # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
@@ -366,6 +366,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DELETE FROM files"),
          :ok <- exec(state, "DELETE FROM types"),
          :ok <- exec(state, "DELETE FROM structures"),
+         :ok <- exec(state, "DELETE FROM integrations"),
          {:ok, result} <- replacement.(fn entries -> insert_entries(state, entries) end),
          :ok <- create_indexes(state) do
       {:ok, result}
@@ -482,6 +483,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp tables_for(:_), do: [:defs, :refs]
   defp tables_for(:definition), do: [:defs]
   defp tables_for(:reference), do: [:refs]
+  defp tables_for(:integration), do: [:integrations]
   defp tables_for(_other), do: []
 
   defp table_entries(%State{} = state, :defs, _selector, clauses, args, type) do
@@ -497,6 +499,20 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     case refs_result(state, query_refs(state, where, args)) do
       entries when is_list(entries) -> Enum.filter(entries, selected?(selector, type))
       {:error, _} = error -> error
+    end
+  end
+
+  defp table_entries(%State{} = state, :integrations, selector, clauses, args, type) do
+    where = where_clause(Enum.join(clauses, " AND "))
+
+    case query(state, "SELECT entry FROM integrations #{where}", args) do
+      {:ok, rows} ->
+        rows
+        |> Enum.map(fn [entry] -> decode_term(entry) end)
+        |> Enum.filter(selected?(selector, type))
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -769,12 +785,14 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS integrations"),
          :ok <- create_defs_table(state),
          :ok <- create_refs_table(state),
          :ok <- create_files_table(state),
          :ok <- create_types_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
+         :ok <- create_integrations_table(state),
          :ok <- create_indexes(state),
          :ok <- exec(state, "INSERT INTO schema (version) VALUES (?)", [@schema_version]) do
       {:ok, :empty}
@@ -789,6 +807,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- exec(state, "DROP TABLE IF EXISTS files"),
          :ok <- exec(state, "DROP TABLE IF EXISTS types"),
          :ok <- exec(state, "DROP TABLE IF EXISTS structures"),
+         :ok <- exec(state, "DROP TABLE IF EXISTS integrations"),
          # earlier schema versions kept every entry in these
          :ok <- exec(state, "DROP TABLE IF EXISTS entries"),
          :ok <- exec(state, "DROP TABLE IF EXISTS entry_blobs"),
@@ -804,6 +823,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
          :ok <- create_types_table(state),
          :ok <- create_def_blobs_table(state),
          :ok <- create_structures_table(state),
+         :ok <- create_integrations_table(state),
          :ok <- create_indexes(state),
          {:ok, result} <-
            query(state, "SELECT 1 FROM defs UNION ALL SELECT 1 FROM refs LIMIT 1") do
@@ -882,6 +902,18 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     """)
   end
 
+  # Integration entries have no position and aren't definitions or references,
+  # so they stay out of the queries on `defs` and `refs`.
+  defp create_integrations_table(%State{} = state) do
+    exec(state, """
+    CREATE TABLE IF NOT EXISTS integrations (
+      file_id INTEGER NOT NULL,
+      subject TEXT NOT NULL,
+      entry BLOB NOT NULL
+    )
+    """)
+  end
+
   @indexes [
     "defs_definitions_idx ON defs (subject, id, file_id, type_id)",
     "defs_caller_idx ON defs (caller, file_id, type_id) WHERE caller IS NOT NULL",
@@ -889,7 +921,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     "defs_file_block_idx ON defs (file_id, block_id, id)",
     "defs_type_idx ON defs (type_id)",
     "refs_subject_idx ON refs (module, name, type_id)",
-    "refs_file_idx ON refs (file_id)"
+    "refs_file_idx ON refs (file_id)",
+    "integrations_subject_idx ON integrations (subject)",
+    "integrations_file_idx ON integrations (file_id)"
   ]
 
   defp create_indexes(%State{} = state) do
@@ -1008,10 +1042,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp insert_entries(%State{} = state, entries) do
-    %{structures: structures, refs: refs, definitions: definitions} =
+    %{structures: structures, refs: refs, definitions: definitions, integrations: integrations} =
       entries
       |> Enum.group_by(&row_kind/1)
-      |> Map.merge(%{structures: [], refs: [], definitions: []}, fn _kind, rows, [] -> rows end)
+      |> Map.merge(
+        %{structures: [], refs: [], definitions: [], integrations: []},
+        fn _kind, rows, [] -> rows end
+      )
 
     structures = Enum.map(structures, &entry_of/1)
     {plain_refs, encoded_refs} = Enum.split_with(refs, &match?(%Entry{}, &1))
@@ -1019,8 +1056,9 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
     with :ok <- insert_entry_batches(state, definitions),
          :ok <- insert_ref_batches(state, refs),
-         :ok <- insert_structures(state, structures) do
-      update_max_ids(state, max_ids(definitions, refs))
+         :ok <- insert_structures(state, structures),
+         :ok <- insert_integrations(state, Enum.map(integrations, &entry_of/1)) do
+      update_max_ids(state, max_ids(definitions ++ integrations, refs))
     end
   end
 
@@ -1068,12 +1106,13 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp row_kind(%Entry{} = entry) when Entry.is_structure(entry), do: :structures
   defp row_kind(%Entry{subtype: :reference}), do: :refs
   defp row_kind(%Entry{subtype: :definition}), do: :definitions
+  defp row_kind(%Entry{subtype: :integration}), do: :integrations
 
   defp row_kind(%Entry{subtype: subtype}),
     do:
       raise(
         ArgumentError,
-        "entries can only be definitions or references, got #{inspect(subtype)}"
+        "entries can only be definitions, references or integrations, got #{inspect(subtype)}"
       )
 
   defp insert_entry_batches(%State{}, []), do: :ok
@@ -1240,6 +1279,33 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     exec(state, sql, args)
   end
 
+  defp insert_integrations(%State{}, []), do: :ok
+
+  defp insert_integrations(%State{} = state, integrations) do
+    integrations
+    |> Stream.chunk_every(@insert_batch_size)
+    |> Enum.reduce_while(:ok, fn batch, :ok ->
+      case insert_integration_batch(state, batch) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp insert_integration_batch(%State{} = state, integrations) do
+    with {:ok, file_ids} <- file_ids(state, Enum.map(integrations, & &1.path)) do
+      sql =
+        "INSERT INTO integrations (file_id, subject, entry) VALUES #{row_placeholders(integrations, 3)}"
+
+      args =
+        Enum.flat_map(integrations, fn entry ->
+          [Map.get(file_ids, entry.path), entry.subject, blob(entry)]
+        end)
+
+      exec(state, sql, args)
+    end
+  end
+
   defp entry_args(%Entry{} = entry) do
     [
       entry.id,
@@ -1295,6 +1361,12 @@ defmodule Expert.Search.Store.Backends.Sqlite do
            ),
          :ok <-
            exec(state, "DELETE FROM refs WHERE file_id IN (#{file_ids_of_paths(paths)})", paths),
+         :ok <-
+           exec(
+             state,
+             "DELETE FROM integrations WHERE file_id IN (#{file_ids_of_paths(paths)})",
+             paths
+           ),
          :ok <- exec(state, "DELETE FROM files WHERE path IN (#{placeholders(paths)})", paths) do
       reference_ids =
         Enum.flat_map(reference_rows, &occurrence_ids/1)
