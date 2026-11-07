@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.3](https://github.com/expert-lsp/expert/compare/v0.2.2...v0.2.3) (2026-11-07)
+
+
+### Features
+
+* add Spark integration ([#998](https://github.com/expert-lsp/expert/issues/998)) ([c499b0c](https://github.com/expert-lsp/expert/commit/c499b0c744bbeae6b935de8feb7b4c3e747ffdf6))
+
+
+### Bug Fixes
+
+* **engine:** keep the module table from filling up on large projects ([#996](https://github.com/expert-lsp/expert/issues/996)) ([167477c](https://github.com/expert-lsp/expert/commit/167477c20a65b601288a4bc182bc1032cf300c01))
+* **expert:** resolve imported calls from the compiler's trace ([#999](https://github.com/expert-lsp/expert/issues/999)) ([d9f0243](https://github.com/expert-lsp/expert/commit/d9f0243193831877e2c4aba6986828995deb9a4c))
+* mix and hex isolation ([#987](https://github.com/expert-lsp/expert/issues/987)) ([b7d57b6](https://github.com/expert-lsp/expert/commit/b7d57b623e0dd1e52a593b4644a0c6c17add5e1d))
+
+
+### Performance Improvements
+
+* **expert:** read source and BEAM files without the file server ([#994](https://github.com/expert-lsp/expert/issues/994)) ([fce7e53](https://github.com/expert-lsp/expert/commit/fce7e53e26157f80aeafec41f386bc6109e53c01))
+* **expert:** reduce wait time when writing index entries ([#1001](https://github.com/expert-lsp/expert/issues/1001)) ([9cfe5e0](https://github.com/expert-lsp/expert/commit/9cfe5e0d4755d041fbebc77f801eaccadd6b5921))
+* **expert:** register beam modules concurrently in worker tasks ([#997](https://github.com/expert-lsp/expert/issues/997)) ([6812e37](https://github.com/expert-lsp/expert/commit/6812e379e236033f842697bcd35aaf2b73ef8050))
+* **expert:** resolve the symbol under the cursor from the document ([#993](https://github.com/expert-lsp/expert/issues/993)) ([a015c75](https://github.com/expert-lsp/expert/commit/a015c7552c019c594b0cc028a78585489986284f))
+* **expert:** store references as positions over a names table ([#1000](https://github.com/expert-lsp/expert/issues/1000)) ([b6ae9f2](https://github.com/expert-lsp/expert/commit/b6ae9f24399973f9f7fd25dd5d907291fd53a507))
+* **indexer:** reduce index file size ([#995](https://github.com/expert-lsp/expert/issues/995)) ([5d62f50](https://github.com/expert-lsp/expert/commit/5d62f505afa4ecceadc4ea0890c83a740d6bba6c))
+
 ## [0.2.2](https://github.com/expert-lsp/expert/compare/v0.2.1...v0.2.2) (2026-10-23)
 
 
