@@ -7,6 +7,7 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
   alias Expert.EngineApi
   alias Expert.Integrations.Cache
   alias Expert.Integrations.Spark.Callbacks
+  alias Expert.Search.Indexer.BeamFile
   alias Expert.Search.Indexer.ModuleRegistry
 
   setup do
@@ -27,14 +28,15 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
   test "does not cache BEAM callbacks", %{project: project} do
     test_pid = self()
     {module, beam} = callback_beam()
+    {:ok, _module_name, exports, _debug_info} = BeamFile.read(beam)
 
     patch(EngineApi, :call, fn ^project, ^module, :options, [] ->
       send(test_pid, :callback)
       [:value]
     end)
 
-    assert {:ok, [:value]} = Callbacks.fetch(project, beam, module, :options)
-    assert {:ok, [:value]} = Callbacks.fetch(project, beam, module, :options)
+    assert {:ok, [:value]} = Callbacks.fetch(project, exports, module, :options)
+    assert {:ok, [:value]} = Callbacks.fetch(project, exports, module, :options)
     assert_received :callback
     assert_received :callback
   end
@@ -82,7 +84,7 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
   test "resolves and caches Spark type aliases", %{project: project} do
     test_pid = self()
 
-    ModuleRegistry.put(project, Example, "example.beam", nil, [{:short_names, 0}])
+    ModuleRegistry.put(project, "Elixir.Example", "example.beam", nil, [{"short_names", 0}])
 
     patch(EngineApi, :call, fn ^project, Example, :short_names, [] ->
       send(test_pid, :short_names)
@@ -134,7 +136,7 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
 
   defp register_callback(project) do
     module = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
-    ModuleRegistry.put(project, module, "example.beam", nil, [{:options, 0}])
+    ModuleRegistry.put(project, Atom.to_string(module), "example.beam", nil, [{"options", 0}])
     module
   end
 
