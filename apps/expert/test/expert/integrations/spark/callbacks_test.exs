@@ -9,9 +9,11 @@ defmodule Expert.Integrations.Spark.CallbacksTest do
   alias Expert.Integrations.Spark.Callbacks
   alias Expert.Search.Indexer.BeamFile
   alias Expert.Search.Indexer.ModuleRegistry
+  alias Expert.Search.Store
 
   setup do
     project = project()
+    patch(Store, :modules, fn ^project -> [] end)
     start_supervised!({ModuleRegistry, project})
     start_supervised!({Cache, project})
     %{project: project}

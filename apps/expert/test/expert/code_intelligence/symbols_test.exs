@@ -10,6 +10,7 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
   alias Expert.EngineApi
   alias Expert.Search.Indexer.Extractors
   alias Expert.Search.Indexer.Source
+  alias Expert.Search.Store.Backends.Sqlite
   alias Forge.ProcessCache
 
   setup do
@@ -69,11 +70,14 @@ defmodule Expert.CodeIntelligence.SymbolsTest do
         """)
     end
 
-    test "finds tests from a custom ExUnit case when the Engine is ready" do
-      project = Forge.Test.Fixtures.project()
+    @tag :tmp_dir
+    test "finds tests from a custom ExUnit case when the Engine is ready", %{tmp_dir: tmp_dir} do
+      project = tmp_dir |> Forge.Document.Path.to_uri() |> Forge.Project.new()
       start_supervised!({Expert.Project.Store, []})
       Expert.Project.Store.set_projects([project])
       Expert.Project.Store.transition(project, :ready)
+      start_supervised!({Sqlite, [project, runtime_versions: %{erlang: "test", elixir: "test"}]})
+      start_supervised!({Expert.Search.Store, [project, Sqlite]})
       start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
 
       document =
