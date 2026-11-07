@@ -49,7 +49,7 @@ defmodule Expert.Search.Store.StateTest do
     def parent(_project, _entry), do: nil
     def structure_for_path(_project, _path), do: {:ok, %{}}
     def drop(_project), do: :ok
-    def encode_entries(entries), do: entries
+    def encode_batch(_entries), do: %{}
     def destroy(_project), do: :ok
 
     defp entry(id) do
@@ -89,7 +89,7 @@ defmodule Expert.Search.Store.StateTest do
     def parent(_project, _entry), do: nil
     def structure_for_path(_project, _path), do: {:ok, %{}}
     def drop(_project), do: :ok
-    def encode_entries(entries), do: entries
+    def encode_batch(_entries), do: %{}
     def destroy(_project), do: :ok
   end
 

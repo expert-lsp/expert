@@ -616,18 +616,10 @@ defmodule Expert.Search.Indexer.BeamsTest do
   end
 
   defp index_beams(paths, opts \\ []) do
-    paths
-    |> Beams.stream(opts)
-    |> Enum.reduce({[], []}, fn
-      {nil, manifest_entries}, {entries, manifests} ->
-        {entries, [manifest_entries | manifests]}
+    items = paths |> Beams.stream(opts) |> Enum.to_list()
 
-      {entry, manifest_entries}, {entries, manifests} ->
-        {[entry | entries], [manifest_entries | manifests]}
-    end)
-    |> then(fn {entries, manifests} ->
-      {Enum.reverse(entries), manifests |> Enum.reverse() |> List.flatten()}
-    end)
+    {Enum.flat_map(items, fn {entries, _manifest_entries} -> entries end),
+     Enum.flat_map(items, fn {_entries, manifest_entries} -> manifest_entries end)}
   end
 
   defp compile_source!(tmp_dir, source, opts) do

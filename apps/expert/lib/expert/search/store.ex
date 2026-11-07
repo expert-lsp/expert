@@ -21,7 +21,7 @@ defmodule Expert.Search.Store do
 
   def replace(%Project{} = project, entries) when is_list(entries) do
     replacement = fn write_batch ->
-      with :ok <- write_batch.(entries) do
+      with :ok <- write_batch.([encode_batch(entries)]) do
         {:ok, :ok}
       end
     end
@@ -356,8 +356,8 @@ defmodule Expert.Search.Store do
 
   def backend, do: @backend
 
-  @spec encode_entries([Entry.t()]) :: [{:encoded, Entry.t(), term()}]
-  def encode_entries(entries), do: @backend.encode_entries(entries)
+  @spec encode_batch([Entry.t()]) :: Store.Backend.batch()
+  def encode_batch(entries), do: @backend.encode_batch(entries)
 
   defp do_update(state, old_ref, path, entries) do
     {:ok, schedule_flush(old_ref), State.buffer_updates(state, path, entries)}

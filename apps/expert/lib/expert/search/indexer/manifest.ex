@@ -39,7 +39,7 @@ defmodule Expert.Search.Indexer.Manifest do
 
     def beam(path, output_path) when is_binary(path) and is_binary(output_path) do
       with {:ok, entry} <- from_file(path, output_path, :beam),
-           {:ok, source_stat} <- File.stat(output_path) do
+           {:ok, source_stat} <- Expert.File.stat(output_path) do
         {:ok,
          %__MODULE__{
            entry
@@ -123,7 +123,7 @@ defmodule Expert.Search.Indexer.Manifest do
     end
 
     defp from_file(path, output_path, kind) do
-      case File.stat(path) do
+      case Expert.File.stat(path) do
         {:ok, %File.Stat{} = stat} ->
           {:ok, from_stat(path, output_path, kind, stat)}
 
@@ -143,7 +143,7 @@ defmodule Expert.Search.Indexer.Manifest do
     end
 
     defp put_source_snapshot(%__MODULE__{} = entry, source_path) when is_binary(source_path) do
-      case File.stat(source_path) do
+      case Expert.File.stat(source_path) do
         {:ok, %File.Stat{} = stat} ->
           %__MODULE__{
             entry
@@ -160,7 +160,7 @@ defmodule Expert.Search.Indexer.Manifest do
     defp put_source_snapshot(%__MODULE__{} = entry, _source_path), do: entry
 
     defp matches_input_file?(%__MODULE__{input_path: path, mtime: mtime, size: size}) do
-      case File.stat(path) do
+      case Expert.File.stat(path) do
         {:ok, %File.Stat{mtime: ^mtime, size: ^size}} -> true
         _ -> false
       end
@@ -173,7 +173,7 @@ defmodule Expert.Search.Indexer.Manifest do
            source_mtime: nil,
            source_size: nil
          }) do
-      match?({:error, _}, File.stat(path))
+      match?({:error, _}, Expert.File.stat(path))
     end
 
     defp matches_source_file?(%__MODULE__{
@@ -181,7 +181,7 @@ defmodule Expert.Search.Indexer.Manifest do
            source_mtime: mtime,
            source_size: size
          }) do
-      case File.stat(path) do
+      case Expert.File.stat(path) do
         {:ok, %File.Stat{mtime: ^mtime, size: ^size}} -> true
         _ -> false
       end
@@ -389,7 +389,7 @@ defmodule Expert.Search.Indexer.Manifest do
   defp put_output(outputs, _entry), do: outputs
 
   defp empty_file?(path) do
-    case File.stat(path) do
+    case Expert.File.stat(path) do
       {:ok, %File.Stat{size: 0}} -> true
       _ -> false
     end
