@@ -51,15 +51,39 @@ defmodule Expert.Search.IndexerTest do
     end
 
     def insert(entries) do
-      entries =
-        Enum.map(entries, fn
-          {:encoded, entry, _row} -> entry
-          entry -> entry
-        end)
-
       record_call({:insert, entries})
       set_entries(entries() ++ entries)
       :ok
+    end
+
+    def insert_batches(batches) do
+      insert(Enum.flat_map(batches, &batch_entries/1))
+    end
+
+    def batch_entries(batch) do
+      kept =
+        MapSet.new(
+          Enum.map(batch.definitions, &elem(&1, 0)) ++ batch.structures ++ batch.integrations
+        )
+
+      Enum.filter(batch.entries, &(&1.subtype == :reference or MapSet.member?(kept, &1)))
+    end
+
+    # Tests read the written entries back in indexing order.
+    def encode_batch(entries) do
+      {integrations, rest} = Enum.split_with(entries, &(&1.subtype == :integration))
+      {structures, rest} = Enum.split_with(rest, &(&1.subtype == :block_structure))
+      {definitions, refs} = Enum.split_with(rest, &(&1.subtype == :definition))
+
+      %{
+        entries: entries,
+        definitions: Enum.map(definitions, &{&1, nil}),
+        refs: refs,
+        structures: structures,
+        integrations: integrations,
+        rows: length(entries),
+        max_ids: %{}
+      }
     end
 
     def apply_index_update(entries, paths_to_clear) do
@@ -133,9 +157,11 @@ defmodule Expert.Search.IndexerTest do
     FakeBackend.set_entries([])
     FakeBackend.reset_calls()
 
+    patch(Store, :encode_batch, &FakeBackend.encode_batch/1)
+
     patch(Store, :replace, fn _project, replacement ->
       FakeBackend.replace([])
-      replacement.(&FakeBackend.insert/1)
+      replacement.(&FakeBackend.insert_batches/1)
     end)
 
     patch(Store, :insert, fn _project, entries -> FakeBackend.insert(entries) end)
@@ -144,8 +170,8 @@ defmodule Expert.Search.IndexerTest do
       if is_function(update, 2) do
         FakeBackend.apply_index_update([], paths_to_clear)
 
-        write_batch = fn entries, write_state ->
-          with :ok <- FakeBackend.insert(entries) do
+        write_batch = fn batches, write_state ->
+          with :ok <- FakeBackend.insert_batches(batches) do
             {:ok, write_state}
           end
         end
@@ -208,18 +234,10 @@ defmodule Expert.Search.IndexerTest do
   end
 
   defp index_beams(paths) do
-    paths
-    |> Beams.stream()
-    |> Enum.reduce({[], []}, fn
-      {nil, manifest_entries}, {entries, manifests} ->
-        {entries, [manifest_entries | manifests]}
+    items = paths |> Beams.stream() |> Enum.to_list()
 
-      {entry, manifest_entries}, {entries, manifests} ->
-        {[entry | entries], [manifest_entries | manifests]}
-    end)
-    |> then(fn {entries, manifests} ->
-      {Enum.reverse(entries), manifests |> Enum.reverse() |> List.flatten()}
-    end)
+    {Enum.flat_map(items, fn {entries, _manifest_entries} -> entries end),
+     Enum.flat_map(items, fn {_entries, manifest_entries} -> manifest_entries end)}
   end
 
   defp write_file!(path, contents) do
@@ -228,6 +246,19 @@ defmodule Expert.Search.IndexerTest do
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, contents)
     path
+  end
+
+  defp definitions(path, count) do
+    for id <- 1..count do
+      %Entry{
+        id: id,
+        path: path,
+        subject: "Large.function_#{id}/0",
+        type: {:function, :public},
+        subtype: :definition,
+        block_id: :root
+      }
+    end
   end
 
   defp write_mix_project!(root, module_name, project_config) do
@@ -383,53 +414,68 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       tmp_dir: tmp_dir
     } do
-      path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
+      paths =
+        for name <- ["first.ex", "second.ex"],
+            do: write_file!(Path.join(tmp_dir, name), "defmodule Large do\nend")
 
-      entries =
-        for id <- 1..4_001 do
-          %Entry{
-            id: id,
-            path: path,
-            subject: "Large.function_#{id}/0",
-            type: {:function, :public},
-            subtype: :definition,
-            block_id: :root
-          }
-        end
-
-      patch(Source, :index, fn ^path, _source, nil, ^project ->
-        {:ok, entries}
+      patch(Source, :index, fn path, _source, nil, ^project ->
+        {:ok, definitions(path, 4_000)}
       end)
 
       patch(Store, :replace, fn ^project, replacement ->
         FakeBackend.replace([])
 
-        replacement.(fn chunk ->
-          if length(chunk) == 1 do
-            FakeBackend.record_call({:insert, chunk})
-            {:error, :disk_full}
+        replacement.(fn batches ->
+          if FakeBackend.entries() == [] do
+            FakeBackend.insert_batches(batches)
           else
-            FakeBackend.insert(chunk)
+            FakeBackend.record_call(
+              {:insert, Enum.flat_map(batches, &FakeBackend.batch_entries/1)}
+            )
+
+            {:error, :disk_full}
           end
         end)
       end)
 
       assert {:error, {:store, :disk_full}} =
-               Indexer.create_index(project, paths: %Paths{source_paths: [path]})
+               Indexer.create_index(project, paths: %Paths{source_paths: paths})
 
       registry = ModuleRegistry.name(project)
       assert :ets.info(registry, :owner) == Process.whereis(ModuleRegistry.name(project))
 
       [
         {:replace, []},
-        {:insert, first_chunk},
-        {:insert, final_chunk}
+        {:insert, first_write},
+        {:insert, final_write}
       ] = FakeBackend.calls()
 
-      assert length(first_chunk) == 4_000
-      assert [_entry] = final_chunk
+      assert length(first_write) == 4_000
+      assert length(final_write) == 4_000
       assert length(FakeBackend.entries()) == 4_000
       assert :missing = ManifestStore.load(project)
+    end
+
+    @tag :tmp_dir
+    test "writes whole files together once they hold enough rows", %{
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      paths =
+        for name <- ["first.ex", "second.ex", "third.ex"],
+            do: write_file!(Path.join(tmp_dir, name), "defmodule Large do\nend")
+
+      patch(Source, :index, fn path, _source, nil, ^project ->
+        {:ok, definitions(path, 2_500)}
+      end)
+
+      assert :ok = Indexer.create_index(project, paths: %Paths{source_paths: paths})
+
+      [{:replace, []}, {:insert, first_write}, {:insert, final_write}] = FakeBackend.calls()
+
+      assert length(first_write) == 5_000
+      assert first_write |> Enum.map(& &1.path) |> Enum.uniq() |> length() == 2
+      assert length(final_write) == 2_500
     end
 
     test "does not commit a manifest when Store replacement fails", %{project: project} do
@@ -865,40 +911,37 @@ defmodule Expert.Search.IndexerTest do
 
     @tag :tmp_dir
     test "streams entries in bounded chunks during refresh", %{project: project, tmp_dir: tmp_dir} do
-      path = write_file!(Path.join(tmp_dir, "large.ex"), "defmodule Large do\nend")
-      {:ok, manifest_entry} = ManifestEntry.source(path)
-      assert :ok = ManifestStore.commit(project, Manifest.new([manifest_entry]))
-      assert :ok = Indexer.record_integrations(project)
-      File.touch!(path, {{2100, 1, 1}, {0, 0, 0}})
+      paths =
+        for name <- ["first.ex", "second.ex"],
+            do: write_file!(Path.join(tmp_dir, name), "defmodule Large do
+end")
 
-      entries =
-        for id <- 1..4_001 do
-          %Entry{
-            id: id,
-            path: path,
-            subject: "Large.function_#{id}/0",
-            type: {:function, :public},
-            subtype: :definition,
-            block_id: :root
-          }
+      manifest_entries =
+        for path <- paths do
+          {:ok, manifest_entry} = ManifestEntry.source(path)
+          manifest_entry
         end
 
-      patch(Source, :index, fn ^path, _source, nil, ^project ->
-        {:ok, entries}
+      assert :ok = ManifestStore.commit(project, Manifest.new(manifest_entries))
+      assert :ok = Indexer.record_integrations(project)
+      Enum.each(paths, &File.touch!(&1, {{2100, 1, 1}, {0, 0, 0}}))
+
+      patch(Source, :index, fn path, _source, nil, ^project ->
+        {:ok, definitions(path, 4_000)}
       end)
 
-      FakeBackend.set_entries([%Entry{id: 4_002, path: path}])
+      FakeBackend.set_entries([%Entry{id: 4_002, path: hd(paths)}])
       FakeBackend.reset_calls()
 
-      assert :ok =
-               Indexer.update_index(project, paths: %Paths{source_paths: [path]})
+      assert :ok = Indexer.update_index(project, paths: %Paths{source_paths: paths})
 
-      [{:apply_index_update, [], [^path]}, {:insert, first_chunk}, {:insert, final_chunk}] =
+      [{:apply_index_update, [], cleared_paths}, {:insert, first_write}, {:insert, final_write}] =
         FakeBackend.calls()
 
-      assert length(first_chunk) == 4_000
-      assert [_entry] = final_chunk
-      assert length(FakeBackend.entries()) == 4_001
+      assert Enum.sort(cleared_paths) == Enum.sort(paths)
+      assert length(first_write) == 4_000
+      assert length(final_write) == 4_000
+      assert length(FakeBackend.entries()) == 8_000
     end
 
     @tag :tmp_dir
