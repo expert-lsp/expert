@@ -9,6 +9,10 @@ defmodule Expert.Provider.Handlers.CallHierarchyTest do
   alias Expert.EngineApi
   alias Expert.Protocol.Convert
   alias Expert.Provider.Handlers.CallHierarchy
+  alias Expert.Search.Indexer
+  alias Expert.Search.Indexer.Manifest
+  alias Expert.Search.Indexer.ManifestStore
+  alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Source
   alias Expert.Search.Store
   alias Expert.Search.Store.Backends.Sqlite
@@ -843,6 +847,82 @@ defmodule Expert.Provider.Handlers.CallHierarchyTest do
       assert Enum.map(recursive_call.from_ranges, &text_at(document, &1)) ==
                ["countdown(value - 1)"]
     end
+  end
+
+  describe "imported calls" do
+    test "prepares the function the index resolved for a bare call", %{project: project} do
+      patch(EngineApi, :application, fn ^project, _module -> :call_hierarchy_test end)
+      patch(EngineApi, :available_module?, fn ^project, _module -> false end)
+      patch(EngineApi, :module_exports, fn ^project, module -> Engine.Modules.exports(module) end)
+      start_supervised!({Expert.Project.Store, []})
+      Expert.Project.Store.set_projects([project])
+      Expert.Project.Store.transition(project, :ready)
+      start_supervised!({ModuleRegistry, project})
+
+      root = Project.root_path(project)
+
+      helpers = """
+      defmodule CallHierarchyTest.Helpers do
+        def charge(cart), do: {:ok, cart}
+
+        defmacro __using__(_), do: quote(do: import(CallHierarchyTest.Helpers))
+      end
+      """
+
+      checkout = """
+      defmodule CallHierarchyTest.Checkout do
+        use CallHierarchyTest.Helpers
+
+        def submit(cart), do: cha|rge(cart)
+      end
+      """
+
+      {checkout_position, checkout_document} =
+        pop_cursor(checkout, document: Document.Path.to_uri(Path.join(root, "lib/checkout.ex")))
+
+      paths = %{
+        helpers: write_source(root, "lib/helpers.ex", helpers),
+        checkout: write_source(root, "lib/checkout.ex", Document.to_string(checkout_document))
+      }
+
+      assert {:ok, helper_entries} = Source.index(paths.helpers, helpers)
+
+      # the compile of the edited document traced its bare call
+      traced = [
+        {CallHierarchyTest.Checkout, [{4, 25, "Elixir.CallHierarchyTest.Helpers", "charge", 1}]}
+      ]
+
+      assert {:ok, _path, checkout_entries} =
+               Indexer.document(project, checkout_document, traced)
+
+      assert :ok = Store.replace(project, helper_entries ++ checkout_entries)
+
+      manifest =
+        Manifest.new(for path <- [paths.helpers, paths.checkout], do: manifest_entry(path))
+
+      assert :ok = ManifestStore.commit(project, manifest)
+
+      uri = checkout_document.uri
+      assert :ok = Document.Store.open(uri, File.read!(paths.checkout), 0)
+      {:ok, document} = Document.Store.fetch(uri)
+
+      assert [%Structures.CallHierarchyItem{} = item] =
+               prepare({document, checkout_position}, project)
+
+      assert item.name == "CallHierarchyTest.Helpers.charge/1"
+    end
+  end
+
+  defp write_source(root, relative_path, source) do
+    path = Forge.Path.native(Path.join(root, relative_path))
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, source)
+    path
+  end
+
+  defp manifest_entry(path) do
+    assert {:ok, entry} = Manifest.Entry.source(path)
+    entry
   end
 
   defp index(project, sources) do

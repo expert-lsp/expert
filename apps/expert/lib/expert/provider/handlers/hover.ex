@@ -2,6 +2,7 @@ defmodule Expert.Provider.Handlers.Hover do
   @behaviour Expert.Provider.Handler
 
   alias Expert.CodeIntelligence.Hex
+  alias Expert.CodeIntelligence.References
   alias Expert.Document.Context
   alias Expert.EngineApi
   alias Expert.Integrations
@@ -96,7 +97,9 @@ defmodule Expert.Provider.Handlers.Hover do
   end
 
   defp resolve_entity(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
-    EngineApi.resolve_entity(project, analysis, position)
+    with :error <- References.indexed_call(project, analysis, position) do
+      EngineApi.resolve_entity(project, analysis, position)
+    end
   end
 
   defp elixir_sense_hover(project, document, position) do
