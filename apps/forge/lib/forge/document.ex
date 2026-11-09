@@ -34,7 +34,8 @@ defmodule Forge.Document do
           path: String.t()
         }
 
-  @type change_application_error :: {:error, {:invalid_range, map()}}
+  @type change_application_error ::
+          {:error, {:invalid_range, map()}} | {:error, :invalid_version}
 
   # public
 
