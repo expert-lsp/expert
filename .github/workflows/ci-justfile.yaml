@@ -30,6 +30,8 @@ jobs:
 
       - name: Set up just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: "1.59.0"
 
       - name: Run formatter
         run: just --fmt --check
