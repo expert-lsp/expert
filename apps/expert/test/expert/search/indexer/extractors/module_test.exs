@@ -64,6 +64,28 @@ defmodule Expert.Search.Indexer.Extractors.ModuleTest do
       assert decorate(doc, entry.range) == "defmodule «Else.Other» do"
     end
 
+    test "resolves __MODULE__ to the module that contains it" do
+      {:ok, entries, doc} =
+        ~q[
+        defmodule Parent do
+          defmodule Child do
+            @name __MODULE__
+          end
+          @name __MODULE__
+        end
+        ]
+        |> index()
+
+      references =
+        for %{subtype: :reference} = entry <- entries,
+            do: {entry.subject, decorate(doc, entry.range)}
+
+      assert references == [
+               {Parent.Child, "    @name «__MODULE__»"},
+               {Parent, "  @name «__MODULE__»"}
+             ]
+    end
+
     test "can detect an erlang module" do
       patch(Reducer, :available_module?, fn _reducer, module -> module == :timer end)
 
