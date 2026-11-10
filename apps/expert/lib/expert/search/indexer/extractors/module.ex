@@ -45,9 +45,7 @@ defmodule Expert.Search.Indexer.Extractors.Module do
 
       module_name_meta = Reducer.skip(module_name_meta)
 
-      elem =
-        {:defmodule, defmodule_meta,
-         [{:__aliases__, module_name_meta, module_name}, module_block]}
+      elem = {:defmodule, defmodule_meta, [{:__aliases__, module_name_meta, []}, module_block]}
 
       {:ok, entry, elem}
     else
@@ -124,11 +122,9 @@ defmodule Expert.Search.Indexer.Extractors.Module do
 
   @module_length String.length("__MODULE__")
   # This matches __MODULE__ references
-  def extract({:__MODULE__, metadata, _} = ast, %Reducer{} = reducer) do
-    line = Sourceror.get_line(ast)
-    pos = Position.new(reducer.analysis.document, line - 1, 1)
-
-    with {:ok, current_module} <- Analyzer.current_module(reducer.analysis, pos),
+  def extract({:__MODULE__, metadata, _}, %Reducer{} = reducer) do
+    with {:ok, current_module} <-
+           Analyzer.current_module(reducer.analysis, Reducer.position(reducer)),
          {:ok, start_pos, end_pos} <- module_positions(reducer, metadata) do
       range = Range.new(start_pos, end_pos)
       %Block{} = current_block = Reducer.current_block(reducer)
