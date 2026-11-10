@@ -1626,6 +1626,126 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
     end
   end
 
+  describe "search_definitions/4" do
+    setup %{project: project, runtime_versions: runtime_versions} do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      :ok
+    end
+
+    @tag :tmp_dir
+    test "ranks equal names first, then the typed case, then shorter subjects", %{
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "lib/shop.ex")
+
+      replace_definitions(project, [
+        {"Shop.Carts", :module, path},
+        {"Shop.Cart.total/1", {:function, :public}, path},
+        {"Shop.Orders.cart/1", {:function, :public}, path},
+        {"Shop.Cart", :module, path},
+        {"Cart", :module, path},
+        {"Shop.Orders.add_cart_item/2", {:function, :public}, path}
+      ])
+
+      assert matching_subjects(project, "cart") == [
+               "Cart",
+               "Shop.Cart",
+               "Shop.Orders.cart/1",
+               "Shop.Orders.add_cart_item/2",
+               "Shop.Carts",
+               "Shop.Cart.total/1"
+             ]
+    end
+
+    @tag :tmp_dir
+    test "matches regardless of case", %{project: project, tmp_dir: tmp_dir} do
+      replace_definitions(project, [{"Foo.Bar", :module, Path.join(tmp_dir, "lib/bar.ex")}])
+
+      assert matching_subjects(project, "bar") == ["Foo.Bar"]
+      assert matching_subjects(project, "BAR") == ["Foo.Bar"]
+    end
+
+    @tag :tmp_dir
+    test "filters by type before applying the limit", %{project: project, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "lib/foo.ex")
+      functions = for number <- 1..300, do: {"Foo.bar#{number}/0", {:function, :public}, path}
+
+      replace_definitions(project, [{"Foo.Bars", :module, path} | functions])
+
+      assert matching_subjects(project, "bar", type: :module) == ["Foo.Bars"]
+    end
+
+    @tag :tmp_dir
+    test "leaves out definitions under the excluded roots", %{project: project, tmp_dir: tmp_dir} do
+      deps = Path.join(tmp_dir, "deps")
+
+      replace_definitions(project, [
+        {"Foo.Bar", :module, Path.join(tmp_dir, "lib/bar.ex")},
+        {"Dep.Bar", :module, Path.join(deps, "dep/lib/bar.ex")}
+      ])
+
+      assert matching_subjects(project, "bar", excluded_roots: [deps]) == ["Foo.Bar"]
+    end
+
+    @tag :tmp_dir
+    test "returns at most 256 definitions", %{project: project, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "lib/foo.ex")
+
+      replace_definitions(
+        project,
+        for(number <- 1..300, do: {"Foo.bar#{number}/0", {:function, :public}, path})
+      )
+
+      assert length(matching_subjects(project, "bar")) == 256
+    end
+
+    @tag :tmp_dir
+    test "matches % and _ literally", %{project: project, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "lib/foo.ex")
+
+      replace_definitions(project, [
+        {"Foo.a_b/0", {:function, :public}, path},
+        {"Foo.axb/0", {:function, :public}, path}
+      ])
+
+      assert matching_subjects(project, "a_b") == ["Foo.a_b/0"]
+      assert matching_subjects(project, "%") == []
+    end
+
+    defp replace_definitions(project, definitions) do
+      entries =
+        for {{subject, type, path}, id} <- Enum.with_index(definitions, 1) do
+          %Entry{
+            id: id,
+            subject: subject,
+            path: path,
+            type: type,
+            subtype: :definition,
+            block_id: :root
+          }
+        end
+
+      assert :ok = Sqlite.replace_all(project, entries)
+    end
+
+    defp matching_subjects(project, substring, opts \\ []) do
+      project
+      |> Sqlite.search_definitions(
+        substring,
+        Keyword.get(opts, :type, :_),
+        Keyword.get(opts, :excluded_roots, [])
+      )
+      |> Enum.map(& &1.subject)
+    end
+  end
+
   describe "find_by_paths/4" do
     test "chunks path lists that exceed SQLite's variable limit", %{
       project: project,

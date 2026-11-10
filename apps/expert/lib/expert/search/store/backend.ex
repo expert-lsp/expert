@@ -39,7 +39,8 @@ defmodule Expert.Search.Store.Backend do
   @callback modules(Project.t()) :: [module_row()] | {:error, any()}
   @callback replace_modules(Project.t(), [module_row()]) :: :ok | {:error, any()}
   @callback update_modules(Project.t(), [module_row()], [Path.t()]) :: :ok | {:error, any()}
-  @callback definitions_for_fuzzy(Project.t()) :: [Entry.t()] | {:error, any()}
+  @callback search_definitions(Project.t(), String.t(), type_query(), excluded :: [Path.t()]) ::
+              [Entry.t()] | {:error, any()}
   @callback replace_all(Project.t(), replacement(term())) ::
               {:ok, term()} | {:error, term()}
   @callback delete_by_path(Project.t(), Path.t()) :: {:ok, [Entry.entry_id()]} | {:error, any()}

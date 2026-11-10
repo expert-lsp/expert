@@ -376,10 +376,10 @@ defmodule Expert.Search.Indexer do
   end
 
   defp refresh_store(source_paths, beam_items, paths_to_clear, state, project) do
-    update = fn write_batch, write_state ->
+    update = fn write_batch ->
       source_paths
       |> index_stream(beam_items, project)
-      |> stream_into_store(state, write_batch, write_state)
+      |> stream_into_store(state, write_batch)
     end
 
     case Store.apply_index_update(project, update, paths_to_clear) do
@@ -403,21 +403,8 @@ defmodule Expert.Search.Indexer do
   end
 
   defp stream_into_store(stream, state, write_batch) do
-    write_batch_with_state = fn entries, write_state ->
-      with :ok <- write_batch.(entries) do
-        {:ok, write_state}
-      end
-    end
-
-    case stream_into_store(stream, state, write_batch_with_state, nil) do
-      {:ok, state, nil} -> {:ok, state}
-      error -> error
-    end
-  end
-
-  defp stream_into_store(stream, state, write_batch, write_state) do
     result =
-      Enum.reduce_while(stream, {state, write_state, [], 0}, fn item, acc ->
+      Enum.reduce_while(stream, {state, [], 0}, fn item, acc ->
         buffer_item(item, acc, write_batch)
       end)
 
@@ -425,26 +412,26 @@ defmodule Expert.Search.Indexer do
       {:error, _reason} = error ->
         error
 
-      {state, write_state, [], 0} ->
-        {:ok, state, write_state}
+      {state, [], 0} ->
+        {:ok, state}
 
-      {state, write_state, batches, _rows} ->
-        with {:ok, write_state} <- write_batch.(Enum.reverse(batches), write_state) do
-          {:ok, state, write_state}
+      {state, batches, _rows} ->
+        with :ok <- write_batch.(Enum.reverse(batches)) do
+          {:ok, state}
         end
     end
   end
 
-  defp buffer_item(item, {state, write_state, batches, rows}, write_batch) do
+  defp buffer_item(item, {state, batches, rows}, write_batch) do
     {batch, state} = consume_item(item, state)
     batches = [batch | batches]
     rows = rows + batch.rows
 
     if rows < @rows_per_write do
-      {:cont, {state, write_state, batches, rows}}
+      {:cont, {state, batches, rows}}
     else
-      case write_batch.(Enum.reverse(batches), write_state) do
-        {:ok, write_state} -> {:cont, {state, write_state, [], 0}}
+      case write_batch.(Enum.reverse(batches)) do
+        :ok -> {:cont, {state, [], 0}}
         {:error, _reason} = error -> {:halt, error}
       end
     end

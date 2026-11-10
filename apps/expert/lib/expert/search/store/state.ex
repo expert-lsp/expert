@@ -1,5 +1,4 @@
 defmodule Expert.Search.Store.State do
-  alias Expert.Search.Fuzzy
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
 
@@ -10,7 +9,7 @@ defmodule Expert.Search.Store.State do
     :backend,
     :loaded?,
     :load_status,
-    :fuzzy,
+    :deps_roots,
     :update_buffer
   ]
 
@@ -21,7 +20,7 @@ defmodule Expert.Search.Store.State do
       loaded?: false,
       load_status: :not_loaded,
       update_buffer: %{},
-      fuzzy: Fuzzy.from_entries(project, [])
+      deps_roots: deps_roots(project)
     }
   end
 
@@ -34,7 +33,6 @@ defmodule Expert.Search.Store.State do
          state
          | loaded?: false,
            load_status: :not_loaded,
-           fuzzy: Fuzzy.from_entries(state.project, []),
            update_buffer: %{}
        }}
     end
@@ -52,11 +50,7 @@ defmodule Expert.Search.Store.State do
 
           {:ok, :stale} ->
             Logger.info("backend reports stale")
-
-            with %__MODULE__{} = state <-
-                   initialize_fuzzy(%__MODULE__{state | loaded?: true, load_status: :stale}) do
-              {:ok, :stale, state}
-            end
+            {:ok, :stale, %__MODULE__{state | loaded?: true, load_status: :stale}}
 
           error ->
             Logger.error("Could not initialize index due to #{inspect(error)}")
@@ -71,28 +65,15 @@ defmodule Expert.Search.Store.State do
 
   def replace(%__MODULE__{} = state, replacement) do
     with {:ok, result} <- state.backend.replace_all(state.project, replacement),
-         {:ok, fuzzy} <- Fuzzy.from_backend(state.project, state.backend),
          :ok <- maybe_sync(state) do
-      {:ok, result,
-       %__MODULE__{
-         state
-         | loaded?: true,
-           load_status: :ready,
-           fuzzy: fuzzy
-       }}
+      {:ok, result, %__MODULE__{state | loaded?: true, load_status: :ready}}
     end
   end
 
   def insert(%__MODULE__{} = state, entries) do
     with :ok <- state.backend.insert(state.project, entries),
          :ok <- maybe_sync(state) do
-      {:ok,
-       %__MODULE__{
-         state
-         | loaded?: true,
-           load_status: :ready,
-           fuzzy: Fuzzy.add(state.fuzzy, entries)
-       }}
+      {:ok, %__MODULE__{state | loaded?: true, load_status: :ready}}
     end
   end
 
@@ -146,19 +127,17 @@ defmodule Expert.Search.Store.State do
 
   def fuzzy(%__MODULE__{loaded?: false}, _subject, _constraints), do: {:error, :loading}
 
-  def fuzzy(%__MODULE__{} = state, subject, constraints) do
-    case Fuzzy.match(state.fuzzy, subject) do
-      [] ->
-        {:ok, []}
+  def fuzzy(%__MODULE__{} = state, substring, constraints) do
+    type = Keyword.get(constraints, :type, :_)
+    subtype = Keyword.get(constraints, :subtype, :_)
 
-      ids ->
-        type = Keyword.get(constraints, :type, :_)
-        subtype = Keyword.get(constraints, :subtype, :_)
-
-        case state.backend.find_by_ids(state.project, ids, type, subtype) do
-          l when is_list(l) -> {:ok, l}
-          error -> error
-        end
+    if subtype in [:_, :definition] do
+      case state.backend.search_definitions(state.project, substring, type, state.deps_roots) do
+        l when is_list(l) -> {:ok, l}
+        error -> error
+      end
+    else
+      {:ok, []}
     end
   end
 
@@ -284,20 +263,9 @@ defmodule Expert.Search.Store.State do
   end
 
   def update_nosync(%__MODULE__{} = state, path, entries) do
-    with {:ok, deleted_ids} <-
+    with {:ok, _deleted_ids} <-
            state.backend.apply_index_update(state.project, entries, [path]) do
-      fuzzy =
-        state.fuzzy
-        |> Fuzzy.drop_values(deleted_ids)
-        |> Fuzzy.add(entries)
-
-      {:ok,
-       %__MODULE__{
-         state
-         | loaded?: true,
-           load_status: :ready,
-           fuzzy: fuzzy
-       }}
+      {:ok, %__MODULE__{state | loaded?: true, load_status: :ready}}
     end
   end
 
@@ -306,42 +274,11 @@ defmodule Expert.Search.Store.State do
         update,
         paths_to_clear
       )
-      when is_function(update, 2) and is_list(paths_to_clear) do
-    wrapped_update = fn write_batch ->
-      write_and_update_fuzzy = fn batches, fuzzy ->
-        with :ok <- write_batch.(batches) do
-          {:ok, Fuzzy.add(fuzzy, definitions(batches))}
-        end
-      end
-
-      with {:ok, result, fuzzy} <- update.(write_and_update_fuzzy, state.fuzzy) do
-        {:ok, {result, fuzzy}}
-      end
-    end
-
-    result =
-      case state.backend.apply_index_update(state.project, wrapped_update, paths_to_clear) do
-        {:ok, deleted_ids, {callback_result, fuzzy}} ->
-          {:ok, deleted_ids, callback_result, fuzzy}
-
-        {:ok, deleted_ids} ->
-          {:ok, deleted_ids, :ok, state.fuzzy}
-
-        error ->
-          error
-      end
-
-    with {:ok, deleted_ids, callback_result, fuzzy} <- result,
+      when is_function(update, 1) and is_list(paths_to_clear) do
+    with {:ok, _deleted_ids, result} <-
+           state.backend.apply_index_update(state.project, update, paths_to_clear),
          :ok <- maybe_sync(state) do
-      fuzzy = Fuzzy.drop_values(fuzzy, deleted_ids)
-
-      {:ok, callback_result,
-       %__MODULE__{
-         state
-         | loaded?: true,
-           load_status: :ready,
-           fuzzy: fuzzy
-       }}
+      {:ok, result, %__MODULE__{state | loaded?: true, load_status: :ready}}
     end
   end
 
@@ -351,21 +288,10 @@ defmodule Expert.Search.Store.State do
         paths_to_clear
       )
       when is_list(updated_entries) and is_list(paths_to_clear) do
-    with {:ok, deleted_ids} <-
+    with {:ok, _deleted_ids} <-
            state.backend.apply_index_update(state.project, updated_entries, paths_to_clear),
          :ok <- maybe_sync(state) do
-      fuzzy =
-        state.fuzzy
-        |> Fuzzy.drop_values(deleted_ids)
-        |> Fuzzy.add(updated_entries)
-
-      {:ok,
-       %__MODULE__{
-         state
-         | loaded?: true,
-           load_status: :ready,
-           fuzzy: fuzzy
-       }}
+      {:ok, %__MODULE__{state | loaded?: true, load_status: :ready}}
     end
   end
 
@@ -375,14 +301,18 @@ defmodule Expert.Search.Store.State do
       else: :ok
   end
 
-  defp initialize_fuzzy(%__MODULE__{} = state) do
-    case Fuzzy.from_backend(state.project, state.backend) do
-      {:ok, fuzzy} -> %__MODULE__{state | fuzzy: fuzzy}
-      {:error, _} = error -> error
-    end
+  defp deps_roots(%Project{kind: :mix} = project) do
+    [Project.root_path(project), "**", "mix.exs"]
+    |> Path.join()
+    |> Path.wildcard()
+    |> Enum.map(fn relative_mix_path ->
+      relative_mix_path
+      |> Path.absname()
+      |> Path.dirname()
+      |> Path.join("deps")
+    end)
+    |> Enum.filter(&File.exists?/1)
   end
 
-  defp definitions(batches) do
-    for batch <- batches, {entry, _row} <- batch.definitions, do: entry
-  end
+  defp deps_roots(_), do: []
 end
