@@ -128,7 +128,7 @@ defmodule Expert.Provider.Handlers.Hover do
         end
 
       _ ->
-        {:error, :no_doc}
+        {:error, :not_found}
     end
   end
 
@@ -146,11 +146,11 @@ defmodule Expert.Provider.Handlers.Hover do
 
       {:ok, Markdown.join_sections(sections, Markdown.separator())}
     else
-      _ when resolved_delegate? ->
-        {:error, :not_found}
+      :error when indexed? and not resolved_delegate? ->
+        :error
 
       _ ->
-        maybe_fallback_error(indexed?)
+        {:error, :not_found}
     end
   end
 
@@ -181,9 +181,6 @@ defmodule Expert.Provider.Handlers.Hover do
   defp hover_content(type, _) do
     {:error, {:unsupported, type}}
   end
-
-  defp maybe_fallback_error(true), do: :error
-  defp maybe_fallback_error(false), do: {:error, :not_found}
 
   defp resolve_call_target(project, module, fun, arity) do
     Store.resolve_mfa(project, module, fun, arity)
