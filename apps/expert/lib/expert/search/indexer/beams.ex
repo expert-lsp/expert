@@ -414,7 +414,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp default_wrapper?(name, arity, definition, clauses, default_wrappers) do
     MapSet.member?(default_wrappers, {name, arity, definition}) and
-      default_wrapper_clauses?(clauses, definition, name)
+      default_wrapper_clauses?(BeamFile.clauses(clauses), definition, name)
   end
 
   defp default_wrapper_clauses?([_clause | _rest] = clauses, definition, name) do
@@ -516,7 +516,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp delegate_specs({{name, arity}, "def", metadata, clauses}) do
     with true <- delegate_metadata?(metadata),
-         {:ok, module, target_name, target_arity} <- delegate_target(clauses) do
+         {:ok, module, target_name, target_arity} <- delegate_target(BeamFile.clauses(clauses)) do
       defaults = meta(metadata, "defaults", 0)
 
       spec = %{
@@ -589,7 +589,7 @@ defmodule Expert.Search.Indexer.Beams do
     |> Map.get("definitions", [])
     |> Enum.find_value([], fn
       {{"__protocol__", 1}, "def", _definition_metadata, clauses} ->
-        protocol_callback_clauses(clauses)
+        clauses |> BeamFile.clauses() |> protocol_callback_clauses()
 
       _definition ->
         nil
