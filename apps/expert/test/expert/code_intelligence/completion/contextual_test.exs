@@ -3,16 +3,16 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   use Patch
 
   alias Expert.EngineApi
-  alias Expert.Integrations
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
   alias Forge.Completion.Candidate
   alias GenLSP.Structures.CompletionList
 
   test "contextual completions override ordinary completion", %{project: project} do
-    patch(Integrations, :complete, {
-      :override,
-      [{snippet("context", "contextual"), []}],
-      true,
-      []
+    contextual(%Result{
+      mode: :override,
+      candidates: [snippet("context", "contextual")],
+      incomplete?: true
     })
 
     patch(EngineApi, :complete, [
@@ -24,11 +24,10 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "contextual completions augment ordinary completion", %{project: project} do
-    patch(Integrations, :complete, {
-      :augment,
-      [{snippet("context", "contextual"), []}],
-      true,
-      [:wrap_list]
+    contextual(%Result{
+      mode: :augment,
+      candidates: [snippet("context", "contextual")],
+      incomplete?: true
     })
 
     patch(EngineApi, :complete, [
@@ -38,37 +37,24 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
     assert [%{label: "context"}, %{label: "OrdinaryModule"} = ordinary] =
              complete(project, "con|")
 
-    assert apply_completion(ordinary) == "[OrdinaryModule]"
-  end
-
-  test "candidate transforms apply before an override is translated", %{project: project} do
-    patch(Integrations, :complete, {
-      :override,
-      [{snippet(":read", ":read"), [:wrap_list]}],
-      true,
-      []
-    })
-
-    assert [%{label: ":read"} = item] = complete(project, ":r|")
-    assert apply_completion(item) == "[:read]"
+    assert apply_completion(ordinary) == "OrdinaryModule"
   end
 
   test "indexed callable placeholders survive contextual translation", %{project: project} do
-    patch(Integrations, :complete, {
-      :override,
-      [
-        {%Candidate.Function{
-           name: "set_attribute",
-           arity: 2,
-           argument_names: ["arg1", "arg2"],
-           origin: "My.Builtins",
-           type: :function,
-           visibility: :public,
-           metadata: %{}
-         }, []}
+    contextual(%Result{
+      mode: :override,
+      candidates: [
+        %Candidate.Function{
+          name: "set_attribute",
+          arity: 2,
+          argument_names: ["arg1", "arg2"],
+          origin: "My.Builtins",
+          type: :function,
+          visibility: :public,
+          metadata: %{}
+        }
       ],
-      true,
-      []
+      incomplete?: true
     })
 
     assert [%{label: "set_attribute(arg1, arg2)"} = item] = complete(project, "set|")
@@ -76,7 +62,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "ignored contextual completion uses ordinary completion", %{project: project} do
-    patch(Integrations, :complete, :ignore)
+    contextual(%Result{})
 
     patch(EngineApi, :complete, [
       %Candidate.Module{name: "OrdinaryModule", full_name: "OrdinaryModule", metadata: %{}}
@@ -86,11 +72,10 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   test "contextual results remain incomplete", %{project: project} do
-    patch(Integrations, :complete, {
-      :override,
-      [{snippet("context", "contextual"), []}],
-      true,
-      []
+    contextual(%Result{
+      mode: :override,
+      candidates: [snippet("context", "contextual")],
+      incomplete?: true
     })
 
     assert %CompletionList{is_incomplete: true, items: [%{label: "context"}]} =
@@ -98,12 +83,15 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   end
 
   defp snippet(label, text) do
-    %Candidate.Snippet{
+    %Candidate.Generic{
       label: label,
       snippet: text,
       detail: "Contextual",
-      priority: :contextual,
       kind: :field
     }
+  end
+
+  defp contextual(%Result{} = result) do
+    patch(SemanticMetadata, :complete, fn env -> %Result{result | env: env} end)
   end
 end

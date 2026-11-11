@@ -81,7 +81,6 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
 
     start_supervised!({Store, [project, Sqlite]})
     start_supervised!({Search.Indexer.ModuleRegistry, project})
-    start_supervised!({Expert.Integrations.Cache, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Indexer, project})
 
@@ -618,97 +617,6 @@ defmodule Expert.Engine.CodeIntelligence.DefinitionTest do
 
       assert {:ok, ^uri, definition} = definition(project, subject_module, [uri, subject_uri])
       assert definition == "  def «button(_assigns)» do"
-    end
-
-    test "find the definition when shorthand notation for function from same module", %{
-      project: project,
-      uri: uri,
-      subject_uri: subject_uri
-    } do
-      subject_module = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton navigate="/home">Home</.button>
-            """
-          end
-
-          def button(_assigns), do: nil
-        end
-      ]
-
-      assert {:ok, ^subject_uri, fragment} =
-               definition(project, subject_module, [uri, subject_uri])
-
-      assert fragment == "  def «button(_assigns)», do: nil"
-    end
-
-    test "find the definition when shorthand notation used and imported function", %{
-      project: project,
-      uri: uri,
-      subject_uri: subject_uri
-    } do
-      subject_module = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-          import MyDefinition
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton navigate="/home">Home</.button>
-            """
-          end
-        end
-      ]
-
-      assert {:ok, ^uri, fragment} = definition(project, subject_module, [uri, subject_uri])
-      assert fragment == "  def «button(_assigns)» do"
-    end
-
-    test "find the definition when shorthand notation used on closing tag", %{
-      project: project,
-      uri: uri,
-      subject_uri: subject_uri
-    } do
-      subject_module = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-          import MyDefinition
-
-          def render(assigns) do
-            ~H"""
-            <.button navigate="/home">Home</.but|ton>
-            """
-          end
-        end
-      ]
-
-      assert {:ok, ^uri, fragment} = definition(project, subject_module, [uri, subject_uri])
-      assert fragment == "  def «button(_assigns)» do"
-    end
-
-    test "find the definition when shorthand notation used on self-closing tag", %{
-      project: project,
-      uri: uri,
-      subject_uri: subject_uri
-    } do
-      subject_module = ~q[
-        defmodule MyLiveView do
-          use Phoenix.Component
-          import MyDefinition
-
-          def render(assigns) do
-            ~H"""
-            <.but|ton />
-            """
-          end
-        end
-      ]
-
-      assert {:ok, ^uri, fragment} = definition(project, subject_module, [uri, subject_uri])
-      assert fragment == "  def «button(_assigns)» do"
     end
   end
 

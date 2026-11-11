@@ -20,12 +20,14 @@ defmodule Engine.CodeIntelligence.Definition do
   def definition(%Document{} = document, %Position{} = position) do
     with {:ok, _, analysis} <- Document.Store.fetch(document.uri, :analysis),
          {:ok, entity, _range} <- Entity.resolve(analysis, position) do
-      fetch_definition(entity, analysis, position)
+      definition(analysis, position, entity)
     end
   end
 
-  defp fetch_definition({type, entity} = resolved, %Analysis{} = analysis, %Position{} = position)
-       when type in [:struct, :module] do
+  @spec definition(Analysis.t(), Position.t(), Entity.resolved()) ::
+          {:ok, Location.t() | [Location.t()] | nil} | {:error, String.t()}
+  def definition(%Analysis{} = analysis, %Position{} = position, {type, entity} = resolved)
+      when type in [:struct, :module] do
     module = Formats.module(entity)
 
     locations =
@@ -48,11 +50,11 @@ defmodule Engine.CodeIntelligence.Definition do
     maybe_fallback_to_elixir_sense(resolved, locations, analysis, position)
   end
 
-  defp fetch_definition(
-         {:call, module, function, arity} = resolved,
-         %Analysis{} = analysis,
-         %Position{} = position
-       ) do
+  def definition(
+        %Analysis{} = analysis,
+        %Position{} = position,
+        {:call, module, function, arity} = resolved
+      ) do
     mfa = Formats.mfa(module, function, arity)
 
     definitions =
@@ -96,7 +98,7 @@ defmodule Engine.CodeIntelligence.Definition do
     maybe_fallback_to_elixir_sense(resolved, locations, analysis, position)
   end
 
-  defp fetch_definition(_, %Analysis{} = analysis, %Position{} = position) do
+  def definition(%Analysis{} = analysis, %Position{} = position, _entity) do
     elixir_sense_definition(analysis, position)
   end
 
@@ -104,8 +106,6 @@ defmodule Engine.CodeIntelligence.Definition do
     case locations do
       [] ->
         Logger.info("No definition found for #{inspect(resolved)} with Indexer.")
-
-        analysis = Engine.CodeIntelligence.Heex.maybe_normalize(analysis, position)
 
         case elixir_sense_definition(analysis, position) do
           {:ok, nil} ->

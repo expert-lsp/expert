@@ -1,7 +1,6 @@
 defmodule Expert.Search.Indexer do
   alias Expert.EngineApi
   alias Expert.Integrations
-  alias Expert.Integrations.Cache
   alias Expert.Search.Indexer.Beams
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ManifestStore
@@ -17,22 +16,20 @@ defmodule Expert.Search.Indexer do
 
   def create_index(%Project{} = project, opts \\ []) when is_list(opts) do
     with :ok <- ManifestStore.invalidate(project),
-         {:ok, manifest} <- build_index(project, opts),
-         :ok <- ManifestStore.commit(project, manifest) do
-      Cache.clear(project)
+         {:ok, manifest} <- build_index(project, opts) do
+      ManifestStore.commit(project, manifest)
     end
   end
 
   def update_index(%Project{} = project, opts \\ []) when is_list(opts) do
     with path_to_ids when is_map(path_to_ids) <- Store.path_to_ids(project),
-         {:ok, manifest} <- update_index(project, path_to_ids, opts),
-         :ok <- ManifestStore.commit(project, manifest) do
-      Cache.clear(project)
+         {:ok, manifest} <- update_index(project, path_to_ids, opts) do
+      ManifestStore.commit(project, manifest)
     end
   end
 
   def record_integrations(%Project{} = project) do
-    ManifestStore.record_integrations(project, Integrations.indexer_module_names())
+    ManifestStore.record_integrations(project, Integrations.indexer_versions())
   end
 
   def document(%Project{} = project, %Forge.Document{} = document, imported_calls) do
@@ -67,10 +64,10 @@ defmodule Expert.Search.Indexer do
     try do
       case ManifestStore.load(project) do
         {:ok, %Manifest{} = manifest} ->
-          indexer_module_names = Integrations.indexer_module_names()
+          indexer_versions = Integrations.indexer_versions()
 
           integrations_changed? =
-            ManifestStore.integrations_changed?(project, manifest, indexer_module_names)
+            ManifestStore.integrations_changed?(project, manifest, indexer_versions)
 
           with :ok <- ManifestStore.invalidate(project) do
             if integrations_changed?,

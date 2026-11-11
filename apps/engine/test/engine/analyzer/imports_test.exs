@@ -70,6 +70,20 @@ defmodule ImportsViaUse.Throwing do
   defmacro __using__(_opts), do: throw(:expected_use_failure)
 end
 
+defmodule ImportsViaUse.Selecting do
+  defmacro __using__(which) when is_atom(which), do: apply(__MODULE__, which, [])
+
+  def imported, do: quote(do: import(ImportsViaUse.Imported))
+end
+
+defmodule ImportsViaUse.Options do
+  defmacro __using__(opts) do
+    if Keyword.fetch!(opts, :import) do
+      quote(do: import(ImportsViaUse.Imported))
+    end
+  end
+end
+
 defmodule Engine.Ast.Analysis.ImportsTest do
   use ExUnit.Case
 
@@ -454,6 +468,24 @@ defmodule Engine.Ast.Analysis.ImportsTest do
           |
         end
       ], :injected_macro, 0, expand_uses: true)
+    end
+
+    test "passes literal arguments to __using__" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Selecting, :imported
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
+    end
+
+    test "passes keyword options to __using__" do
+      assert {:ok, ImportsViaUse.Imported} = module_for_cursor(~q[
+        defmodule Foo do
+          use ImportsViaUse.Options, import: true
+          |
+        end
+      ], :injected_function, 0, expand_uses: true)
     end
 
     test "does not expose use imports before the use" do

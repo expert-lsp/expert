@@ -5,7 +5,6 @@ defmodule Engine.CodeIntelligence.Entity do
   alias Forge.Document
   alias Forge.Document.Position
   alias Forge.Document.Range
-  alias Forge.Formats
   alias Future.Code, as: Code
   alias Sourceror.Zipper
 
@@ -30,10 +29,7 @@ defmodule Engine.CodeIntelligence.Entity do
   """
   @spec resolve(Analysis.t(), Position.t()) :: {:ok, resolved, Range.t()} | {:error, term()}
   def resolve(%Analysis{} = analysis, %Position{} = position) do
-    analysis =
-      analysis
-      |> Ast.reanalyze_to(position)
-      |> Engine.CodeIntelligence.Heex.maybe_normalize(position)
+    analysis = Ast.reanalyze_to(analysis, position)
 
     with :ok <- check_commented(analysis, position),
          :ok <- check_in_string(analysis, position),
@@ -169,7 +165,7 @@ defmodule Engine.CodeIntelligence.Entity do
     with {:ok, module} <- expand_alias(alias_node, analysis, position) do
       case Ast.path_at(analysis, position) do
         {:ok, path} ->
-          arity = resolve_arity(path, position, analysis)
+          arity = arity_at_position(path, position)
           kind = kind_of_call(path, position)
           {:ok, {kind, module, fun, arity}, node_range}
 
@@ -183,7 +179,7 @@ defmodule Engine.CodeIntelligence.Entity do
     fun = List.to_atom(fun_chars)
 
     with {:ok, path} <- Ast.path_at(analysis, position),
-         arity = resolve_arity(path, position, analysis),
+         arity = arity_at_position(path, position),
          {module, ^fun, ^arity} <-
            Engine.Analyzer.resolve_local_call(analysis, position, fun, arity) do
       {:ok, {:call, module, fun, arity}, node_range}
@@ -234,12 +230,7 @@ defmodule Engine.CodeIntelligence.Entity do
   defp resolve_module(charlist, {{line, column}, {line, _}}, analysis, %Position{} = position) do
     module_before_cursor = module_before_position(charlist, column, position)
 
-    maybe_prepended =
-      module_before_cursor
-      |> maybe_prepend_phoenix_scope_module(analysis, position)
-      |> maybe_prepend_ecto_schema(analysis, position)
-
-    with {:ok, module} <- expand_alias(maybe_prepended, analysis, position) do
+    with {:ok, module} <- expand_alias(module_before_cursor, analysis, position) do
       end_column = column + String.length(module_before_cursor)
       {:ok, {:module, module}, {{line, column}, {line, end_column}}}
     end
@@ -252,81 +243,6 @@ defmodule Engine.CodeIntelligence.Entity do
     with {:ok, module} <- expand_alias(charlist, analysis, position) do
       {:ok, {:module, module}, node_range}
     end
-  end
-
-  defp maybe_prepend_ecto_schema(module_string, %Analysis{} = analysis, %Position{} = position) do
-    with true <- Ecto.Schema in Engine.Analyzer.uses_at(analysis, position),
-         true <- in_inline_embed?(analysis, position),
-         {:ok, parent_module} <- Engine.Analyzer.current_module(analysis, position) do
-      parent_module
-      |> Module.concat(module_string)
-      |> Formats.module()
-    else
-      _ ->
-        module_string
-    end
-  end
-
-  @embeds [:embeds_one, :embeds_many]
-  defp in_inline_embed?(%Analysis{} = analysis, %Position{} = position) do
-    case Ast.path_at(analysis, position) do
-      {:ok, path} ->
-        path
-        |> Zipper.zip()
-        |> Zipper.find(fn
-          {embed, meta, _} when embed in @embeds ->
-            Keyword.has_key?(meta, :do)
-
-          _ ->
-            false
-        end)
-        |> then(&match?(%Zipper{}, &1))
-    end
-  end
-
-  defp maybe_prepend_phoenix_scope_module(module_string, analysis, position) do
-    with {:ok, scope_segments} <- fetch_phoenix_scope_alias_segments(analysis, position),
-         {:ok, scope_module} <-
-           Engine.Analyzer.expand_alias(scope_segments, analysis, position),
-         cursor_module = Module.concat(scope_module, module_string),
-         true <-
-           phoenix_controller_module?(cursor_module) or phoenix_liveview_module?(cursor_module) do
-      Formats.module(cursor_module)
-    else
-      _ ->
-        module_string
-    end
-  end
-
-  # fetch the alias segments from ancestor `scope` macros
-  # e.g. `scope "/foo", FooWeb.Controllers`
-  # the alias module is `FooWeb.Controllers`, and the segments is `[:FooWeb, :Controllers]`
-  defp fetch_phoenix_scope_alias_segments(analysis, position) do
-    # Ast.cursor_path returns nodes from innermost to outermost,
-    # so we need to reverse.
-    segments =
-      analysis
-      |> Ast.cursor_path(position)
-      |> Enum.filter(&match?({:scope, _, [_ | _]}, &1))
-      |> Enum.reverse()
-      |> Enum.flat_map(fn
-        {:scope, _, [_, {:__aliases__, _, segments} | _]} -> segments
-        _ -> []
-      end)
-
-    if segments == [] do
-      :error
-    else
-      {:ok, segments}
-    end
-  end
-
-  defp phoenix_controller_module?(module) do
-    function_exists?(module, :call, 2) and function_exists?(module, :action, 2)
-  end
-
-  defp phoenix_liveview_module?(module) do
-    function_exists?(module, :mount, 3) and function_exists?(module, :render, 1)
   end
 
   # Take only the segments at and before the cursor, e.g.
@@ -462,13 +378,6 @@ defmodule Engine.CodeIntelligence.Entity do
 
   defp arity_at_position([], _position), do: 0
 
-  defp resolve_arity(path, %Position{} = position, %Analysis{} = _analysis) do
-    case Enum.find(path, &match?({:sigil_H, _, _}, &1)) do
-      nil -> arity_at_position(path, position)
-      sigil -> Engine.CodeIntelligence.Heex.arity(sigil, position, &arity_at_position/2)
-    end
-  end
-
   # Walk up the path to see whether we're in the right-hand argument of
   # a `::` type operator, which would make the kind a `:type`, not a call.
   # Calls that occur on the right of a `::` type operator have kind `:type`
@@ -525,11 +434,6 @@ defmodule Engine.CodeIntelligence.Entity do
     else
       _ -> :error
     end
-  end
-
-  defp function_exists?(module, function, arity) do
-    # Wrap the `function_exported?` from `Kernel` to simplify testing.
-    function_exported?(module, function, arity)
   end
 
   defp current_module(%Analysis{} = analysis, %Position{} = position) do

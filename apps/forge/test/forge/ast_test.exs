@@ -59,48 +59,21 @@ defmodule Forge.AstTest do
     end
   end
 
-  describe "calls at cursor" do
-    test "returns local call arguments" do
-      path = cursor_path("configure modes: [:r|]")
-
-      assert {:ok, "configure", 0, argument, [argument]} = Ast.local_call_at_cursor(path)
-      assert Ast.contains_cursor?(argument)
-      assert ["configure"] = Ast.enclosing_local_call_names(path)
-    end
-
-    test "returns remote call arguments" do
-      path = cursor_path("Ash.create(changeset, ups|ert?: true)")
-
-      assert {:ok, {:__aliases__, _, [:Ash]}, :create, 2, 1, argument} =
-               Ast.remote_call_at_cursor(path)
-
-      assert Ast.contains_cursor?(argument)
-    end
-
-    test "accounts for a piped first argument" do
-      path = cursor_path("changeset |> Ash.create(ups|ert?: true)")
-
-      assert {:ok, {:__aliases__, _, [:Ash]}, :create, 2, 1, _argument} =
-               Ast.remote_call_at_cursor(path)
-    end
-
-    test "reports definition and remote-call ancestry" do
-      local_path = cursor_path("def run, do: lo|cal()")
-      remote_path = cursor_path("def run, do: Ash.create(record, ups|ert?: true)")
-
-      assert Ast.inside_definition?(local_path)
-      refute Ast.remote_call?(local_path)
-      assert Ast.inside_definition?(remote_path)
-      assert Ast.remote_call?(remote_path)
-    end
-
+  describe "keyword_path_at_cursor/1" do
     test "returns the keyword branch containing the cursor" do
-      assert {:ok, ["constraints", "range"]} =
-               "attribute :name, :string, constraints: [range: [max: 1, ma|]]"
-               |> cursor_path()
-               |> Ast.local_call_at_cursor()
-               |> elem(3)
-               |> Ast.keyword_path_at_cursor()
+      assert {:ok, {:attribute, _, [_name, _type, options]}} =
+               Code.Fragment.container_cursor_to_quoted(
+                 "attribute :name, :string, constraints: [range: [max: 1, ma"
+               )
+
+      assert {:ok, ["constraints", "range"]} = Ast.keyword_path_at_cursor(options)
+    end
+
+    test "returns the keyword branch for a cursor inside an expression" do
+      assert {:ok, {:from, _, [_binding, options]}} =
+               Code.Fragment.container_cursor_to_quoted("from user in User, where: user.na")
+
+      assert {:ok, ["where"]} = Ast.keyword_path_at_cursor(options)
     end
   end
 

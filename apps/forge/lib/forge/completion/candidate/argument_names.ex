@@ -13,6 +13,28 @@ defmodule Forge.Completion.Candidate.ArgumentNames do
   @type argument_names :: [String.t()]
   @default_specifier ~S(\\)
 
+  @spec placeholders(non_neg_integer()) :: argument_names()
+  def placeholders(arity), do: Enum.map(1..arity//1, &"arg#{&1}")
+
+  @doc """
+  Returns the argument names in the first of `signatures`.
+
+  The signatures are strings from the docs chunk of a module. Without one,
+  returns placeholders for `arity`.
+  """
+  @spec from_signatures([String.t()], non_neg_integer()) :: argument_names()
+  def from_signatures([signature | _], arity) do
+    case Elixir.Code.string_to_quoted(signature) do
+      {:ok, {_name, _, arguments}} when is_list(arguments) ->
+        Enum.map(arguments, &Macro.to_string/1)
+
+      _error ->
+        placeholders(arity)
+    end
+  end
+
+  def from_signatures([], arity), do: placeholders(arity)
+
   @spec from_elixir_sense_map(map()) :: :error | argument_names()
   def from_elixir_sense_map(%{args_list: argument_names, arity: arity}) do
     from_elixir_sense(argument_names, arity)

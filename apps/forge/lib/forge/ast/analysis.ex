@@ -17,7 +17,15 @@ defmodule Forge.Ast.Analysis do
   alias Forge.Identifier
   alias Sourceror.Zipper
 
-  defstruct [:ast, :document, :parse_error, scopes: [], comments_by_line: %{}, valid?: true]
+  defstruct [
+    :ast,
+    :cursor_env,
+    :document,
+    :parse_error,
+    scopes: [],
+    comments_by_line: %{},
+    valid?: true
+  ]
 
   @type t :: %__MODULE__{}
   @scope_id :_scope_id
@@ -67,6 +75,38 @@ defmodule Forge.Ast.Analysis do
       valid?: false
     }
   end
+
+  @doc """
+  Returns the compiler environment at `position`, or `nil`.
+  """
+  @spec cursor_env(Document.t(), Position.t()) ::
+          %{position: {pos_integer(), pos_integer()}, imports: [tuple()], aliases: map()} | nil
+  def cursor_env(%Document{} = document, %Position{} = position) do
+    fragment = Document.fragment(document, position)
+
+    with {:ok, quoted} <- Future.Code.Fragment.container_cursor_to_quoted(fragment, columns: true),
+         {:ok, cursor_envs} <- expand_cursor_envs(quoted, document.path),
+         [env | _] <- Map.values(cursor_envs) do
+      %{
+        position: {position.line, position.character},
+        imports: imported_mfas(env),
+        aliases: Map.new(env.aliases, fn {as, module} -> {segments(as), module} end)
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Returns the environment that `cursor_env/2` computed for `position`, or `nil`.
+  """
+  def cursor_env_at(
+        %__MODULE__{cursor_env: %{position: {line, character}} = env},
+        %Position{line: line, character: character}
+      ),
+      do: env
+
+  def cursor_env_at(%__MODULE__{}, %Position{}), do: nil
 
   @doc """
   Returns the scopes for the given position, sorted by nearest proximity.
@@ -198,9 +238,26 @@ defmodule Forge.Ast.Analysis do
 
       {instrumented, _count} ->
         instrumented
+        |> unwrap_literals()
         |> expand_cursor_envs(path)
         |> imports_from_cursor_envs()
     end
+  end
+
+  # The parser wraps literals in `__block__` nodes to keep their metadata.
+  # Macros expect plain literals, such as `:html` in `use MyAppWeb, :html`.
+  defp unwrap_literals(ast) do
+    Macro.prewalk(ast, fn
+      {:__block__, _meta, [literal]}
+      when is_atom(literal) or is_number(literal) or is_binary(literal) or is_list(literal) ->
+        literal
+
+      {:__block__, _meta, [{_left, _right} = pair]} ->
+        pair
+
+      node ->
+        node
+    end)
   end
 
   defp imports_from_cursor_envs({:ok, cursor_envs}) do
@@ -210,6 +267,10 @@ defmodule Forge.Ast.Analysis do
   end
 
   defp imports_from_cursor_envs({:error, _reason}), do: %{}
+
+  defp segments(module) do
+    module |> Module.split() |> Enum.map(&String.to_existing_atom/1)
+  end
 
   defp expand_cursor_envs(ast, path) do
     {:ok, supervisor} = Task.Supervisor.start_link()

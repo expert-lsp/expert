@@ -8,4 +8,8 @@ defmodule Navigations.Uses do
   def other_function do
     IO.puts("hi")
   end
+
+  def build_struct do
+    %NormalStruct{variant: :uses}
+  end
 end
