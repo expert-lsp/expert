@@ -15,6 +15,7 @@ defmodule Expert.Search.IndexerTest do
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Source
+  alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
@@ -451,6 +452,62 @@ defmodule Expert.Search.IndexerTest do
       assert Enum.any?(FakeBackend.entries(), fn entry ->
                entry.subject == function_subject and entry.subtype == :definition
              end)
+    end
+
+    test "warmup stops reading BEAM files once its caller is gone", %{project: project} do
+      test_pid = self()
+
+      patch(Store, :replace, fn ^project, replacement ->
+        spawn(fn -> send(test_pid, {:replaced, replacement.(fn _batches -> :ok end)}) end)
+        Process.sleep(:infinity)
+      end)
+
+      patch(Beams, :stream, fn _paths, _opts ->
+        Stream.map(1..2, fn item ->
+          send(test_pid, {:beam, item, self()})
+
+          receive do
+            :continue -> {[], []}
+          end
+        end)
+      end)
+
+      {caller, ref} = spawn_monitor(fn -> Indexer.warmup(project, paths: %Paths{}) end)
+      assert_receive {:beam, 1, reader}
+      Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+      send(reader, :continue)
+
+      assert_receive {:replaced, {:error, :cancelled}}
+      refute_received {:beam, 2, _reader}
+    end
+
+    test "warmup stops indexing sources once its caller is gone", %{project: project} do
+      test_pid = self()
+
+      patch(Store, :replace, fn ^project, replacement ->
+        spawn(fn -> send(test_pid, {:replaced, replacement.(fn _batches -> :ok end)}) end)
+        Process.sleep(:infinity)
+      end)
+
+      patch(Sources, :stream, fn _paths, _indexer, _encode ->
+        Stream.map(1..2, fn item ->
+          send(test_pid, {:source, item, self()})
+
+          receive do
+            :continue -> {Store.encode_batch([]), []}
+          end
+        end)
+      end)
+
+      {caller, ref} = spawn_monitor(fn -> Indexer.warmup(project, paths: %Paths{}) end)
+      assert_receive {:source, 1, reader}
+      Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+      send(reader, :continue)
+
+      assert_receive {:replaced, {:error, :cancelled}}
+      refute_received {:source, 2, _reader}
     end
 
     test "persists produced entries", %{project: project} do

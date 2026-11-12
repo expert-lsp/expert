@@ -323,26 +323,20 @@ defmodule Expert.Search.Indexer do
     |> MapSet.new()
   end
 
-  defp index_stream(%Paths{} = paths, project, engine?) do
-    index_stream(
-      project,
-      paths.source_paths,
-      paths.beam_paths,
-      paths.applications,
-      paths.source_paths,
-      engine?
-    )
-  end
-
   defp index_stream(
          project,
          source_paths,
          beam_paths,
          applications,
          current_source_paths,
-         engine?
+         engine?,
+         caller
        ) do
-    beam_items = beam_items(beam_paths, applications, project)
+    beam_items =
+      beam_paths
+      |> Beams.stream(project: project, applications: applications)
+      |> Stream.take_while(fn _item -> Process.alive?(caller) end)
+      |> Enum.to_list()
 
     beam_manifest_entries =
       Enum.flat_map(beam_items, fn {_batch, manifest_entries} -> manifest_entries end)
@@ -387,10 +381,24 @@ defmodule Expert.Search.Indexer do
   end
 
   defp replace_store(%Paths{} = paths, state, project, engine?) do
+    caller = self()
+
     replacement = fn write_batch ->
-      paths
-      |> index_stream(project, engine?)
-      |> stream_into_store(state, write_batch)
+      stream =
+        project
+        |> index_stream(
+          paths.source_paths,
+          paths.beam_paths,
+          paths.applications,
+          paths.source_paths,
+          engine?,
+          caller
+        )
+        |> Stream.take_while(fn _item -> Process.alive?(caller) end)
+
+      with {:ok, state} <- stream_into_store(stream, state, write_batch) do
+        if Process.alive?(caller), do: {:ok, state}, else: {:error, :cancelled}
+      end
     end
 
     case Store.replace(project, replacement) do
