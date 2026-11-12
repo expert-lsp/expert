@@ -30,7 +30,14 @@ defmodule Expert.Search.Indexer.BeamFileTest do
 
       assert name == Atom.to_string(module)
       assert Enum.sort(exports) == Enum.sort(stringify(expected_exports))
-      assert metadata == stringify(expected_metadata)
+
+      definitions =
+        for {key, kind, meta, clauses} <- metadata["definitions"] do
+          {key, kind, meta, BeamFile.clauses(clauses)}
+        end
+
+      assert %{metadata | "definitions" => definitions} ==
+               expected_metadata |> stringify() |> Map.delete("signatures")
     end
 
     test "reports no debug info for a BEAM compiled without it", %{tmp_dir: tmp_dir} do

@@ -27,6 +27,14 @@ defmodule Expert.Search.Indexer.ETFTest do
                ETF.decode(:erlang.term_to_binary(&Function.identity/1))
     end
 
+    test "decodes a pid as its node and numbers" do
+      assert {:ok, {:pid, node, id, serial, creation}} =
+               ETF.decode(:erlang.term_to_binary(self()))
+
+      assert node == Atom.to_string(node())
+      assert is_integer(id) and is_integer(serial) and is_integer(creation)
+    end
+
     test "decodes the atom encodings older compilers wrote" do
       assert {:ok, {"abc", "d", "é"}} =
                ETF.decode(<<131, 104, 3, 100, 0, 3, "abc", 115, 1, "d", 100, 0, 1, 233>>)
@@ -35,8 +43,77 @@ defmodule Expert.Search.Indexer.ETFTest do
     test "rejects terms it can't decode" do
       assert :error = ETF.decode("not a term")
       assert :error = ETF.decode(<<131, 80, 0, 0, 0, 1, "not zlib">>)
-      assert :error = ETF.decode(:erlang.term_to_binary(self()))
+      assert :error = ETF.decode(:erlang.term_to_binary(make_ref()))
       assert :error = ETF.decode(<<131, 97, 1, 97, 2>>)
+    end
+  end
+
+  describe "decode_debug_info/1" do
+    test "leaves out signatures and keeps clauses encoded" do
+      metadata = %{
+        module: Example,
+        attributes: [vsn: 1],
+        signatures: %{{:fun, 1} => {:infer, nil, []}},
+        definitions: [
+          {{:fun, 1}, :def, [line: 2], [{[line: 2], [{:a, [version: 0], nil}], [], :ok}]},
+          {{:other, 0}, :defp, [line: 3], []}
+        ]
+      }
+
+      debug_info = {:debug_info_v1, :elixir_erl, {:elixir_v1, metadata, []}}
+      chunk = :erlang.term_to_binary(debug_info)
+
+      assert {:ok, {_version, _backend, {_format, expected, _specs}}} = ETF.decode(chunk)
+      assert {:ok, decoded} = ETF.decode_debug_info(chunk)
+
+      assert Map.delete(decoded, "definitions") ==
+               Map.drop(expected, ["definitions", "signatures"])
+
+      definitions =
+        for {name, kind, meta, clauses} <- decoded["definitions"] do
+          {name, kind, meta, ETF.decode_clauses(clauses)}
+        end
+
+      assert definitions == expected["definitions"]
+
+      assert {:ok, ^decoded} =
+               ETF.decode_debug_info(:erlang.term_to_binary(debug_info, [:compressed]))
+    end
+
+    test "skips clauses with every kind of term decode/1 decodes" do
+      body = [
+        [:def, nil, :"with space", :ünïcode],
+        [0, 255, 256, -1, Bitwise.bsl(1, 70), -Bitwise.bsl(1, 70), Bitwise.bsl(1, 3000), 1.5],
+        [{}, {:ok, 1}, List.to_tuple(Enum.to_list(1..300))],
+        [[], ~c"abc", [1 | 2], Enum.to_list(1..70_000)],
+        ["", "bin", <<5::3>>],
+        %{{:key, 1} => [value: "x"]},
+        &Function.identity/1,
+        self()
+      ]
+
+      definitions = [
+        {{:fun, 0}, :def, [line: 1], [{[line: 1], [], [], body}]},
+        {{:last, 0}, :def, [line: 2], []}
+      ]
+
+      debug_info = {:debug_info_v1, :elixir_erl, {:elixir_v1, %{definitions: definitions}, []}}
+      chunk = :erlang.term_to_binary(debug_info)
+
+      assert {:ok, {_, _, {_, %{"definitions" => [{_, _, _, expected}, last]}, _}}} =
+               ETF.decode(chunk)
+
+      assert {:ok, %{"definitions" => [{_, _, _, clauses}, {name, kind, meta, last_clauses}]}} =
+               ETF.decode_debug_info(chunk)
+
+      assert ETF.decode_clauses(clauses) == expected
+      assert {name, kind, meta, ETF.decode_clauses(last_clauses)} == last
+    end
+
+    test "rejects Erlang debug info" do
+      erlang = {:debug_info_v1, :erl_abstract_code, {[], []}}
+
+      assert :error = ETF.decode_debug_info(:erlang.term_to_binary(erlang))
     end
   end
 
