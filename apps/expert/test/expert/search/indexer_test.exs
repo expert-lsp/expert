@@ -15,6 +15,7 @@ defmodule Expert.Search.IndexerTest do
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Source
+  alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
   alias Forge.Project
   alias Forge.Search.Indexer.Entry
@@ -349,7 +350,6 @@ defmodule Expert.Search.IndexerTest do
       project: project,
       tmp_dir: tmp_dir
     } do
-      test_pid = self()
       module = Module.concat(BeamDependencyIndexerTest, :CatalogImported)
 
       dep_source = """
@@ -388,15 +388,10 @@ defmodule Expert.Search.IndexerTest do
         applications: %{Path.dirname(beam_path) => :registry_dependency}
       }
 
-      patch(Source, :index, fn path, source, extractors, project ->
-        send(test_pid, {:registry_application, ModuleRegistry.application(project, module)})
-        real(Source).index(path, source, extractors, project)
-      end)
-
       assert :ok =
-               Indexer.create_index(project, paths: paths)
+               Indexer.warmup(project, paths: paths)
 
-      assert_receive {:registry_application, :registry_dependency}
+      assert ModuleRegistry.application(project, module) == :registry_dependency
 
       imported_subjects = [
         Forge.Formats.mfa(module, :imported_function, 0),
@@ -425,7 +420,7 @@ defmodule Expert.Search.IndexerTest do
       }
 
       assert :ok =
-               Indexer.create_index(project, paths: paths)
+               Indexer.warmup(project, paths: paths)
 
       function_subject = Forge.Formats.mfa(module, :public_fun, 0)
 
@@ -433,6 +428,86 @@ defmodule Expert.Search.IndexerTest do
                Enum.filter(FakeBackend.entries(), fn entry ->
                  entry.subject == function_subject and entry.subtype == :definition
                end)
+    end
+
+    @tag :tmp_dir
+    test "warmup indexes without the Engine", %{project: project, tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, dep_file: source_path, module: module} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      patch(EngineApi, :analyze, fn _project, _document, _opts ->
+        flunk("Warmup must work without the Engine")
+      end)
+
+      paths = %Paths{
+        source_paths: [source_path],
+        beam_paths: [beam_path],
+        applications: %{Path.dirname(beam_path) => :source_dependency}
+      }
+
+      assert :ok = Indexer.warmup(project, paths: paths)
+
+      function_subject = Forge.Formats.mfa(module, :public_fun, 0)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == function_subject and entry.subtype == :definition
+             end)
+    end
+
+    test "warmup stops reading BEAM files once its caller is gone", %{project: project} do
+      test_pid = self()
+
+      patch(Store, :replace, fn ^project, replacement ->
+        spawn(fn -> send(test_pid, {:replaced, replacement.(fn _batches -> :ok end)}) end)
+        Process.sleep(:infinity)
+      end)
+
+      patch(Beams, :stream, fn _paths, _opts ->
+        Stream.map(1..2, fn item ->
+          send(test_pid, {:beam, item, self()})
+
+          receive do
+            :continue -> {[], []}
+          end
+        end)
+      end)
+
+      {caller, ref} = spawn_monitor(fn -> Indexer.warmup(project, paths: %Paths{}) end)
+      assert_receive {:beam, 1, reader}
+      Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+      send(reader, :continue)
+
+      assert_receive {:replaced, {:error, :cancelled}}
+      refute_received {:beam, 2, _reader}
+    end
+
+    test "warmup stops indexing sources once its caller is gone", %{project: project} do
+      test_pid = self()
+
+      patch(Store, :replace, fn ^project, replacement ->
+        spawn(fn -> send(test_pid, {:replaced, replacement.(fn _batches -> :ok end)}) end)
+        Process.sleep(:infinity)
+      end)
+
+      patch(Sources, :stream, fn _paths, _indexer, _encode ->
+        Stream.map(1..2, fn item ->
+          send(test_pid, {:source, item, self()})
+
+          receive do
+            :continue -> {Store.encode_batch([]), []}
+          end
+        end)
+      end)
+
+      {caller, ref} = spawn_monitor(fn -> Indexer.warmup(project, paths: %Paths{}) end)
+      assert_receive {:source, 1, reader}
+      Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+      send(reader, :continue)
+
+      assert_receive {:replaced, {:error, :cancelled}}
+      refute_received {:source, 2, _reader}
     end
 
     test "persists produced entries", %{project: project} do
@@ -876,6 +951,38 @@ defmodule Expert.Search.IndexerTest do
              end)
 
       File.touch!(beam_path, {{2101, 1, 1}, {0, 0, 0}})
+      update_index(project)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == private_subject and entry.subtype == :definition
+             end)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == private_subject and entry.subtype == :reference
+             end)
+    end
+
+    @tag :tmp_dir
+    test "retains source entries when compilation creates a project beam", %{tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, dep_file: source_path, module: module, project: project} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      start_registry(project)
+
+      assert :ok =
+               Indexer.warmup(project,
+                 paths: %Paths{source_paths: [source_path], beam_paths: []}
+               )
+
+      patch(Paths, :for_project, fn ^project ->
+        %Paths{
+          source_paths: [source_path],
+          beam_paths: [beam_path],
+          applications: %{Path.dirname(beam_path) => :beam_dep}
+        }
+      end)
+
+      private_subject = Forge.Formats.mfa(module, :private_fun, 0)
       update_index(project)
 
       assert Enum.any?(FakeBackend.entries(), fn entry ->

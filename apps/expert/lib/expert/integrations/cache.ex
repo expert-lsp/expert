@@ -36,8 +36,17 @@ defmodule Expert.Integrations.Cache do
   end
 
   def clear(%Project{} = project) do
-    :ets.delete_all_objects(name(project))
+    :ets.match_delete(name(project), {{:_, :_}, :_})
     :ok
+  end
+
+  def put_compiled(%Project{} = project, compiled?) when is_boolean(compiled?) do
+    true = :ets.insert(name(project), {:compiled?, compiled?})
+    :ok
+  end
+
+  def compiled?(%Project{} = project) do
+    :ets.lookup(name(project), :compiled?) == [{:compiled?, true}]
   end
 
   def name(%Project{} = project), do: :"#{Project.unique_name(project)}::integration_cache"

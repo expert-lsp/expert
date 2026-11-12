@@ -8,9 +8,12 @@ defmodule Expert.Search.Indexer do
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Indexer.Paths
   alias Expert.Search.Indexer.Quoted
+  alias Expert.Search.Indexer.Source.Reducer
   alias Expert.Search.Indexer.Sources
   alias Expert.Search.Store
   alias Expert.Search.Subject
+  alias Forge.Ast
+  alias Forge.Document
   alias Forge.Project
 
   @rows_per_write 4_000
@@ -20,6 +23,17 @@ defmodule Expert.Search.Indexer do
          {:ok, manifest} <- build_index(project, opts),
          :ok <- ManifestStore.commit(project, manifest) do
       Cache.clear(project)
+    end
+  end
+
+  def warmup(%Project{} = project, opts \\ []) when is_list(opts) do
+    :ok = ModuleRegistry.clear(project)
+    paths = Keyword.get_lazy(opts, :paths, fn -> Paths.from_disk(project) end)
+
+    with :ok <- ManifestStore.invalidate(project),
+         {:ok, state} <- replace_store(paths, new_stream_state(), project, false),
+         :ok <- replace_modules(project) do
+      ManifestStore.commit(project, Manifest.new(manifest_entries(state)))
     end
   end
 
@@ -90,7 +104,7 @@ defmodule Expert.Search.Indexer do
     :ok = ModuleRegistry.clear(project)
     paths = paths_for_project(project, opts)
 
-    with {:ok, state} <- replace_store(paths, new_stream_state(), project),
+    with {:ok, state} <- replace_store(paths, new_stream_state(), project, true),
          :ok <- replace_modules(project) do
       {:ok, Manifest.new(manifest_entries(state))}
     end
@@ -289,9 +303,17 @@ defmodule Expert.Search.Indexer do
   defp entry_identity(%{path: path, subject: subject, subtype: subtype, type: type}),
     do: {path, Subject.key(subject), subtype, type}
 
-  defp source_indexer(project) do
+  defp source_indexer(project, true) do
     fn path, source ->
       Expert.Search.Indexer.Source.index(path, source, nil, project)
+    end
+  end
+
+  defp source_indexer(project, false) do
+    fn path, source ->
+      analysis = path |> Document.new(source, 1) |> Ast.analyze()
+      imported_calls = Reducer.built_imported_calls(analysis, project)
+      Quoted.index(analysis, nil, project, imported_calls)
     end
   end
 
@@ -301,24 +323,20 @@ defmodule Expert.Search.Indexer do
     |> MapSet.new()
   end
 
-  defp index_stream(%Paths{} = paths, project) do
-    index_stream(
-      project,
-      paths.source_paths,
-      paths.beam_paths,
-      paths.applications,
-      paths.source_paths
-    )
-  end
-
   defp index_stream(
          project,
          source_paths,
          beam_paths,
          applications,
-         current_source_paths
+         current_source_paths,
+         engine?,
+         caller
        ) do
-    beam_items = beam_items(beam_paths, applications, project)
+    beam_items =
+      beam_paths
+      |> Beams.stream(project: project, applications: applications)
+      |> Stream.take_while(fn _item -> Process.alive?(caller) end)
+      |> Enum.to_list()
 
     beam_manifest_entries =
       Enum.flat_map(beam_items, fn {_batch, manifest_entries} -> manifest_entries end)
@@ -326,14 +344,14 @@ defmodule Expert.Search.Indexer do
     source_paths =
       include_beam_sources(source_paths, current_source_paths, beam_manifest_entries)
 
-    index_stream(source_paths, beam_items, project)
+    index_stream(source_paths, beam_items, project, engine?)
   end
 
   # The source workers are linked to the process that builds this stream, so it
   # has to be the store's callback, which consumes it.
-  defp index_stream(source_paths, beam_items, project) do
+  defp index_stream(source_paths, beam_items, project, engine?) do
     source_paths
-    |> Sources.stream(source_indexer(project), &Store.encode_batch/1)
+    |> Sources.stream(source_indexer(project, engine?), &Store.encode_batch/1)
     |> tag_stream(:source)
     |> Stream.concat(tag_stream(beam_items, :beam))
   end
@@ -362,11 +380,25 @@ defmodule Expert.Search.Indexer do
     }
   end
 
-  defp replace_store(%Paths{} = paths, state, project) do
+  defp replace_store(%Paths{} = paths, state, project, engine?) do
+    caller = self()
+
     replacement = fn write_batch ->
-      paths
-      |> index_stream(project)
-      |> stream_into_store(state, write_batch)
+      stream =
+        project
+        |> index_stream(
+          paths.source_paths,
+          paths.beam_paths,
+          paths.applications,
+          paths.source_paths,
+          engine?,
+          caller
+        )
+        |> Stream.take_while(fn _item -> Process.alive?(caller) end)
+
+      with {:ok, state} <- stream_into_store(stream, state, write_batch) do
+        if Process.alive?(caller), do: {:ok, state}, else: {:error, :cancelled}
+      end
     end
 
     case Store.replace(project, replacement) do
@@ -378,7 +410,7 @@ defmodule Expert.Search.Indexer do
   defp refresh_store(source_paths, beam_items, paths_to_clear, state, project) do
     update = fn write_batch, write_state ->
       source_paths
-      |> index_stream(beam_items, project)
+      |> index_stream(beam_items, project, true)
       |> stream_into_store(state, write_batch, write_state)
     end
 

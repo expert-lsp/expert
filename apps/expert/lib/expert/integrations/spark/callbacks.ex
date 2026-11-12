@@ -66,13 +66,21 @@ defmodule Expert.Integrations.Spark.Callbacks do
     end
   end
 
-  defp call(project, nil, module, function) do
+  defp call(project, exports, module, function) do
+    if Cache.compiled?(project) do
+      engine_call(project, exports, module, function)
+    else
+      :error
+    end
+  end
+
+  defp engine_call(project, nil, module, function) do
     Cache.fetch(project, __MODULE__, {module, function}, fn ->
       {:ok, EngineApi.call(project, module, function, [])}
     end)
   end
 
-  defp call(project, _exports, module, function) do
+  defp engine_call(project, _exports, module, function) do
     {:ok, EngineApi.call(project, module, function, [])}
   end
 
