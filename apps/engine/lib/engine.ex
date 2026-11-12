@@ -32,9 +32,7 @@ defmodule Engine do
     to: CodeAction,
     as: :for_range
 
-  defdelegate resolve_code_action(document, range, module_name),
-    to: CodeAction,
-    as: :resolve_refactor
+  defdelegate formatter_opts(file_path), to: Engine.CodeMod.Format.Cache
 
   defdelegate complete(env), to: Engine.Completion, as: :elixir_sense_expand
 

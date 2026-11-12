@@ -14,7 +14,7 @@ defmodule Expert.Provider.Handlers.CodeActionResolveTest do
 
   @uri "file:///resolve_test.ex"
   @text "arg1\n|> foo()\n"
-  @module Forge.Refactor.Pipeline.IntroducePipe
+  @module Expert.Refactor.Pipeline.IntroducePipe
 
   defp context(version) do
     document = Document.new(@uri, @text, version)
