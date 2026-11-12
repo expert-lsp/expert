@@ -22,6 +22,20 @@ defmodule Expert.Integrations.CacheTest do
     assert :value = Cache.fetch(project, __MODULE__, :key, fn -> :value end)
   end
 
+  test "a project is compiled once it is marked so", %{project: project} do
+    refute Cache.compiled?(project)
+    assert :ok = Cache.put_compiled(project, true)
+    assert Cache.compiled?(project)
+    assert :ok = Cache.put_compiled(project, false)
+    refute Cache.compiled?(project)
+  end
+
+  test "clearing keeps the project compiled", %{project: project} do
+    assert :ok = Cache.put_compiled(project, true)
+    assert :ok = Cache.clear(project)
+    assert Cache.compiled?(project)
+  end
+
   test "clears cached values", %{project: project} do
     assert :old = Cache.fetch(project, __MODULE__, :key, fn -> :old end)
     assert :ok = Cache.clear(project)

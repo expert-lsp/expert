@@ -7,6 +7,7 @@ defmodule Expert.Project.IndexerTest do
   import Forge.Test.Fixtures
 
   alias Expert.EngineApi
+  alias Expert.Integrations.Cache
   alias Expert.Project.Indexer
   alias Expert.Search
   alias Expert.Search.Store
@@ -23,6 +24,7 @@ defmodule Expert.Project.IndexerTest do
 
     start_supervised!({Store, [project, Sqlite]})
     start_supervised!({Search.Indexer.ModuleRegistry, project})
+    start_supervised!({Cache, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     patch(EngineApi, :call, fn _, _, _, _ -> flunk("Index tasks must not control the Engine") end)
     test_pid = self()
@@ -73,6 +75,16 @@ defmodule Expert.Project.IndexerTest do
 
     assert_receive :update_index, 5_000
     assert_receive project_index_ready(project: ^project)
+  end
+
+  test "the project is compiled once a compile finishes", %{project: project} do
+    start_supervised!({Indexer, [project, create_index: fn _ -> :ok end]})
+    refute Cache.compiled?(project)
+
+    send(Indexer.name(project), project_compiled(status: :success))
+
+    assert_receive project_index_ready(project: ^project), 5_000
+    assert Cache.compiled?(project)
   end
 
   test "records the integrations after indexing a successful compile", %{project: project} do

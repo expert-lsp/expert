@@ -21,6 +21,7 @@ defmodule Expert.Project.WarmupTest do
     start_supervised!({Sqlite, [project, runtime_versions: Forge.VM.Versions.current()]})
     start_supervised!({Store, [project, Sqlite]})
     start_supervised!({Expert.Search.Indexer.ModuleRegistry, project})
+    start_supervised!({Expert.Integrations.Cache, project})
     start_supervised!({Task.Supervisor, name: Indexer.task_supervisor_name(project)})
     start_supervised!({Expert.Project.Store, []})
     patch(EngineApi, :call, fn _, _, _, _ -> flunk("Warmup must work without the Engine") end)

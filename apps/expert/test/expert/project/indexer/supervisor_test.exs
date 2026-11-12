@@ -21,6 +21,7 @@ defmodule Expert.Project.Indexer.SupervisorTest do
 
     start_supervised!({Store, [project, Sqlite]})
     start_supervised!({Search.Indexer.ModuleRegistry, project})
+    start_supervised!({Expert.Integrations.Cache, project})
 
     patch(Search.Indexer, :warmup, fn ^project ->
       send(test_pid, {:warmup, self()})

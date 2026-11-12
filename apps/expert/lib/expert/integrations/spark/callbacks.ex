@@ -3,7 +3,6 @@ defmodule Expert.Integrations.Spark.Callbacks do
 
   alias Expert.EngineApi
   alias Expert.Integrations.Cache
-  alias Expert.Project.Store
   alias Expert.Search.Indexer.ModuleRegistry
   alias Forge.Project
 
@@ -67,9 +66,8 @@ defmodule Expert.Integrations.Spark.Callbacks do
     end
   end
 
-  # The project's modules run in the engine.
   defp call(project, exports, module, function) do
-    if Store.ready?(project) do
+    if Cache.compiled?(project) do
       engine_call(project, exports, module, function)
     else
       :error

@@ -8,6 +8,7 @@ defmodule Expert.Project.Indexer do
   import Forge.EngineApi.Messages
 
   alias Expert.EngineApi
+  alias Expert.Integrations.Cache
   alias Expert.Search
   alias Forge.Project
 
@@ -68,6 +69,7 @@ defmodule Expert.Project.Indexer do
   @impl GenServer
   def init([project, opts]) do
     state = State.new(project, opts)
+    Cache.put_compiled(project, false)
     Logger.info("Starting index warmup task")
     {:ok, start_warmup(state)}
   end
@@ -91,6 +93,7 @@ defmodule Expert.Project.Indexer do
   def handle_info(project_compiled(status: status), %State{} = state)
       when status in [:success, :successful, :error] do
     state = %State{state | record_integrations?: status != :error}
+    Cache.put_compiled(state.project, true)
     {:noreply, start_or_queue_refresh(state)}
   end
 
