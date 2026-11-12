@@ -6,7 +6,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   use GenServer
 
   alias Expert.EngineApi
-  alias Expert.Project.Store
+  alias Expert.Project.EngineRuntime
   alias Expert.Search
   alias Expert.Search.Indexer.BeamFile
   alias Forge.Project
@@ -185,7 +185,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def application(nil, _module), do: nil
 
   def application(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), key(module)) do
+    case lookup(project, key(module)) do
       [{_key, %{application: nil}}] ->
         engine_lookup(project, :application, module, nil)
 
@@ -201,7 +201,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def available_module?(nil, _module), do: false
 
   def available_module?(%Project{} = project, module) when is_atom(module) do
-    :ets.member(name(project), key(module)) or
+    lookup(project, key(module)) != [] or
       engine_lookup(project, :available_module?, module, false)
   end
 
@@ -209,7 +209,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def module_exports(nil, _module), do: :error
 
   def module_exports(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), key(module)) do
+    case lookup(project, key(module)) do
       [{_key, %{exports: exports}}] -> {:ok, exports}
       [] -> engine_lookup(project, :module_exports, module, :error)
     end
@@ -219,7 +219,7 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
   def beam_path(nil, _module), do: nil
 
   def beam_path(%Project{} = project, module) when is_atom(module) do
-    case :ets.lookup(name(project), key(module)) do
+    case lookup(project, key(module)) do
       [{_key, %{beam_path: beam_path}}] -> beam_path
       [] -> nil
     end
@@ -236,12 +236,19 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     :ets.select(table, [{{{:module, :"$1"}, %{beam_path: :"$2"}}, [], [{{:"$1", :"$2"}}]}])
   end
 
+  defp engine_lookup(%Project{root_uri: nil}, _operation, _module, default), do: default
+
   defp engine_lookup(project, operation, module, default) do
-    if Store.ready?(project) do
+    if EngineRuntime.available?(project) do
       fetch_from_engine(project, operation, module)
     else
       default
     end
+  end
+
+  defp lookup(project, key) do
+    table = if project.root_uri, do: :ets.whereis(name(project)), else: :undefined
+    if table == :undefined, do: [], else: :ets.lookup(table, key)
   end
 
   defp fetch_from_engine(project, operation, module) do

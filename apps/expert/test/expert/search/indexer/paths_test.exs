@@ -225,6 +225,38 @@ defmodule Expert.Search.Indexer.PathsTest do
       assert sibling_file in paths.source_paths
       refute excluded_file in paths.source_paths
     end
+
+    @tag :tmp_dir
+    test "from_disk uses the configured build output", %{tmp_dir: tmp_dir} do
+      source_file = native_join([tmp_dir, "lib", "source_file.ex"])
+
+      beam_file =
+        Path.join([
+          tmp_dir,
+          "custom_build",
+          "dev",
+          "lib",
+          "beam_only",
+          "ebin",
+          "Elixir.SourceFile.beam"
+        ])
+
+      write_mix_project!(
+        tmp_dir,
+        "BeamOnlyPathsTest.MixProject",
+        ~s([app: :beam_only, version: "0.1.0", build_path: "custom_build"])
+      )
+
+      write_file!(source_file, "defmodule SourceFile do end")
+      write_file!(beam_file, "fixture")
+
+      project = tmp_dir |> Forge.Document.Path.to_uri() |> Project.new()
+      paths = Paths.from_disk(project)
+
+      assert source_file in paths.source_paths
+      assert paths.beam_paths == [beam_file]
+      assert paths.applications[Path.dirname(beam_file)] == :beam_only
+    end
   end
 
   defp with_env(name, value) do

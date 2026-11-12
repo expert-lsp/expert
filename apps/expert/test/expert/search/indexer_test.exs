@@ -254,7 +254,7 @@ defmodule Expert.Search.IndexerTest do
     start_supervised!({ModuleRegistry, project})
     start_supervised!({Cache, project})
     Expert.Project.Store.add_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
   end
 
   defp stored_module(beam_path) do
@@ -508,6 +508,34 @@ defmodule Expert.Search.IndexerTest do
 
       assert_receive {:replaced, {:error, :cancelled}}
       refute_received {:source, 2, _reader}
+    end
+
+    @tag :tmp_dir
+    test "update_from_disk indexes without the Engine", %{project: project, tmp_dir: tmp_dir} do
+      %{beam_path: beam_path, dep_file: source_path, module: module} =
+        with_beam_dependency(tmp_dir, rewrite_source?: false)
+
+      patch(EngineApi, :analyze, fn _project, _document, _opts ->
+        flunk("An update from disk must work without the Engine")
+      end)
+
+      patch(EngineApi, :clear_application_cache, fn _project ->
+        flunk("An update from disk must work without the Engine")
+      end)
+
+      paths = %Paths{
+        source_paths: [source_path],
+        beam_paths: [beam_path],
+        applications: %{Path.dirname(beam_path) => :source_dependency}
+      }
+
+      assert :ok = Indexer.update_from_disk(project, paths: paths)
+
+      function_subject = Forge.Formats.mfa(module, :public_fun, 0)
+
+      assert Enum.any?(FakeBackend.entries(), fn entry ->
+               entry.subject == function_subject and entry.subtype == :definition
+             end)
     end
 
     test "persists produced entries", %{project: project} do
@@ -1418,6 +1446,29 @@ end")
       entries: previous_entries
     } do
       patch(Integrations, :indexer_module_names, fn -> ["New.Indexer"] end)
+
+      assert {entries, _paths_to_clear} = update_index(project)
+
+      identity = &{&1.path, &1.subject, &1.type, &1.subtype}
+
+      previous =
+        previous_entries
+        |> Enum.reject(&(&1.subtype == :block_structure))
+        |> MapSet.new(identity)
+
+      updated =
+        entries
+        |> Enum.reject(&(&1.subtype == :block_structure))
+        |> MapSet.new(identity)
+
+      assert MapSet.subset?(previous, updated)
+    end
+
+    test "replaces an index that was built without the Engine", %{
+      project: project,
+      entries: previous_entries
+    } do
+      assert :ok = Indexer.record_integrations(project, false)
 
       assert {entries, _paths_to_clear} = update_index(project)
 

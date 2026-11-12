@@ -3,7 +3,7 @@ defmodule Expert.Provider.Handlers.FindReferences do
 
   alias Expert.CodeIntelligence.References
   alias Expert.Document.Context
-  alias Expert.Project.Store
+  alias Expert.Project.EngineRuntime
   alias Forge.Ast
   alias Forge.Document
   alias GenLSP.Requests.TextDocumentReferences
@@ -28,7 +28,7 @@ defmodule Expert.Provider.Handlers.FindReferences do
             analysis,
             params.position,
             include_declaration?,
-            Store.ready?(project)
+            EngineRuntime.available?(project)
           )
 
         _ ->

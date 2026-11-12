@@ -56,6 +56,10 @@ defmodule Expert.Configuration.Support do
     show_message: [
       :window,
       :show_message
+    ],
+    workspace_configuration: [
+      :workspace,
+      :configuration
     ]
   ]
 
@@ -68,7 +72,8 @@ defmodule Expert.Configuration.Support do
             tags: false,
             signature_help: false,
             work_done_progress: false,
-            show_message: false
+            show_message: false,
+            workspace_configuration: false
 
   @type t :: %__MODULE__{}
 

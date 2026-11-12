@@ -7,8 +7,10 @@ defmodule Expert.Project.Indexer do
 
   import Forge.EngineApi.Messages
 
+  alias Expert.Configuration
   alias Expert.EngineApi
   alias Expert.Integrations.Cache
+  alias Expert.Project.EngineRuntime
   alias Expert.Search
   alias Forge.Project
 
@@ -18,6 +20,7 @@ defmodule Expert.Project.Indexer do
     defstruct [
       :project,
       :task,
+      :mode,
       :task_supervisor,
       :create_index,
       :update_index,
@@ -66,6 +69,8 @@ defmodule Expert.Project.Indexer do
     :"#{Project.unique_name(project)}::indexer_task_supervisor"
   end
 
+  def refresh(%Project{} = project), do: GenServer.cast(name(project), :refresh)
+
   @impl GenServer
   def init([project, opts]) do
     state = State.new(project, opts)
@@ -77,16 +82,21 @@ defmodule Expert.Project.Indexer do
   defp start_warmup(%State{} = state) do
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        with :ok <- Search.Store.enable(state.project),
-             :empty <- Search.Store.load_status(state.project) do
-          Search.Indexer.warmup(state.project)
-        else
-          status when status in [:stale, :ready] -> :ok
-          error -> error
+        with :ok <- Search.Store.enable(state.project) do
+          warmup(state.project, Search.Store.load_status(state.project))
         end
       end)
 
-    %State{state | task: {:warmup, task}}
+    %State{
+      state
+      | task: {:warmup, task},
+        record_integrations?: not Configuration.compilation_enabled?()
+    }
+  end
+
+  @impl GenServer
+  def handle_cast(:refresh, %State{} = state) do
+    {:noreply, start_or_queue_refresh(state)}
   end
 
   @impl GenServer
@@ -121,27 +131,36 @@ defmodule Expert.Project.Indexer do
   defp start_or_queue_refresh(%State{} = state), do: %State{state | pending?: true}
 
   defp start_refresh(%State{} = state) do
+    mode = if EngineRuntime.available?(state.project), do: :engine, else: :local
+    if mode == :local, do: Cache.put_compiled(state.project, false)
+
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
         with :ok <- Search.Store.enable(state.project) do
           case Search.Store.load_status(state.project) do
-            :empty -> state.create_index.(state.project)
-            _ -> update_index(state)
+            :empty -> create_index(state, mode)
+            _ -> update_index(state, mode)
           end
         end
       end)
 
-    %State{state | task: {:refresh, task}, pending?: false}
+    %State{
+      state
+      | task: {:refresh, task},
+        mode: mode,
+        pending?: false,
+        record_integrations?: state.record_integrations? or mode == :local
+    }
   end
 
-  defp update_index(%State{} = state) do
-    case state.update_index.(state.project) do
+  defp update_index(%State{} = state, mode) do
+    case update_project_index(state, mode) do
       {:error, {:store, reason}} ->
         Logger.warning(
           "Could not persist incremental index update, rebuilding full index: #{inspect(reason)}"
         )
 
-        state.create_index.(state.project)
+        create_index(state, mode)
 
       result ->
         result
@@ -150,25 +169,48 @@ defmodule Expert.Project.Indexer do
 
   defp finish_task(%State{pending?: true} = state, _result), do: start_refresh(state)
 
-  defp finish_task(%State{task: {:refresh, _}} = state, :ok) do
+  defp finish_task(%State{} = state, :ok) do
     with {:error, reason} <- maybe_record_integrations(state) do
       Logger.warning("Could not record search integrations: #{inspect(reason)}")
     end
 
-    EngineApi.broadcast(state.project, project_index_ready(project: state.project))
-    %State{state | task: nil, record_integrations?: false}
+    if state.mode == :engine and EngineRuntime.available?(state.project) do
+      EngineApi.broadcast(state.project, project_index_ready(project: state.project))
+    end
+
+    %State{state | task: nil, mode: nil, record_integrations?: false}
   end
 
   defp finish_task(%State{} = state, _result) do
-    %State{state | task: nil, record_integrations?: false}
+    %State{state | task: nil, mode: nil, record_integrations?: false}
+  end
+
+  defp maybe_record_integrations(%State{record_integrations?: true, mode: :engine} = state) do
+    Search.Indexer.record_integrations(state.project)
   end
 
   defp maybe_record_integrations(%State{record_integrations?: true} = state) do
-    Search.Indexer.record_integrations(state.project)
+    Search.Indexer.record_integrations(state.project, false)
   end
 
   defp maybe_record_integrations(%State{}), do: :ok
 
   defp log_result(kind, :ok), do: Logger.info("Index #{kind} finished")
   defp log_result(kind, result), do: Logger.warning("Index #{kind} returned #{inspect(result)}")
+
+  defp warmup(project, :empty), do: Search.Indexer.warmup(project)
+
+  defp warmup(project, status) when status in [:stale, :ready] do
+    if Configuration.compilation_enabled?() do
+      :ok
+    else
+      Search.Indexer.update_from_disk(project)
+    end
+  end
+
+  defp create_index(state, :engine), do: state.create_index.(state.project)
+  defp create_index(state, :local), do: Search.Indexer.warmup(state.project)
+
+  defp update_project_index(state, :engine), do: state.update_index.(state.project)
+  defp update_project_index(state, :local), do: Search.Indexer.update_from_disk(state.project)
 end

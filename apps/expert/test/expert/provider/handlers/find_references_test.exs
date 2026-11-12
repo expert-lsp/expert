@@ -71,7 +71,7 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
                                         %Analysis{document: document},
                                         _position,
                                         _,
-                                        false ->
+                                        _engine_ready? ->
         locations = [
           Location.new(
             Document.Range.new(
@@ -187,6 +187,49 @@ defmodule Expert.Provider.Handlers.FindReferencesTest do
       assert {:ok, [%Location{}]} = handle(request, project)
       prefix = Subject.mfa(New, :foo, "")
       assert_receive {:prefix, ^prefix}
+    end
+
+    test "finds references from a dirty document without the Engine", %{project: project} do
+      path = file_path(project, Path.join("lib", "uses.ex"))
+      uri = Document.Path.ensure_uri(path)
+
+      :ok =
+        Document.Store.open(
+          uri,
+          """
+          defmodule Navigations.Uses do
+            def call, do: MyDefinition.greet("world")
+          end
+          """,
+          2
+        )
+
+      on_exit(fn -> Document.Store.close(uri) end)
+      {:ok, request} = build_request(path, 1, 30)
+      document = Document.Container.context_document(request, nil)
+
+      reference = %Entry{
+        subject: Subject.mfa(MyDefinition, :greet, 1),
+        type: {:function, :usage},
+        subtype: :reference,
+        path: "/reference.ex",
+        range:
+          Document.Range.new(
+            Document.Position.new(document, 2, 5),
+            Document.Position.new(document, 2, 10)
+          )
+      }
+
+      patch(Store, :prefix, fn ^project, subject, _opts ->
+        assert subject == Subject.mfa(MyDefinition, :greet, "")
+        {:ok, [reference]}
+      end)
+
+      patch(Expert.Project.EngineRuntime, :available?, fn ^project -> false end)
+      patch(EngineApi, :resolve_entity, fn _, _, _ -> flunk("called the Engine") end)
+
+      assert {:ok, [%Location{} = location]} = handle(request, project)
+      assert Location.uri(location) == Document.Path.ensure_uri(reference.path)
     end
   end
 end
