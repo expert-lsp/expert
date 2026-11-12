@@ -1,10 +1,10 @@
 defmodule Expert.CodeIntelligence.Completion.Translations.ModuleOrBehaviour do
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Expert.CodeIntelligence.Completion.Translations
   alias Expert.Project.Intelligence
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
 
   defimpl Translatable, for: Candidate.Module do
@@ -36,7 +36,10 @@ defmodule Expert.CodeIntelligence.Completion.Translations.ModuleOrBehaviour do
       complete_in_struct_reference(env, builder, module)
     else
       detail = builder.fallback(module.summary, module.full_name)
-      completion(env, builder, module.name, detail)
+
+      env
+      |> completion(builder, module.name, detail)
+      |> Map.put(:data, %{"uri" => env.document.uri, "module" => module.full_name})
     end
   end
 

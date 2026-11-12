@@ -18,7 +18,8 @@ defmodule Expert.Toolchain do
   @type module_info :: %{
           beam_path: Path.t(),
           application: String.t(),
-          exports: BeamFile.exports()
+          exports: BeamFile.exports(),
+          summary: String.t() | nil
         }
 
   @doc """
@@ -31,7 +32,7 @@ defmodule Expert.Toolchain do
   end
 
   @doc """
-  Returns a toolchain module's BEAM path, application and exports.
+  Returns a toolchain module's BEAM path, application, exports and summary.
   """
   @spec module(Project.t(), String.t()) :: {:ok, module_info()} | :error
   def module(%Project{} = project, name) do
@@ -39,7 +40,13 @@ defmodule Expert.Toolchain do
       cached({:module, beam_path}, fn ->
         with {:ok, beam} <- Expert.File.read(beam_path),
              {:ok, _module, exports, _debug_info} <- BeamFile.read(beam) do
-          {:ok, %{beam_path: beam_path, application: application, exports: exports}}
+          {:ok,
+           %{
+             beam_path: beam_path,
+             application: application,
+             exports: exports,
+             summary: Beams.module_summary(beam_path)
+           }}
         else
           _ -> :error
         end

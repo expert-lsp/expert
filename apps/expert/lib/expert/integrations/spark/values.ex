@@ -1,12 +1,12 @@
 defmodule Expert.Integrations.Spark.Values do
   @moduledoc false
 
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.Search.Store
   alias Forge.Ast.Analysis
   alias Forge.Ast.Analysis.Alias
   alias Forge.Ast.Analysis.Scope
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias Forge.Search.Indexer.Entry
 
   @callables [{:function, :public}, {:function, :delegate}, {:macro, :public}]

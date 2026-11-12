@@ -1,8 +1,8 @@
 defmodule Expert.CodeIntelligence.Completion.Translations.Variable do
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
 
   defimpl Translatable, for: Candidate.Variable do

@@ -107,6 +107,310 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp erlang_argument(_pattern), do: {"", [], nil}
 
+  @doc """
+  Reads what completion shows about a BEAM's module: its types, callbacks,
+  struct fields, behaviours and the definitions a macro injected into it.
+  """
+  @spec read_module(Path.t()) :: {:ok, map()} | :error
+  def read_module(beam_path) do
+    with {:ok, beam} <- Expert.File.read(beam_path),
+         {:ok, module, _exports, debug_metadata} <- BeamFile.read(beam) do
+      metadata =
+        case debug_metadata do
+          {:ok, metadata} -> metadata
+          :error -> %{}
+        end
+
+      forms = typespec_forms(beam)
+      types = types(forms)
+
+      {:ok,
+       %{
+         types: types,
+         callbacks: callbacks(forms),
+         struct_fields: struct_fields(metadata, types),
+         behaviours: behaviours(beam),
+         injected: injected(module, metadata)
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc """
+  Reads the first paragraph of a BEAM's module documentation.
+  """
+  @spec module_summary(Path.t()) :: String.t() | nil
+  def module_summary(beam_path) do
+    with {:ok, beam} <- Expert.File.read(beam_path),
+         {:ok, {"docs_v1", _anno, _language, _format, moduledoc, _meta, _entries}} <- docs(beam) do
+      summary(moduledoc)
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Reads the summary and spec of one of a BEAM's functions or macros.
+  """
+  @spec function_docs(Path.t(), String.t(), String.t(), arity()) ::
+          %{summary: String.t() | nil, spec: String.t() | nil}
+  def function_docs(beam_path, kind, name, arity) do
+    case Expert.File.read(beam_path) do
+      {:ok, beam} ->
+        summary =
+          with {:ok, {"docs_v1", _, _, _, _, _, entries}} <- docs(beam),
+               {_key, _anno, _signature, doc, _meta} <-
+                 Enum.find(entries, &documents?(&1, kind, name, arity)) do
+            summary(doc)
+          else
+            _ -> nil
+          end
+
+        spec_name = if kind == "macro", do: "MACRO-" <> name, else: name
+        spec_arity = if kind == "macro", do: arity + 1, else: arity
+
+        spec =
+          Enum.find_value(typespec_forms(beam), fn
+            {"attribute", _, "spec", {{^spec_name, ^spec_arity}, [form | _]}} ->
+              spec_string(name, form)
+
+            _form ->
+              nil
+          end)
+
+        %{summary: summary, spec: spec}
+
+      _error ->
+        %{summary: nil, spec: nil}
+    end
+  end
+
+  defp docs(beam) do
+    with {:ok, chunk} <- BeamFile.chunk(beam, "Docs"), do: ETF.decode(chunk)
+  end
+
+  # Documentation of a function with defaults is stored at its full arity.
+  defp documents?({{kind, name, arity}, _anno, _signature, _doc, meta}, kind, name, wanted) do
+    defaults = if is_map(meta), do: Map.get(meta, "defaults", 0), else: 0
+    wanted in (arity - defaults)..arity//1
+  end
+
+  defp documents?(_entry, _kind, _name, _arity), do: false
+
+  defp summary(%{"en" => doc}) when is_binary(doc) do
+    doc |> String.split(~r/\n\s*\n/, parts: 2) |> hd() |> String.trim()
+  end
+
+  defp summary(_doc), do: nil
+
+  defp typespec_forms(beam) do
+    with {:ok, chunk} <- BeamFile.chunk(beam, "Dbgi"),
+         {:ok, {"debug_info_v1", backend, data}} <- ETF.decode(chunk) do
+      case {backend, data} do
+        {"elixir_erl", {"elixir_v1", _metadata, specs}} when is_list(specs) -> specs
+        {"erl_abstract_code", {forms, _options}} when is_list(forms) -> forms
+        _other -> []
+      end
+    else
+      _ -> []
+    end
+  end
+
+  defp behaviours(beam) do
+    with {:ok, chunk} <- BeamFile.chunk(beam, "Attr"),
+         {:ok, attributes} when is_list(attributes) <- ETF.decode(chunk) do
+      for {"behaviour", modules} <- attributes, module <- modules, do: Subject.module(module)
+    else
+      _ -> []
+    end
+  end
+
+  defp types(forms) do
+    for {"attribute", _anno, kind, {name, definition, variables}} <- forms,
+        kind in ["type", "opaque", "typep"] do
+      arguments = Enum.map(variables, &type_string/1)
+
+      %{
+        kind: String.to_existing_atom(kind),
+        name: name,
+        arity: length(variables),
+        arguments: arguments,
+        summary: nil,
+        spec: "#{name}(#{Enum.join(arguments, ", ")}) :: #{type_string(definition)}",
+        definition: definition,
+        metadata: %{}
+      }
+    end
+  end
+
+  defp callbacks(forms) do
+    optional =
+      for {"attribute", _anno, "optional_callbacks", callbacks} <- forms,
+          callback <- callbacks,
+          do: callback
+
+    for {"attribute", _anno, "callback", {{name, arity} = callback, [form | _]}} <- forms do
+      {kind, name, arity} =
+        case name do
+          "MACRO-" <> macro -> {:macrocallback, macro, arity - 1}
+          _function -> {:callback, name, arity}
+        end
+
+      %{
+        kind: kind,
+        name: name,
+        arity: arity,
+        arguments: parameter_names(form, arity),
+        summary: nil,
+        spec: spec_string(name, form),
+        metadata: %{optional: callback in optional}
+      }
+    end
+  end
+
+  # Field types come from the struct's `t` type, when it has one.
+  defp struct_fields(%{"struct" => fields}, types) when is_list(fields) do
+    field_types =
+      case Enum.find(types, &(&1.name == "t" and &1.arity == 0)) do
+        %{definition: {"type", _, "map", map_fields}} when is_list(map_fields) ->
+          for {"type", _, "map_field_exact", [{"atom", _, field}, type]} <- map_fields,
+              into: %{},
+              do: {field, type_string(type)}
+
+        _no_t ->
+          %{}
+      end
+
+    for %{"field" => field} <- fields, do: {field, Map.get(field_types, field)}
+  end
+
+  defp struct_fields(_metadata, _types), do: nil
+
+  # Definitions a macro wrote into the module, such as `child_spec/1` from
+  # `use GenServer`, name that macro's module as their context. Default
+  # argument clauses and `defstruct` have contexts too, so those are skipped.
+  defp injected(module, %{"definitions" => definitions}) do
+    for {{name, arity}, kind, meta, clauses} <- definitions,
+        kind in ["def", "defmacro"],
+        context = meta(meta, "context"),
+        is_binary(context),
+        context not in [module, "Elixir.Kernel"],
+        String.starts_with?(context, "Elixir.") do
+      %{
+        kind: if(kind == "def", do: :function, else: :macro),
+        name: name,
+        arity: arity,
+        arguments: argument_names(clauses, [], arity),
+        summary: nil,
+        spec: "",
+        metadata: %{context: Subject.module(context)}
+      }
+    end
+  end
+
+  defp injected(_module, _metadata), do: []
+
+  defp spec_string(name, {"type", _, "bounded_fun", [function, _constraints]}),
+    do: spec_string(name, function)
+
+  defp spec_string(name, {"type", _, "fun", [{"type", _, "product", parameters}, result]}) do
+    "#{name}(#{Enum.map_join(parameters, ", ", &type_string/1)}) :: #{type_string(result)}"
+  end
+
+  defp spec_string(_name, _form), do: nil
+
+  defp parameter_names({"type", _, "bounded_fun", [function, _constraints]}, arity),
+    do: parameter_names(function, arity)
+
+  defp parameter_names({"type", _, "fun", [{"type", _, "product", parameters}, _result]}, arity)
+       when length(parameters) == arity do
+    for {parameter, index} <- Enum.with_index(parameters, 1) do
+      case parameter do
+        {"ann_type", _, [{"var", _, name}, _type]} -> variable_name(name)
+        {"var", _, name} when name != "_" -> variable_name(name)
+        _type -> "arg_#{index}"
+      end
+    end
+  end
+
+  defp parameter_names(_form, arity), do: Enum.map(1..arity//1, &"arg_#{&1}")
+
+  defp variable_name(name), do: name |> String.trim_leading("_") |> Macro.underscore()
+
+  # Prints a typespec form, decoded with strings for atoms, in Elixir's syntax.
+  defp type_string({"ann_type", _, [{"var", _, name}, type]}),
+    do: "#{variable_name(name)} :: #{type_string(type)}"
+
+  defp type_string({"var", _, "_"}), do: "_"
+  defp type_string({"var", _, name}), do: variable_name(name)
+  defp type_string({"integer", _, integer}), do: Integer.to_string(integer)
+  defp type_string({"atom", _, atom}), do: atom_string(atom)
+  defp type_string({"op", _, operator, operand}), do: "#{operator}#{type_string(operand)}"
+
+  defp type_string({"type", _, "range", [from, to]}),
+    do: "#{type_string(from)}..#{type_string(to)}"
+
+  defp type_string({"type", _, "nil", []}), do: "[]"
+  defp type_string({"type", _, "binary", [{"integer", _, 0}, {"integer", _, 0}]}), do: "binary()"
+  defp type_string({"type", _, "union", types}), do: Enum.map_join(types, " | ", &type_string/1)
+  defp type_string({"type", _, "list", [type]}), do: "[#{type_string(type)}]"
+  defp type_string({"type", _, "tuple", "any"}), do: "tuple()"
+
+  defp type_string({"type", _, "tuple", types}),
+    do: "{#{Enum.map_join(types, ", ", &type_string/1)}}"
+
+  defp type_string({"type", _, "map", "any"}), do: "map()"
+  defp type_string({"type", _, "map", fields}), do: map_string(fields)
+
+  defp type_string({"type", _, "fun", [{"type", _, "product", parameters}, result]}),
+    do: "(#{Enum.map_join(parameters, ", ", &type_string/1)} -> #{type_string(result)})"
+
+  defp type_string({"type", _, "fun", []}), do: "function()"
+
+  defp type_string({"type", _, name, arguments}) when is_list(arguments),
+    do: "#{name}(#{Enum.map_join(arguments, ", ", &type_string/1)})"
+
+  defp type_string({"user_type", _, name, arguments}),
+    do: "#{name}(#{Enum.map_join(arguments, ", ", &type_string/1)})"
+
+  defp type_string({"remote_type", _, [{"atom", _, module}, {"atom", _, name}, arguments]}),
+    do: "#{Subject.module(module)}.#{name}(#{Enum.map_join(arguments, ", ", &type_string/1)})"
+
+  defp type_string(_form), do: "term()"
+
+  defp map_string(fields) do
+    {struct, fields} =
+      Enum.split_with(
+        fields,
+        &match?({"type", _, "map_field_exact", [{"atom", _, "__struct__"}, _]}, &1)
+      )
+
+    pairs =
+      Enum.map_join(fields, ", ", fn
+        {"type", _, "map_field_exact", [{"atom", _, key}, value]} ->
+          "#{key}: #{type_string(value)}"
+
+        {"type", _, kind, [key, value]} ->
+          "#{field_key(kind)}(#{type_string(key)}) => #{type_string(value)}"
+
+        _field ->
+          "term() => term()"
+      end)
+
+    case struct do
+      [{"type", _, _, [_key, {"atom", _, module}]}] -> "%#{Subject.module(module)}{#{pairs}}"
+      _plain_map -> "%{#{pairs}}"
+    end
+  end
+
+  defp field_key("map_field_exact"), do: "required"
+  defp field_key(_assoc), do: "optional"
+
+  defp atom_string(atom) when atom in [nil, true, false], do: inspect(atom)
+  defp atom_string("Elixir." <> _ = module), do: Subject.module(module)
+  defp atom_string(atom), do: ":" <> atom
+
   def extract_definitions_from_binary(beam, source_path)
       when is_binary(beam) and is_binary(source_path) do
     with {:ok, _module, _exports, {:ok, metadata}} <- BeamFile.read(beam) do
