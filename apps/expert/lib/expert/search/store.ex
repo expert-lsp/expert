@@ -133,7 +133,7 @@ defmodule Expert.Search.Store do
   # we need higher timeout for this, as it performs optimization via PRAGMA optimize
   # on existing database
   def enable(%Project{} = project),
-    do: GenServer.call(name(project), :enable, :timer.seconds(30))
+    do: GenServer.call(name(project), :enable, :infinity)
 
   @spec start_link(Project.t()) :: GenServer.on_start()
   def start_link(%Project{} = project), do: start_link(project, backend())
