@@ -331,6 +331,11 @@ defmodule Expert.Search.Indexer.Beams do
     delegate_specs = delegate_specs_from_metadata(metadata)
     default_wrappers = default_wrapper_identities(definitions)
 
+    context =
+      context
+      |> Map.put(:defaults, default_positions(definitions))
+      |> Map.put(:deprecated, metadata |> Map.get("deprecated", []) |> Map.new())
+
     Enum.flat_map(
       definitions,
       &public_definition_entries(
@@ -370,14 +375,17 @@ defmodule Expert.Search.Indexer.Beams do
           protocol_definition?
         )
         |> Enum.flat_map(fn public_arity ->
-          public_definition_entries(
-            context,
+          context
+          |> public_definition_entries(
             name,
             public_arity,
             definition,
             metadata,
             delegate_specs,
             MapSet.member?(protocol_callbacks, {name, public_arity})
+          )
+          |> Enum.map(
+            &put_completion_metadata(&1, {name, definition, clauses}, public_arity, context)
           )
         end)
     end
@@ -392,6 +400,76 @@ defmodule Expert.Search.Indexer.Beams do
          _default_wrappers
        ),
        do: []
+
+  defp put_completion_metadata(entry, {name, definition, clauses}, arity, context) do
+    defaults = Map.get(context.defaults, {name, definition}, [])
+
+    metadata =
+      case Map.fetch(context.deprecated, {name, arity}) do
+        {:ok, reason} -> %{deprecated: reason}
+        :error -> %{}
+      end
+
+    metadata = Map.put(metadata, :arguments, argument_names(clauses, defaults, arity))
+    Entry.put_metadata(entry, Map.merge(entry.metadata || %{}, metadata))
+  end
+
+  # The shorter arities of a function with defaults call the full one through
+  # `super`, filling in the arguments that have defaults.
+  defp default_positions(definitions) do
+    for {{name, _arity}, definition, _metadata, [{_meta, args, [], {"super", _, call_args}} | _]} <-
+          definitions,
+        definition in ["def", "defmacro"],
+        reduce: %{} do
+      positions ->
+        own = for {var, _, context} when is_binary(var) and not is_list(context) <- args, do: var
+
+        filled =
+          for {arg, index} <- Enum.with_index(call_args), not own_variable?(arg, own), do: index
+
+        Map.update(
+          positions,
+          {name, definition},
+          filled,
+          &Enum.max_by([&1, filled], fn p -> length(p) end)
+        )
+    end
+  end
+
+  defp own_variable?({var, _, context}, own) when not is_list(context), do: var in own
+  defp own_variable?(_arg, _own), do: false
+
+  # The compiler fills defaults from the left, so the shorter arities keep the
+  # first defaults.
+  defp argument_names([{_meta, args, _guards, _body} | _], defaults, arity) do
+    kept = arity - (length(args) - length(defaults))
+
+    args
+    |> Enum.with_index()
+    |> Enum.reduce({[], kept}, fn {arg, index}, {names, kept} ->
+      cond do
+        index not in defaults -> {[argument_name(arg, index) | names], kept}
+        kept > 0 -> {[argument_name(arg, index) | names], kept - 1}
+        true -> {names, kept}
+      end
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
+  defp argument_names(_clauses, _defaults, arity), do: Enum.map(1..arity//1, &"arg_#{&1}")
+
+  defp argument_name({name, _, context}, _index) when is_binary(name) and not is_list(context),
+    do: name
+
+  defp argument_name({"=", _, [left, right]}, index) do
+    case {argument_name(left, index), argument_name(right, index)} do
+      {"arg_" <> _, name} -> name
+      {name, _right} -> name
+    end
+  end
+
+  defp argument_name(_pattern, index), do: "arg_#{index + 1}"
 
   defp default_wrapper_identities(definitions) do
     definitions
