@@ -1,7 +1,8 @@
 defmodule Expert.CodeIntelligence.Completion.Fields do
   @moduledoc """
-  Field candidates after `variable.`, when the variable was last bound to a
-  struct or map literal, as in `user = %User{}` or `%User{} = user`.
+  Provides field candidates after a bound variable and a dot.
+
+  The binding must use a struct or map literal, such as `user = %User{}`.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate
@@ -30,8 +31,7 @@ defmodule Expert.CodeIntelligence.Completion.Fields do
     end
   end
 
-  # The cursor path ends in the code before the cursor, so the last binding
-  # found in the enclosing definition is the one in effect.
+  # The cursor path contains only prior code, so the last match is current.
   defp binding(context, variable) do
     scope =
       Enum.find(context.cursor_path, List.last(context.cursor_path), fn

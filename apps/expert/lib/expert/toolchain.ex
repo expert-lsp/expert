@@ -1,10 +1,9 @@
 defmodule Expert.Toolchain do
   @moduledoc """
-  The modules of the Elixir and Erlang/OTP a project runs on.
+  Provides modules from the project's Elixir and Erlang/OTP installation.
 
-  We find them by running the same `elixir` the project's engine runs on, and
-  read their BEAMs when completion asks for them. They don't change while
-  Expert runs, so what we read is kept for the session.
+  Expert finds these modules with the project's `elixir` executable. It reads
+  BEAM data on demand and caches the data for the session.
   """
 
   alias Expert.Search.Indexer.BeamFile
@@ -68,8 +67,7 @@ defmodule Expert.Toolchain do
     end
   end
 
-  # A BEAM's file name is its module's name. OTP keeps each application in a
-  # versioned directory, such as `stdlib-6.0`.
+  # The parent of each `ebin` directory supplies the application name.
   defp modules(project) do
     cached({:modules, Project.root_path(project)}, fn ->
       beams =

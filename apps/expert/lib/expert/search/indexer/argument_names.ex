@@ -1,7 +1,8 @@
 defmodule Expert.Search.Indexer.ArgumentNames do
   @moduledoc """
-  Names the arguments of a function head for one of its arities. Elixir fills
-  the arguments with defaults from left to right as the arity grows.
+  Gets function argument names for a selected arity.
+
+  Elixir adds default arguments from left to right as the arity increases.
   """
 
   @spec for_arity([Macro.t()], arity()) :: [String.t()]

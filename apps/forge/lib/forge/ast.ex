@@ -603,12 +603,10 @@ defmodule Forge.Ast do
   end
 
   @doc """
-  Walks a quoted expression with an accumulator, applying `fun` to each
-  var or pinned var.
+  Walks variables and pinned variables in a quoted expression.
 
-  Returns a tuple where the first element is the potentially modified
-  expression and the second is the accumulator. The result of `fun` is not
-  walked further.
+  The result contains the updated expression and accumulator. The traversal
+  does not enter nodes returned by `fun`.
   """
   # Adapted from `ExUnit.Assertions.collect_vars_from_pattern/1`,
   # licensed under Apache License 2.0:
@@ -617,33 +615,26 @@ defmodule Forge.Ast do
         when acc: term()
   def prewalk_vars(ast, acc, fun)
 
-  # <<foo::binary, ...>>
-  #   ^^^^^^^^^^^
-  # The right side holds the segment's type and modifiers, whose only
-  # variables are the ones in sizes.
+  # A binary segment type contains variables only in size expressions.
   def prewalk_vars({:"::", meta, [left, right]}, acc, fun) do
     {left, acc} = prewalk_vars(left, acc, fun)
     {right, acc} = prewalk_vars_in_binary(right, acc, fun)
     {{:"::", meta, [left, right]}, acc}
   end
 
-  # skip vars inside quote or @
   def prewalk_vars({skip, _, [_]} = node, acc, _fun) when skip in [:@, :quote] do
     {node, acc}
   end
 
-  # skip _
   def prewalk_vars({:_, _, context} = node, acc, _fun) when is_atom(context) do
     {node, acc}
   end
 
-  # ^pinned
   def prewalk_vars({:^, _, [{name, _, context}]} = pinned, acc, fun)
       when is_atom(name) and is_atom(context) do
     fun.(pinned, acc)
   end
 
-  # var
   def prewalk_vars({name, _, context} = var, acc, fun) when is_atom(name) and is_atom(context) do
     fun.(var, acc)
   end

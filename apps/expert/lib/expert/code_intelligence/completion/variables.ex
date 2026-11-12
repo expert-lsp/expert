@@ -1,6 +1,6 @@
 defmodule Expert.CodeIntelligence.Completion.Variables do
   @moduledoc """
-  Finds the variables in scope at a position in a document.
+  Finds variables that are in scope at a document position.
   """
 
   alias Forge.Ast
@@ -26,9 +26,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
   @doc """
   Returns the names of the variables in scope at `position`, sorted.
 
-  It traverses only the nodes that contain the position. Of the statements
-  before the position, it reads only their matches. For an invalid document,
-  it reads the recovered AST.
+  The traversal follows nodes that contain the position and collects bindings
+  from prior statements. Invalid documents use the recovered AST.
   """
   @spec in_scope(Analysis.t(), Position.t()) :: [atom()]
   def in_scope(%Analysis{ast: nil}, %Position{}), do: []
@@ -48,16 +47,13 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     |> Enum.sort()
   end
 
-  # Special forms such as `__MODULE__` look like variables in patterns.
+  # Parser output represents special forms such as `__MODULE__` as variables.
   defp special_form?(name), do: String.starts_with?(Atom.to_string(name), "__")
 
-  # `vars` are the variables visible before `node`. Each clause returns the
-  # variables visible at the cursor.
   defp traverse({:defmodule, _, [_alias, body]}, vars, state), do: traverse(body, vars, state)
 
-  # A definition starts a new scope. It sees outer variables only inside
-  # `unquote`, as in a `for` that defines functions. Inside a quote, `unquote`
-  # sees the variables around the quote instead.
+  # A definition starts a new scope. An `unquote` can still access the outer
+  # scope when quoted code creates the definition.
   defp traverse({kind, _, [head | body]}, vars, state) when kind in @definitions do
     state = if state.in_quote?, do: state, else: %{state | quoted_vars: vars}
 
@@ -68,8 +64,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # Hygiene hides outer variables inside a quote. Only `bind_quoted` passes
-  # some in. `unquote` still sees all of them.
+  # Quote hygiene exposes only `bind_quoted` variables. An `unquote` restores
+  # the scope outside the quote.
   defp traverse({:quote, _, args}, vars, state) when is_list(args) do
     traverse_statements(args, bind_quoted(args), %{state | in_quote?: true, quoted_vars: vars})
   end
@@ -81,7 +77,6 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
 
   defp traverse({:@, _, [{attribute, _, _}]}, vars, _state) when attribute in @typespecs, do: vars
 
-  # A condition binds for its own clause only.
   defp traverse({:cond, _, [[{_do, clauses}]]}, vars, state) when is_list(clauses) do
     case last_reached(clauses, state) do
       {:->, _, [conditions, body]} ->
@@ -97,7 +92,7 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # A clause head runs up to the end of its patterns.
+  # Clause bodies receive every binding from their patterns.
   defp traverse({:->, _, [patterns, body]}, vars, state) do
     if relation(patterns, state) in [:before, :none] do
       bound = pattern_vars(strip_guard(patterns))
@@ -119,10 +114,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
       else: traverse(expr, vars, state)
   end
 
-  # `for` and `with` take their clauses first and their options last. A `<-`
-  # or `=` clause binds its pattern for the clauses after it and for the `do`
-  # block. The other options, like `else` and `into`, only see the variables
-  # from before the `for` or `with`.
+  # Generator and match clauses bind variables for later clauses and the `do`
+  # block. Other options use the outer scope.
   defp traverse({kind, _, args}, vars, state) when kind in [:for, :with] and is_list(args) do
     {clauses, options} = Enum.split_while(args, &(not keyword_blocks?(&1)))
 
@@ -132,7 +125,7 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # ExUnit passes the test context to the block through a pattern.
+  # ExUnit binds the optional test context before it enters the test block.
   defp traverse({:test, _, [_name, pattern, blocks]} = call, vars, state) do
     if keyword_blocks?(blocks),
       do: traverse_with_pattern(pattern, blocks, vars, state),
@@ -172,12 +165,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
       else: vars_before_cursor(pattern, state) ++ vars
   end
 
-  # Only the last statement that starts before the cursor can contain it, so
-  # we traverse into that one. The ones before it add the variables they bind,
-  # like `value` in `if value = fetch() do`.
-  #
-  # We only know where a block's last expression ends, so we take a block that
-  # starts before the cursor as containing it.
+  # Prior statements contribute bindings. Only the last started statement can
+  # contain the cursor and needs a recursive traversal.
   defp traverse_statements([], vars, _state), do: vars
 
   defp traverse_statements([node | _] = nodes, vars, state) do
@@ -207,9 +196,7 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # The range of an unfinished statement can end before a cursor that is in
-  # it, so we also count the last statement when it ends in an error node or
-  # an empty clause.
+  # Recovered nodes can end before the cursor even when they contain it.
   defp holds_cursor?(node, state) do
     relation(node, state) == :inside or keyword_blocks?(node) or
       (state.recovered? and unfinished?(node))
@@ -225,8 +212,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
   defp unfinished?([_ | _] = nodes), do: unfinished?(List.last(nodes))
   defp unfinished?(_node), do: false
 
-  # Spitfire gives unclosed calls and functions no closing token. It puts the
-  # `end` of an unclosed block at its `do`.
+  # Spitfire omits closing tokens for open calls and functions. For an open
+  # block, its recovered `end` position equals its `do` position.
   defp closed?(meta) do
     case {meta[:do], meta[:end]} do
       {nil, _end} -> Keyword.has_key?(meta, :closing)
@@ -280,8 +267,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # A pattern in a head sees the variables before it, because repeating a
-  # variable matches it. A guard sees all of them.
+  # A repeated variable in a pattern refers to its earlier binding. A guard
+  # receives all bindings from the head.
   defp head_vars({:when, _, [call | _guards]}, state) do
     if relation(call, state) == :inside,
       do: head_vars(call, state),
@@ -317,9 +304,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     unquote
   end
 
-  # A match binds for later code when it always runs in the current scope: a
-  # statement, a call argument, the subject of `if`, `unless` or `case`, or
-  # the left side of `&&`, `||`, `and` and `or`.
+  # Matches contribute bindings only along expressions that always run in the
+  # current scope.
   defp bound_by({:=, _, [pattern, expr]}), do: pattern_vars(pattern) ++ bound_by(expr)
 
   defp bound_by({kind, _, [subject | _]}) when kind in [:if, :unless, :case],
@@ -361,7 +347,7 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     pattern |> pattern_var_nodes() |> Enum.map(&elem(&1, 0))
   end
 
-  # Skip the variable being typed: the one the cursor is in or right after.
+  # A partial variable at the cursor is not a prior binding.
   defp vars_before_cursor(pattern, state) do
     for {name, _meta, _context} = var <- pattern_var_nodes(pattern),
         relation(var, state) == :before,
@@ -382,9 +368,7 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
   defp statements(clauses) when is_list(clauses), do: clauses
   defp statements(body), do: [body]
 
-  # A cursor on the first character of a clause or keyword pair is in its head
-  # or key, so it counts as inside. The last one that starts at or before the
-  # cursor contains it.
+  # Include a clause or keyword pair when the cursor is at its first character.
   defp last_reached(nodes, state) do
     nodes
     |> Enum.filter(&(start(&1) != nil and start(&1) <= state.cursor))
@@ -404,11 +388,10 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
       Enum.all?(nodes, fn {key, _value} -> literal(key) in @block_keys end)
   end
 
-  # Forge parses with a literal encoder, so keyword keys arrive wrapped.
+  # Forge's literal encoder wraps keyword keys in `__block__` nodes.
   defp literal({:__block__, _, [value]}), do: value
   defp literal(value), do: value
 
-  # A cursor on the first character of a node is not inside it.
   defp relation(node, state) do
     case start(node) do
       nil -> :none
@@ -418,9 +401,7 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # A node starts at its own position or at its first child, whichever is
-  # earlier. For an operator, that is its left side. Error nodes and empty
-  # blocks have no position.
+  # Operators can start at their left operand, before their own metadata.
   defp start({:__block__, _, []}), do: nil
 
   defp start({form, meta, args}) when is_list(meta) do
@@ -438,9 +419,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
   defp start(nodes) when is_list(nodes), do: Enum.find_value(nodes, &start/1)
   defp start(_node), do: nil
 
-  # A node ends at its last child or later. This covers recovered blocks whose
-  # `end` sits at the `do`. Sourceror crashes on error nodes, so invalid
-  # documents use closing tokens instead.
+  # A recovered AST uses token metadata because Sourceror cannot range error
+  # nodes. Child ranges can extend beyond the parent metadata.
   defp finish({:__block__, _, []}, _recovered?), do: {0, 0}
 
   defp finish({_form, meta, args} = node, recovered?) when is_list(meta) do
@@ -476,8 +456,8 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
   defp closing_end({{:., _, [_left, name]}, meta, []}) when is_atom(name),
     do: shift(meta, name_length(name))
 
-  # Strings, charlists and sigils have no closing token. Sourceror ranges
-  # them, unless an unfinished interpolation holds an error node.
+  # Delimited literals lack closing token metadata, so Sourceror supplies their
+  # ranges unless recovery nodes prevent it.
   defp closing_end({form, meta, _args} = node) do
     cond do
       meta[:delimiter] && not recovery_node?(node) -> sourceror_end(node)
@@ -488,7 +468,6 @@ defmodule Expert.CodeIntelligence.Completion.Variables do
     end
   end
 
-  # An anonymous function closes with `end` and a binary with `>>`.
   defp closing_width(:fn), do: 3
   defp closing_width(:<<>>), do: 2
   defp closing_width(_form), do: 1

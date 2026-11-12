@@ -1,6 +1,6 @@
 defmodule Expert.CodeIntelligence.Completion.Candidates do
   @moduledoc """
-  Finds the completion candidates for the code before the cursor.
+  Finds completion candidates for the code before the cursor.
   """
 
   alias Expert.CodeIntelligence.Completion.Attributes
@@ -58,7 +58,7 @@ defmodule Expert.CodeIntelligence.Completion.Candidates do
     end
   end
 
-  # Typing a definition's name completes only what the module can define.
+  # Typespec and definition heads limit the applicable candidate kinds.
   defp definitions(typed, context, env) do
     cond do
       Enum.any?(@typespec_contexts, &Env.in_context?(env, &1)) ->
@@ -75,7 +75,7 @@ defmodule Expert.CodeIntelligence.Completion.Candidates do
     end
   end
 
-  # Inside `alias Parent.{...}` the typed alias is nested in `Parent`.
+  # Multi-alias syntax makes the typed name relative to its parent alias.
   defp qualify(typed, %Context{} = context, %Env{} = env) do
     text_before = Document.fragment(env.document, env.position)
 
@@ -176,7 +176,7 @@ defmodule Expert.CodeIntelligence.Completion.Candidates do
       Attributes.matching(context, "")
   end
 
-  # Right after the dot, nested modules complete too.
+  # An empty hint after a dot also includes nested modules.
   defp dot(path, hint, context, opts) do
     case module(path, context) do
       {:ok, module} when hint == "" ->

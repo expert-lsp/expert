@@ -1,7 +1,6 @@
 defmodule Expert.CodeIntelligence.Completion.BitstringOptions do
   @moduledoc """
-  Bitstring modifier candidates that may still follow the modifiers already
-  written after `::`.
+  Provides valid bitstring modifier completion candidates after `::`.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate
@@ -90,7 +89,7 @@ defmodule Expert.CodeIntelligence.Completion.BitstringOptions do
   defp endiannesses(%{type: :float, endianness: nil}), do: [:little, :big]
   defp endiannesses(_state), do: []
 
-  # Size and unit don't compile with the utf types.
+  # Elixir rejects `size` and `unit` with UTF types.
   defp size_and_unit(%{type: type}) when type in @utf_types, do: []
 
   defp size_and_unit(state) do

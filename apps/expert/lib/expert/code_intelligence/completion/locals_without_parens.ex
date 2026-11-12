@@ -1,9 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.LocalsWithoutParens do
   @moduledoc """
-  The calls a project's formatter writes without parentheses, read from its
-  `.formatter.exs` and the formatter exports of its `import_deps`.
+  Reads calls that the project formatter writes without parentheses.
 
-  The files are parsed, not evaluated, so only literal options are read.
+  Sources include `.formatter.exs` and formatter exports from `import_deps`.
+  Only literal formatter options are accepted.
   """
 
   alias Forge.Project

@@ -1,7 +1,6 @@
 defmodule Expert.Provider.Handlers.CompletionResolve do
   @moduledoc """
-  Adds the documentation of a completed module or function, read from its
-  BEAM when the client shows the item.
+  Adds BEAM documentation when the client resolves a completion item.
   """
   @behaviour Expert.Provider.Handler
 

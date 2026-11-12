@@ -72,8 +72,7 @@ defmodule Expert.Search.Indexer.Beams do
     end
   end
 
-  # Erlang modules have abstract code instead of Elixir's debug info. We read
-  # it into the same shape, with each exported function's first clause.
+  # Convert Erlang abstract code to the Elixir debug metadata shape used below.
   defp erlang_metadata(beam, module, exports) do
     clauses =
       with {:ok, chunk} <- BeamFile.chunk(beam, "Dbgi"),
@@ -108,8 +107,10 @@ defmodule Expert.Search.Indexer.Beams do
   defp erlang_argument(_pattern), do: {"", [], nil}
 
   @doc """
-  Reads what completion shows about a BEAM's module: its types, callbacks,
-  struct fields, behaviours and the definitions a macro injected into it.
+  Reads completion metadata from a BEAM.
+
+  The metadata includes types, callbacks, struct fields, behaviours, and
+  macro-generated definitions.
   """
   @spec read_module(Path.t()) :: {:ok, map()} | :error
   def read_module(beam_path) do
@@ -190,7 +191,7 @@ defmodule Expert.Search.Indexer.Beams do
     with {:ok, chunk} <- BeamFile.chunk(beam, "Docs"), do: ETF.decode(chunk)
   end
 
-  # Documentation of a function with defaults is stored at its full arity.
+  # One full-arity documentation entry covers every default-argument arity.
   defp documents?({{kind, name, arity}, _anno, _signature, _doc, meta}, kind, name, wanted) do
     defaults = if is_map(meta), do: Map.get(meta, "defaults", 0), else: 0
     wanted in (arity - defaults)..arity//1
@@ -269,7 +270,7 @@ defmodule Expert.Search.Indexer.Beams do
     end
   end
 
-  # Field types come from the struct's `t` type, when it has one.
+  # The `t` type supplies field types when the struct defines it.
   defp struct_fields(%{"struct" => fields}, types) when is_list(fields) do
     field_types =
       case Enum.find(types, &(&1.name == "t" and &1.arity == 0)) do
@@ -287,9 +288,9 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp struct_fields(_metadata, _types), do: nil
 
-  # Definitions a macro wrote into the module, such as `child_spec/1` from
-  # `use GenServer`, name that macro's module as their context. Default
-  # argument clauses and `defstruct` have contexts too, so those are skipped.
+  # Macro-generated definitions name the source macro module as their context.
+  # Contexts from the current module and Kernel represent compiler-generated
+  # clauses rather than overridable functions.
   defp injected(module, %{"definitions" => definitions}) do
     for {{name, arity}, kind, meta, clauses} <- definitions,
         kind in ["def", "defmacro"],
@@ -338,7 +339,7 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp variable_name(name), do: name |> String.trim_leading("_") |> Macro.underscore()
 
-  # Prints a typespec form, decoded with strings for atoms, in Elixir's syntax.
+  # Render decoded ETF terms without converting their strings to atoms.
   defp type_string({"ann_type", _, [{"var", _, name}, type]}),
     do: "#{variable_name(name)} :: #{type_string(type)}"
 
@@ -781,8 +782,8 @@ defmodule Expert.Search.Indexer.Beams do
     Entry.put_metadata(entry, Map.merge(entry.metadata || %{}, metadata))
   end
 
-  # The shorter arities of a function with defaults call the full one through
-  # `super`, filling in the arguments that have defaults.
+  # Default wrappers call the full definition through `super`. Non-variable
+  # arguments mark the default positions.
   defp default_positions(definitions) do
     for {{name, _arity}, definition, _metadata, [{_meta, args, [], {"super", _, call_args}} | _]} <-
           definitions,
@@ -806,8 +807,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp own_variable?({var, _, context}, own) when not is_list(context), do: var in own
   defp own_variable?(_arg, _own), do: false
 
-  # The compiler fills defaults from the left, so the shorter arities keep the
-  # first defaults.
+  # Elixir adds default arguments from left to right as arity increases.
   defp argument_names([{_meta, args, _guards, _body} | _], defaults, arity) do
     kept = arity - (length(args) - length(defaults))
 

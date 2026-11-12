@@ -18,7 +18,6 @@ defmodule Engine.Application do
           Engine.ModuleMappings,
           Engine.Compilation.Tracer,
           Engine.Build,
-          Engine.ModuleStore,
           Engine.Build.CaptureServer
         ]
       else

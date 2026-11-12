@@ -1,7 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Modules do
   @moduledoc """
-  Module candidates from the index, the toolchain, the aliases in scope and the
-  modules the document defines.
+  Provides module completion candidates.
+
+  Sources include the index, the toolchain, visible aliases, and definitions
+  in the current document.
 
   Module names are written as `inspect/1` writes them, such as `"Enum"` and
   `":lists"`.
@@ -98,8 +100,7 @@ defmodule Expert.CodeIntelligence.Completion.Modules do
     )
   end
 
-  # The index holds the Elixir modules of the project and its dependencies,
-  # from their sources. Erlang modules are only in their BEAMs.
+  # Erlang dependency modules come from the BEAM registry.
   defp dependencies(project, ":" <> prefix) do
     for name <- ModuleRegistry.with_prefix(project, prefix),
         module = Subject.module(name),
@@ -110,7 +111,7 @@ defmodule Expert.CodeIntelligence.Completion.Modules do
   defp dependencies(_project, _prefix), do: []
 
   @doc """
-  Returns where a compiled module's BEAM is and what kind of module it is.
+  Returns a compiled module's BEAM path, kinds, application, and summary.
   """
   @spec compiled(Project.t(), module() | String.t()) :: {:ok, compiled()} | :error
   def compiled(%Project{} = project, module) do
@@ -140,8 +141,8 @@ defmodule Expert.CodeIntelligence.Completion.Modules do
   end
 
   @doc """
-  Reads a compiled module's types, callbacks, struct fields, behaviours and
-  injected definitions from its BEAM.
+  Reads types, callbacks, struct fields, behaviours, and injected definitions
+  from a compiled module.
   """
   @spec read(Project.t(), module() | String.t()) :: {:ok, map()} | :error
   def read(%Project{} = project, module) do

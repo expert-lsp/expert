@@ -1,7 +1,6 @@
 defmodule Expert.CodeIntelligence.Completion.Context do
   @moduledoc """
-  What the code at the cursor can refer to: its module, aliases, imports and
-  the modules the document defines.
+  Stores the module, aliases, imports, and definitions visible at the cursor.
   """
 
   alias Expert.CodeIntelligence.Completion.Callables
@@ -92,8 +91,7 @@ defmodule Expert.CodeIntelligence.Completion.Context do
     end
   end
 
-  # A reserved word before the cursor, such as `in`, doesn't parse as a
-  # fragment. As an identifier prefix it does.
+  # A suffix lets the fragment parser treat a reserved word as an identifier.
   defp cursor_path(%Env{} = env) do
     case Ast.cursor_path(env.analysis, env.position) do
       [] ->
@@ -109,8 +107,7 @@ defmodule Expert.CodeIntelligence.Completion.Context do
     end
   end
 
-  # An analysis without scopes, such as one of a lone operator, has no
-  # imports, but Kernel is always imported.
+  # A partial analysis can omit scopes, but every Elixir module imports Kernel.
   defp with_kernel(imports, project) when map_size(imports) == 0 do
     case Callables.exports(project, Kernel) do
       {:ok, exports} -> %{Kernel => MapSet.new(exports.functions ++ exports.macros)}

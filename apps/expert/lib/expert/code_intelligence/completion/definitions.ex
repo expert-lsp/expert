@@ -1,8 +1,8 @@
 defmodule Expert.CodeIntelligence.Completion.Definitions do
   @moduledoc """
-  The modules a document defines, with their functions, macros and
-  behaviours, read from the document's AST so they complete before the
-  document compiles.
+  Collects module definitions from a document AST.
+
+  This data supplies completion candidates before the document compiles.
   """
 
   alias Expert.Search.Indexer.ArgumentNames
@@ -113,7 +113,7 @@ defmodule Expert.CodeIntelligence.Completion.Definitions do
   defp statements({:__block__, _meta, statements}) when is_list(statements), do: statements
   defp statements(statement), do: [statement]
 
-  # Attributes like `@doc` and `@spec` apply to the next definition.
+  # Definition attributes apply to the next definition in the module.
   defp collect([], _module, defined, _pending, modules), do: {defined, modules}
 
   defp collect([statement | rest], module, defined, pending, modules) do
@@ -250,7 +250,7 @@ defmodule Expert.CodeIntelligence.Completion.Definitions do
 
   defp parameter_name({_parameter, index}), do: "arg_#{index}"
 
-  # Clauses after the first one share the first one's arguments and docs.
+  # Keep the first clause because later clauses share its completion metadata.
   defp finish(%__MODULE__{} = defined) do
     definitions =
       defined.definitions
@@ -288,7 +288,7 @@ defmodule Expert.CodeIntelligence.Completion.Definitions do
   defp literal(value) when is_binary(value) or is_boolean(value), do: value
   defp literal(_value), do: nil
 
-  # Literals in the analysis AST are wrapped in blocks, which print oddly.
+  # Remove parser wrappers before rendering a typespec.
   defp source(ast) do
     ast
     |> Macro.prewalk(fn

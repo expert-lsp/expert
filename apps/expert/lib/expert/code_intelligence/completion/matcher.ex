@@ -1,9 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Matcher do
   @moduledoc """
-  Matches a completion name against what was typed before the cursor.
+  Matches a completion name against the text before the cursor.
 
-  The first characters must be equal and the rest of the hint must appear in
-  the name in order, so `chub` matches `chunk_by`.
+  The first characters must match. The remaining hint must occur in order, so
+  `chub` matches `chunk_by`.
   """
 
   import Kernel, except: [match?: 2]

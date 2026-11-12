@@ -1,10 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Callbacks do
   @moduledoc """
-  Candidates for definitions the current module can write: the callbacks of
-  its behaviours and the overridable functions a macro injected into it.
+  Provides callback and overridable function completion candidates.
 
-  The behaviours and injected functions come from the module's compiled BEAM
-  and from the `@behaviour` attributes in the document.
+  Candidates come from the compiled module and `@behaviour` attributes in the
+  current document.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate
@@ -80,7 +79,7 @@ defmodule Expert.CodeIntelligence.Completion.Callbacks do
     end
   end
 
-  # Typing the start of `def` or `defmacro` lists every callback.
+  # A partial `def` or `defmacro` matches all applicable callbacks.
   defp matches?(callable, hint) do
     def_prefix =
       if callable.kind in [:macrocallback, :macro], do: "defmacro", else: "def"

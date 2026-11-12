@@ -1,7 +1,6 @@
 defmodule Expert.CodeIntelligence.Completion.Candidate do
   @moduledoc """
-  The things completion can suggest, before they are translated into
-  completion items.
+  Defines completion candidates before their conversion to LSP items.
   """
 
   defmodule Function do

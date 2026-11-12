@@ -1,7 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Attributes do
   @moduledoc """
-  Module attribute candidates: the attributes the current module sets before
-  the cursor and, in the module body, the attributes Elixir reserves.
+  Provides module attribute completion candidates.
+
+  Candidates include prior attributes in the current module. Module bodies
+  also include attributes that Elixir reserves.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate

@@ -1,7 +1,8 @@
 defmodule Expert.CodeIntelligence.Completion.Typespecs do
   @moduledoc """
-  Type candidates inside typespecs: the built-in types, the current module's
-  types, and the public types of a module written before the dot.
+  Provides type completion candidates inside typespecs.
+
+  Candidates include built-in types, local types, and public remote types.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate

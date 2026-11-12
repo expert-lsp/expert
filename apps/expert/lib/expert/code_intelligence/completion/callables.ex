@@ -1,7 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Callables do
   @moduledoc """
-  Function and macro candidates of a module, from the document's definitions
-  when the document defines it and from its BEAM otherwise.
+  Provides function and macro completion candidates.
+
+  This module uses document definitions for local modules and BEAM data for
+  compiled modules.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate
@@ -148,9 +150,8 @@ defmodule Expert.CodeIntelligence.Completion.Callables do
     end
   end
 
-  # Elixir, OTP and Erlang dependencies aren't indexed, so we read them from
-  # their BEAMs. Nested modules' definitions share the prefix; their names
-  # start with the nested module's name.
+  # The store excludes toolchain modules. Toolchain BEAM files provide the
+  # fallback data. The subject prefix also includes nested module definitions.
   defp indexed(project, module) do
     name = Formats.module(module)
     prefix = name <> "."
@@ -177,8 +178,7 @@ defmodule Expert.CodeIntelligence.Completion.Callables do
     end
   end
 
-  # Erlang dependencies are only known by the exports the registry reads from
-  # their BEAMs.
+  # The module registry provides the exports for Erlang dependencies.
   defp dependency(project, ":" <> name) do
     case ModuleRegistry.lookup(project, name) do
       {:ok, %{exports: exports, application: application}} ->

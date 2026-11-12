@@ -1,7 +1,8 @@
 defmodule Expert.CodeIntelligence.Completion.StructFields do
   @moduledoc """
-  Field candidates of structs, from the document's `defstruct` or the struct
-  module's BEAM.
+  Provides struct field completion candidates.
+
+  Fields come from `defstruct` in the current document or a compiled BEAM.
   """
 
   alias Expert.CodeIntelligence.Completion.Candidate

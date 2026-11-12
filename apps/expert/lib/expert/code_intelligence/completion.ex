@@ -170,9 +170,8 @@ defmodule Expert.CodeIntelligence.Completion do
     end
   end
 
-  # The analysis in `env` ends at the cursor when the document doesn't parse,
-  # so variables come from the analysis of the whole document when the parser
-  # recovered one.
+  # A recovered environment contains only the prefix. Use the document AST to
+  # find bindings after that partial parse.
   defp variables(%Analysis{} = document_analysis, %Env{} = env) do
     analysis = if document_analysis.ast, do: document_analysis, else: env.analysis
 
@@ -319,8 +318,7 @@ defmodule Expert.CodeIntelligence.Completion do
     |> List.wrap()
   end
 
-  # Candidates come from the project's own modules. Expert's own modules are
-  # namespaced, and stay hidden.
+  # Hide internal namespaced modules from project completion results.
   defp displayable?(result) do
     case result do
       %_{full_name: full_name} when is_binary(full_name) ->
@@ -366,8 +364,7 @@ defmodule Expert.CodeIntelligence.Completion do
     end
   end
 
-  # A module completes after `use` when it or a module nested in it
-  # defines `__using__/1`, and after `@impl` when one is a behaviour.
+  # Accept a module after `use` when it or a nested module defines `__using__/1`.
   defp usable?(%Env{} = env, %{full_name: full_name}) when is_binary(full_name) do
     Enum.any?(in_tree(env.project, full_name), fn module ->
       case Callables.exports(env.project, module) do
@@ -379,6 +376,7 @@ defmodule Expert.CodeIntelligence.Completion do
 
   defp usable?(_env, _completion), do: false
 
+  # Accept a module after `@impl` when it or a nested module is a behaviour.
   defp behaviour?(%Env{} = env, %{full_name: full_name}) when is_binary(full_name) do
     Enum.any?(in_tree(env.project, full_name), fn module ->
       case Modules.compiled(env.project, module) do
