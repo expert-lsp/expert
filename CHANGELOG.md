@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.3.0](https://github.com/expert-lsp/expert/compare/v0.2.0...v0.3.0) (2026-11-12)
+
+
+### Features
+
+* add Spark integration ([#835](https://github.com/expert-lsp/expert/issues/835)) ([7f9f2af](https://github.com/expert-lsp/expert/commit/7f9f2afb6cce3c143ba2de900c8442b0b1f426e0))
+* implement remaining folding ranges ([#930](https://github.com/expert-lsp/expert/issues/930)) ([324854c](https://github.com/expert-lsp/expert/commit/324854cef116e2a566c609e669a9a3889b8e25fb))
+
+
+### Bug Fixes
+
+* build releases with elixir 1.20 and otp 29 ([#960](https://github.com/expert-lsp/expert/issues/960)) ([e374c1e](https://github.com/expert-lsp/expert/commit/e374c1efb7d3cd0fc85befefcead38e75f3d60bc))
+* **ci:** let backports update workflow files ([#990](https://github.com/expert-lsp/expert/issues/990)) ([4829282](https://github.com/expert-lsp/expert/commit/4829282aebd783814d832879a5a6b3799b95dc7f))
+* correct Forge.Document and Entry specs ([#946](https://github.com/expert-lsp/expert/issues/946)) ([43cf3ed](https://github.com/expert-lsp/expert/commit/43cf3ed81e6f98d60f657c4b3b28737ba796a804))
+* **engine:** keep the module table from filling up on large projects ([#948](https://github.com/expert-lsp/expert/issues/948)) ([647a4c8](https://github.com/expert-lsp/expert/commit/647a4c86d5800258c092a8223fd70f8ab074ea45))
+* **expert:** clear more files than SQLite binds at once ([#952](https://github.com/expert-lsp/expert/issues/952)) ([7608b1e](https://github.com/expert-lsp/expert/commit/7608b1ed7599fa7e681d850eec48b493d92eded0))
+* **expert:** don't force a recompile on an empty index ([#951](https://github.com/expert-lsp/expert/issues/951)) ([88a68f1](https://github.com/expert-lsp/expert/commit/88a68f199c6ba24d5c2e96b452c63700bb50efd6))
+* **expert:** index BEAM files without creating atoms ([#968](https://github.com/expert-lsp/expert/issues/968)) ([0f78e37](https://github.com/expert-lsp/expert/commit/0f78e372c828cb282e8b252edbf84241951d1f69))
+* **expert:** persist module registry ([#969](https://github.com/expert-lsp/expert/issues/969)) ([d604fb9](https://github.com/expert-lsp/expert/commit/d604fb977cdda88bd85842e4da12cd36c402bcb5))
+* **expert:** resolve `__MODULE__` at its own position ([#1004](https://github.com/expert-lsp/expert/issues/1004)) ([5e69975](https://github.com/expert-lsp/expert/commit/5e6997518c55c2bdd5199f42d5c5893e786c967a))
+* **expert:** resolve imported calls from the compiler's trace ([#971](https://github.com/expert-lsp/expert/issues/971)) ([d40e80b](https://github.com/expert-lsp/expert/commit/d40e80bb4dd8971923a5f1515c2b3e7b2547a332))
+* mix and hex isolation ([#975](https://github.com/expert-lsp/expert/issues/975)) ([28d76ce](https://github.com/expert-lsp/expert/commit/28d76cea049e00348fdaf169ac67f3312c0ff56a))
+
+
+### Performance Improvements
+
+* **expert:** boot the plain release in embedded mode ([#979](https://github.com/expert-lsp/expert/issues/979)) ([c3f0c8e](https://github.com/expert-lsp/expert/commit/c3f0c8e83ecb0d7736c419dc6cef5eddc918b587))
+* **expert:** read source and BEAM files without the file server ([#983](https://github.com/expert-lsp/expert/issues/983)) ([94a2aff](https://github.com/expert-lsp/expert/commit/94a2aff277531ba7e90c7f02b1558455964819d6))
+* **expert:** reduce wait time when writing index entries ([#980](https://github.com/expert-lsp/expert/issues/980)) ([3ad390d](https://github.com/expert-lsp/expert/commit/3ad390da677d3e9303949a4220e06fec27ace4db))
+* **expert:** register beam modules concurrently in worker tasks ([#943](https://github.com/expert-lsp/expert/issues/943)) ([b098784](https://github.com/expert-lsp/expert/commit/b0987847d571156ec7ef3078ad50c33b2deaa2e3))
+* **expert:** resolve the symbol under the cursor from the document ([#976](https://github.com/expert-lsp/expert/issues/976)) ([b03accb](https://github.com/expert-lsp/expert/commit/b03accbbf3bdf2140b16da3dabd53812b760f769))
+* **indexer:** faster source analysis ([#953](https://github.com/expert-lsp/expert/issues/953)) ([a8eecab](https://github.com/expert-lsp/expert/commit/a8eecab43457127f50fc994676fd4a11e653a512))
+* **indexer:** reduce index file size ([#954](https://github.com/expert-lsp/expert/issues/954)) ([3a62764](https://github.com/expert-lsp/expert/commit/3a62764e4ecc977d4d148c545230da0882dc4043))
+* warmup index before the engine starts ([#908](https://github.com/expert-lsp/expert/issues/908)) ([b1c7b29](https://github.com/expert-lsp/expert/commit/b1c7b2934dea1e70f6d8b24c0e08d2e23f16bb0e))
+
 ## [0.2.0](https://github.com/expert-lsp/expert/compare/v0.1.0...v0.2.0) (2026-10-20)
 
 
