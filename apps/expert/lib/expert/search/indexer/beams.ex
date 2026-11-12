@@ -4,6 +4,7 @@ defmodule Expert.Search.Indexer.Beams do
   alias Expert.Integrations
   alias Expert.Progress
   alias Expert.Search.Indexer.BeamFile
+  alias Expert.Search.Indexer.ETF
   alias Expert.Search.Indexer.Manifest
   alias Expert.Search.Indexer.ModuleRegistry
   alias Expert.Search.Subject
@@ -43,6 +44,68 @@ defmodule Expert.Search.Indexer.Beams do
       &complete_progress/1
     )
   end
+
+  @doc """
+  Returns the public function and macro definitions of a BEAM's module, as the
+  index would store them, without indexing it.
+  """
+  @spec definitions(Path.t()) :: [Entry.t()]
+  def definitions(beam_path) do
+    with {:ok, beam} <- Expert.File.read(beam_path),
+         {:ok, module, exports, debug_metadata} <- BeamFile.read(beam) do
+      metadata =
+        case debug_metadata do
+          {:ok, metadata} -> metadata
+          :error -> erlang_metadata(beam, module, exports)
+        end
+
+      context = %{
+        app: nil,
+        module: Subject.module(module),
+        root_block: Block.root(),
+        source_path: beam_path
+      }
+
+      public_definition_entries(metadata, context)
+    else
+      _ -> []
+    end
+  end
+
+  # Erlang modules have abstract code instead of Elixir's debug info. We read
+  # it into the same shape, with each exported function's first clause.
+  defp erlang_metadata(beam, module, exports) do
+    clauses =
+      with {:ok, chunk} <- BeamFile.chunk(beam, "Dbgi"),
+           {:ok, {"debug_info_v1", "erl_abstract_code", {forms, _options}}} when is_list(forms) <-
+             ETF.decode(chunk) do
+        for {"function", _anno, name, arity, [{"clause", _, patterns, _, _} | _]} <- forms,
+            into: %{},
+            do: {{name, arity}, [{[], Enum.map(patterns, &erlang_argument/1), [], nil}]}
+      else
+        _ -> %{}
+      end
+
+    definitions =
+      for {name, _arity} = export <- exports,
+          name not in ["module_info", "behaviour_info"],
+          do: {export, "def", [], Map.get(clauses, export, [])}
+
+    %{"module" => module, "definitions" => definitions}
+  end
+
+  defp erlang_argument({"var", _anno, name}) do
+    {name |> String.trim_leading("_") |> Macro.underscore(), [], nil}
+  end
+
+  defp erlang_argument({"match", _anno, left, right}) do
+    case erlang_argument(left) do
+      {"", [], nil} -> erlang_argument(right)
+      argument -> argument
+    end
+  end
+
+  defp erlang_argument(_pattern), do: {"", [], nil}
 
   def extract_definitions_from_binary(beam, source_path)
       when is_binary(beam) and is_binary(source_path) do
@@ -459,8 +522,9 @@ defmodule Expert.Search.Indexer.Beams do
 
   defp argument_names(_clauses, _defaults, arity), do: Enum.map(1..arity//1, &"arg_#{&1}")
 
-  defp argument_name({name, _, context}, _index) when is_binary(name) and not is_list(context),
-    do: name
+  defp argument_name({name, _, context}, _index)
+       when is_binary(name) and name != "" and not is_list(context),
+       do: name
 
   defp argument_name({"=", _, [left, right]}, index) do
     case {argument_name(left, index), argument_name(right, index)} do

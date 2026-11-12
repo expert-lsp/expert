@@ -701,6 +701,53 @@ defmodule Expert.Search.Indexer.BeamsTest do
     end
   end
 
+  describe "definitions/1" do
+    test "reads a module's definitions with their argument names", %{tmp_dir: tmp_dir} do
+      module = unique_module("Definitions")
+
+      %{beam_paths_by_module: beam_paths} =
+        compile_source!(
+          tmp_dir,
+          """
+          defmodule #{inspect(module)} do
+            def greet(name), do: name
+            defmacro twice(value), do: value
+          end
+          """,
+          []
+        )
+
+      definitions = beam_paths |> Map.fetch!(module) |> Beams.definitions()
+
+      assert %Entry{type: {:function, :public}, metadata: %{arguments: ["name"]}} =
+               Enum.find(definitions, &(&1.subject == Formats.mfa(module, :greet, 1)))
+
+      assert %Entry{type: {:macro, :public}, metadata: %{arguments: ["value"]}} =
+               Enum.find(definitions, &(&1.subject == Formats.mfa(module, :twice, 1)))
+    end
+
+    test "reads an Erlang module's definitions from its abstract code", %{tmp_dir: tmp_dir} do
+      name = "beams_test_erlang_#{System.unique_integer([:positive])}"
+      source_path = Path.join(tmp_dir, name <> ".erl")
+
+      File.write!(
+        source_path,
+        "-module(#{name}).\n-export([pair/2]).\npair(First, _Second) -> First.\n"
+      )
+
+      {:ok, _module} =
+        :compile.file(String.to_charlist(source_path), [
+          :debug_info,
+          outdir: String.to_charlist(tmp_dir)
+        ])
+
+      assert [%Entry{subject: subject, metadata: %{arguments: ["first", "second"]}}] =
+               tmp_dir |> Path.join(name <> ".beam") |> Beams.definitions()
+
+      assert subject == ":#{name}.pair/2"
+    end
+  end
+
   defp index_source!(tmp_dir, source, opts) do
     context = compile_source!(tmp_dir, source, opts)
     {entries, manifest_entries} = index_beams(context.beam_paths)
