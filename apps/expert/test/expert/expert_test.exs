@@ -481,7 +481,7 @@ defmodule ExpertTest do
         %{"message" => ^expected_message}
       )
 
-      assert [] = Expert.Project.Store.projects()
+      assert_eventually(Expert.Project.Store.projects() == [])
       assert_project_stopped?(main_project)
     end
 
@@ -558,7 +558,7 @@ defmodule ExpertTest do
         %{"message" => ^expected_message}
       )
 
-      assert [] = Expert.Project.Store.projects()
+      assert_eventually(Expert.Project.Store.projects() == [])
       assert_project_stopped?(secondary_project)
     end
 
