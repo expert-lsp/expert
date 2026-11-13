@@ -2,14 +2,11 @@ defmodule Expert.EngineApi do
   alias Expert.EngineNode
   alias Forge.Ast
   alias Forge.Ast.Analysis
-  alias Forge.Ast.Env
   alias Forge.CodeIntelligence
   alias Forge.Document
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Project
-
-  require Logger
 
   def call(%Project{} = project, m, f, a \\ []) do
     project
@@ -84,18 +81,6 @@ defmodule Expert.EngineApi do
         module_name
       ) do
     call(project, Engine, :resolve_code_action, [document, range, module_name])
-  end
-
-  def complete(%Project{} = project, %Env{} = env) do
-    Logger.info("Completion for #{inspect(env.position)}")
-    call(project, Engine, :complete, [env])
-  end
-
-  def complete_struct_fields(%Project{} = project, %Analysis{} = analysis, %Position{} = position) do
-    call(project, Engine, :complete_struct_fields, [
-      analysis,
-      position
-    ])
   end
 
   def declaration(%Project{} = project, %Document{} = document, %Position{} = position) do

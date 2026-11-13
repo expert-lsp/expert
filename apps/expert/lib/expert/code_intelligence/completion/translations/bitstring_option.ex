@@ -1,9 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Translations.BitstringOption do
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Expert.CodeIntelligence.Completion.Translations
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
 
   defimpl Translatable, for: Candidate.BitstringOption do

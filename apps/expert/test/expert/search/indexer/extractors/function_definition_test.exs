@@ -21,6 +21,63 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinitionTest do
     end)
   end
 
+  describe "argument names" do
+    test "names each arity's arguments, leaving out those with defaults" do
+      code =
+        ~q[
+          def fetch(%{} = map, key \\ :id, opts \\ nil), do: {map, key, opts}
+        ]
+        |> in_a_module()
+
+      {:ok, entries, _} = index(code)
+
+      assert [["map"], ["map", "key"], ["map", "key", "opts"]] =
+               entries |> Enum.sort_by(& &1.subject) |> Enum.map(& &1.metadata.arguments)
+    end
+
+    test "names arguments whose defaults hold backslashes" do
+      code =
+        ~q[
+          def join(sections, joiner \\ "\n\n"), do: {sections, joiner}
+        ]
+        |> in_a_module()
+
+      {:ok, entries, _} = index(code)
+
+      assert [["sections"], ["sections", "joiner"]] =
+               entries |> Enum.sort_by(& &1.subject) |> Enum.map(& &1.metadata.arguments)
+    end
+
+    test "fills defaults from the left" do
+      code =
+        ~q[
+          def pick(first, second \\ 1, third, fourth \\ 2), do: {first, second, third, fourth}
+        ]
+        |> in_a_module()
+
+      {:ok, entries, _} = index(code)
+
+      assert [
+               ["first", "third"],
+               ["first", "second", "third"],
+               ["first", "second", "third", "fourth"]
+             ] =
+               entries |> Enum.sort_by(& &1.subject) |> Enum.map(& &1.metadata.arguments)
+    end
+
+    test "names patterns by their variables, atoms by themselves and the rest by position" do
+      code =
+        ~q[
+          def handle(%Project{} = project, items = %{}, {:ok, value}, :level), do: value
+        ]
+        |> in_a_module()
+
+      {:ok, [entry], _} = index(code)
+
+      assert ["project", "items", "arg_3", ":level"] = entry.metadata.arguments
+    end
+  end
+
   describe "indexing public function definitions" do
     test "finds zero arity public functions (no parens)" do
       code =

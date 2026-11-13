@@ -409,6 +409,52 @@ defmodule Forge.AstTest do
     end
   end
 
+  describe "prewalk_vars/3" do
+    defp visited_vars(pattern) do
+      {_pattern, vars} =
+        pattern
+        |> Code.string_to_quoted!()
+        |> Ast.prewalk_vars([], fn node, vars -> {node, [node | vars]} end)
+
+      vars
+      |> Enum.reverse()
+      |> Enum.map(&Macro.to_string/1)
+    end
+
+    test "visits variables and pinned variables in order" do
+      assert ["a", "^b", "c"] = visited_vars("{a, ^b, [c | _]}")
+    end
+
+    test "skips module attributes and quoted code" do
+      assert ["a"] = visited_vars("{a, @attribute, quote(do: b)}")
+    end
+
+    test "visits binary segment variables and sizes but not their types" do
+      assert ["char", "rest", "size"] = visited_vars("<<char, rest::binary-size(size)>>")
+    end
+
+    test "visits the variable after a pin that the function replaces" do
+      {_pattern, vars} =
+        "{^a, b}"
+        |> Code.string_to_quoted!()
+        |> Ast.prewalk_vars([], fn
+          {:^, _, _}, vars -> {:ok, vars}
+          {name, _, _} = var, vars -> {var, [name | vars]}
+        end)
+
+      assert [:b] = vars
+    end
+
+    test "returns the pattern with the function's replacements" do
+      {pattern, _vars} =
+        "<<char, rest::binary>>"
+        |> Code.string_to_quoted!()
+        |> Ast.prewalk_vars(nil, fn {_name, meta, context}, acc -> {{:_, meta, context}, acc} end)
+
+      assert "<<_, _::binary>>" = Macro.to_string(pattern)
+    end
+  end
+
   describe "parser crash logging" do
     @tag :capture_log
     test "from/1 with Document logs crash with path" do

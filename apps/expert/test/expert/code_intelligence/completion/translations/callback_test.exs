@@ -7,7 +7,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.CallbackTest do
   describe "callback completions" do
     test "suggest callbacks", %{project: project} do
       source = ~q[
-        defmodule MyServer do
+        defmodule Project.Server do
           use GenServer
           def handle_inf|
         end
@@ -24,7 +24,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.CallbackTest do
 
     test "suggest callbacks without def", %{project: project} do
       source = ~q[
-        defmodule MyServer do
+        defmodule Project.Server do
           use GenServer
           child_sp|
         end
@@ -42,7 +42,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.CallbackTest do
       assert [%{range: %{start: %{character: 2}, end: %{character: 10}}}] = List.wrap(lsp_edits)
 
       assert apply_completion(completion) == """
-             defmodule MyServer do
+             defmodule Project.Server do
                use GenServer
                def child_spec(${1:init_arg}) do
                $0
@@ -53,7 +53,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.CallbackTest do
 
     test "do not add parens if they're already present", %{project: project} do
       source = ~q[
-        defmodule MyServer do
+        defmodule Project.Server do
           use GenServer
           def handle_inf|(msg, state)
         end
@@ -70,7 +70,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.CallbackTest do
 
     test "does not add second @impl if one is already present", %{project: project} do
       source = ~q[
-        defmodule MyServer do
+        defmodule Project.Server do
           use GenServer
           @impl true
           def handle_inf|
@@ -83,7 +83,7 @@ defmodule Expert.CodeIntelligence.Completion.Translations.CallbackTest do
         |> fetch_completion(kind: CompletionItemKind.interface())
 
       assert apply_completion(completion) == """
-             defmodule MyServer do
+             defmodule Project.Server do
                use GenServer
                @impl true
                def handle_info(${1:msg}, ${2:state}) do

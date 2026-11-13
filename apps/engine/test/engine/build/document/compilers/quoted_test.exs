@@ -118,6 +118,31 @@ defmodule Engine.Build.Document.Compilers.QuotedTest do
              """
     end
 
+    test "suppresses binary segment vars but not their types" do
+      quoted = ~q[<<char, rest::binary>> = call()] |> parse!()
+
+      assert {suppressed, [{:rest, _, nil}, {:char, _, nil}]} =
+               Quoted.suppress_and_extract_vars(quoted)
+
+      assert Macro.to_string(suppressed) == "<<_, _::binary>> = call()"
+    end
+
+    test "does not suppress vars referenced right after a pin in a later expression" do
+      quoted =
+        ~q[
+          bar = 2
+          match?(^foo, bar)
+        ]
+        |> parse!()
+
+      assert {suppressed, [{:bar, _, nil}]} = Quoted.suppress_and_extract_vars(quoted)
+
+      assert Macro.to_string(suppressed) == """
+             bar = 2
+             match?(^foo, bar)\
+             """
+    end
+
     test "does not suppress vars referenced with pin operator in a later assignment" do
       quoted =
         ~q[

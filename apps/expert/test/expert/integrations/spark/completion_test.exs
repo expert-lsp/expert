@@ -5,13 +5,13 @@ defmodule Expert.Integrations.Spark.CompletionTest do
   import Forge.Test.CursorSupport
   import Forge.Test.Fixtures
 
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.EngineApi
   alias Expert.Integrations
   alias Expert.Integrations.Spark.Callbacks
   alias Expert.Search.Store
   alias Forge.Ast
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias Forge.Search.Indexer.Entry
 
   setup do

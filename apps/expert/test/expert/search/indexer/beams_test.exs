@@ -654,6 +654,100 @@ defmodule Expert.Search.Indexer.BeamsTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom(function_name) end
   end
 
+  describe "completion metadata" do
+    test "names each arity's arguments, leaving out those with defaults", %{tmp_dir: tmp_dir} do
+      module = unique_module("Arguments")
+
+      %{entries: entries} =
+        index_source!(
+          tmp_dir,
+          """
+          defmodule #{inspect(module)} do
+            def fetch(%{} = map, key \\\\ :id, opts \\\\ []), do: {map, key, opts}
+          end
+          """,
+          rewrite_source?: false
+        )
+
+      arguments =
+        for arity <- 1..3 do
+          subject = Formats.mfa(module, :fetch, arity)
+          %Entry{metadata: %{arguments: arguments}} = Enum.find(entries, &(&1.subject == subject))
+          arguments
+        end
+
+      assert [["map"], ["map", "key"], ["map", "key", "opts"]] = arguments
+    end
+
+    test "marks deprecated functions", %{tmp_dir: tmp_dir} do
+      module = unique_module("Deprecated")
+
+      %{entries: entries} =
+        index_source!(
+          tmp_dir,
+          """
+          defmodule #{inspect(module)} do
+            @deprecated "Use new/0"
+            def old, do: :ok
+          end
+          """,
+          rewrite_source?: false
+        )
+
+      subject = Formats.mfa(module, :old, 0)
+
+      assert %Entry{metadata: %{deprecated: "Use new/0"}} =
+               Enum.find(entries, &(&1.subject == subject))
+    end
+  end
+
+  describe "definitions/1" do
+    test "reads a module's definitions with their argument names", %{tmp_dir: tmp_dir} do
+      module = unique_module("Definitions")
+
+      %{beam_paths_by_module: beam_paths} =
+        compile_source!(
+          tmp_dir,
+          """
+          defmodule #{inspect(module)} do
+            def greet(name), do: name
+            defmacro twice(value), do: value
+          end
+          """,
+          []
+        )
+
+      definitions = beam_paths |> Map.fetch!(module) |> Beams.definitions()
+
+      assert %Entry{type: {:function, :public}, metadata: %{arguments: ["name"]}} =
+               Enum.find(definitions, &(&1.subject == Formats.mfa(module, :greet, 1)))
+
+      assert %Entry{type: {:macro, :public}, metadata: %{arguments: ["value"]}} =
+               Enum.find(definitions, &(&1.subject == Formats.mfa(module, :twice, 1)))
+    end
+
+    test "reads an Erlang module's definitions from its abstract code", %{tmp_dir: tmp_dir} do
+      name = "beams_test_erlang_#{System.unique_integer([:positive])}"
+      source_path = Path.join(tmp_dir, name <> ".erl")
+
+      File.write!(
+        source_path,
+        "-module(#{name}).\n-export([pair/2]).\npair(First, _Second) -> First.\n"
+      )
+
+      {:ok, _module} =
+        :compile.file(String.to_charlist(source_path), [
+          :debug_info,
+          outdir: String.to_charlist(tmp_dir)
+        ])
+
+      assert [%Entry{subject: subject, metadata: %{arguments: ["first", "second"]}}] =
+               tmp_dir |> Path.join(name <> ".beam") |> Beams.definitions()
+
+      assert subject == ":#{name}.pair/2"
+    end
+  end
+
   defp index_source!(tmp_dir, source, opts) do
     context = compile_source!(tmp_dir, source, opts)
     {entries, manifest_entries} = index_beams(context.beam_paths)
