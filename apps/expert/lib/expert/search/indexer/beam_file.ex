@@ -19,6 +19,9 @@ defmodule Expert.Search.Indexer.BeamFile do
     end
   end
 
+  @spec clauses(binary()) :: [tuple()]
+  def clauses(encoded), do: ETF.decode_clauses(encoded)
+
   @spec chunk(binary(), String.t()) :: {:ok, binary()} | :error
   def chunk(beam, id) when is_binary(beam) do
     with {:ok, chunks} <- chunks(beam), do: Map.fetch(chunks, id)
@@ -100,15 +103,6 @@ defmodule Expert.Search.Indexer.BeamFile do
 
   defp exports(_chunks, _atoms), do: :error
 
-  defp debug_info(%{"Dbgi" => chunk}) do
-    case ETF.decode(chunk) do
-      {:ok, {"debug_info_v1", "elixir_erl", {"elixir_v1", %{} = metadata, _specs}}} ->
-        {:ok, metadata}
-
-      _other_or_none ->
-        :error
-    end
-  end
-
+  defp debug_info(%{"Dbgi" => chunk}), do: ETF.decode_debug_info(chunk)
   defp debug_info(_chunks), do: :error
 end
