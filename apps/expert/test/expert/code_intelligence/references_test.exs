@@ -230,6 +230,28 @@ defmodule Expert.CodeIntelligence.ReferencesTest do
     end
   end
 
+  describe "references in HEEx templates" do
+    test "are found in ~H code", %{project: project} do
+      code = ~q[
+        defmodule Page do
+          def label(value), do: value
+
+          def render(assigns) do
+            ~H"""
+            <p class={label(@kind)}>
+              {label(@title)}
+            </p>
+            """
+          end
+        end
+      ]
+
+      assert [first, second] = references(project, "Page.label|(value)", code)
+      assert decorate(code, first.range) =~ "class={«label(@kind)»}"
+      assert decorate(code, second.range) =~ "{«label(@title)»}"
+    end
+  end
+
   describe "module references" do
     test "are found in an alias", %{project: project} do
       code = ~q[
