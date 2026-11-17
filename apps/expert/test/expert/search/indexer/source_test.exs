@@ -179,6 +179,33 @@ defmodule Expert.Search.Indexer.SourceTest do
     assert {3, Forge.Formats.mfa(SourceTest.Other, :helper, 1)} in references(entries)
   end
 
+  test "resolves calls in HEEx templates that a build traced as imported", %{
+    project: project,
+    tmp_dir: tmp_dir
+  } do
+    patch_engine_lookups(project)
+
+    source = ~S'''
+    defmodule SourceTest.Page do
+      def render(assigns) do
+        ~H"""
+        <p>{format(@value)}</p>
+        """
+      end
+    end
+    '''
+
+    document = Document.new(Path.join(tmp_dir, "lib/page.ex"), source, 1)
+    path = document.path
+
+    assert {:ok, ^path, entries} = Indexer.document(project, document, [])
+    assert {4, Forge.Formats.mfa(SourceTest.Page, :format, 1)} in references(entries)
+
+    traced = [{SourceTest.Page, [{4, 9, "Elixir.SourceTest.Helpers", "format", 1}]}]
+    assert {:ok, ^path, entries} = Indexer.document(project, document, traced)
+    assert {4, Forge.Formats.mfa(SourceTest.Helpers, :format, 1)} in references(entries)
+  end
+
   defp patch_engine_lookups(project) do
     patch(EngineApi, :application, fn ^project, _module -> :example end)
     patch(EngineApi, :available_module?, fn ^project, _module -> false end)
