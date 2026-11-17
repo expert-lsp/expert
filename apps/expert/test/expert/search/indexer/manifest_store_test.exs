@@ -176,6 +176,15 @@ defmodule Expert.Search.Indexer.ManifestStoreTest do
 
       assert ManifestStore.integrations_changed?(project, manifest(tmp_dir), ["New.Indexer"])
     end
+
+    test "reports changes when a recorded indexer version differs", %{tmp_dir: tmp_dir} do
+      project = project(tmp_dir)
+
+      :ok = ManifestStore.commit(project, manifest(tmp_dir))
+      :ok = ManifestStore.record_integrations(project, [{"Indexer", 1}])
+
+      assert ManifestStore.integrations_changed?(project, manifest(tmp_dir), [{"Indexer", 2}])
+    end
   end
 
   describe "invalidate/1" do

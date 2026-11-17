@@ -68,6 +68,12 @@ defmodule Engine do
 
   defdelegate runtime_versions, to: Forge.VM.Versions, as: :current
 
+  defdelegate call_handlers(handlers, arguments), to: Engine.ExtensionHandlers, as: :call_all
+
+  defdelegate entity_definition(analysis, position, entity),
+    to: CodeIntelligence.Definition,
+    as: :definition
+
   def list_apps do
     for {app, _, _} <- :application.loaded_applications(),
         not Forge.Namespace.Module.prefixed?(app),

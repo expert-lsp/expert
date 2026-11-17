@@ -4,10 +4,27 @@ defmodule Expert.CodeIntelligence.CompletionTest do
 
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.EngineApi
+  alias Expert.Integrations.SemanticMetadata
+  alias Expert.Integrations.SemanticMetadata.Completion.Result
   alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
   alias GenLSP.Structures.CompletionItem
   alias GenLSP.Structures.CompletionList
+
+  @enum_use Module.concat(__MODULE__, EnumUse)
+
+  setup_all %{project: project} do
+    [{@enum_use, _binary}] =
+      EngineApi.call(project, Code, :compile_string, [
+        """
+        defmodule #{inspect(@enum_use)} do
+          defmacro __using__(_opts), do: quote(do: import(Enum, only: [map: 2]))
+        end
+        """
+      ])
+
+    :ok
+  end
 
   setup %{project: project} do
     project = %{project | project_module: Project}
@@ -67,6 +84,32 @@ defmodule Expert.CodeIntelligence.CompletionTest do
 
   test "ensure completion works for project", %{project: project} do
     refute [] == complete(project, "Project.|")
+  end
+
+  test "prefers an integration item over an ordinary item with the same label", %{
+    project: project
+  } do
+    contextual = %Candidate.Generic{label: "where", kind: :field}
+    ordinary = %Candidate.Generic{label: "where", kind: :function}
+
+    patch(SemanticMetadata, :complete, fn env ->
+      %Result{mode: :augment, candidates: [contextual], incomplete?: true, env: env}
+    end)
+
+    patch(EngineApi, :complete, [ordinary])
+
+    assert [%CompletionItem{label: "where", kind: kind}] = complete(project, "w|")
+    assert kind == CompletionItemKind.field()
+  end
+
+  describe "functions that a macro imports" do
+    test "are completed after the macro in the same function", %{project: project} do
+      assert [_item] = map_completions(project, inside: "ma|")
+    end
+
+    test "are completed only in the function that calls the macro", %{project: project} do
+      assert [] = map_completions(project, sibling: "ma|")
+    end
   end
 
   describe "single character atom completions" do
@@ -302,5 +345,24 @@ defmodule Expert.CodeIntelligence.CompletionTest do
       assert behaviour_index < macro_index
       assert behaviour_index < callback_index
     end
+  end
+
+  defp map_completions(project, [{location, code}]) do
+    slot = fn slot -> if slot == location, do: code, else: ":ok" end
+
+    source = """
+    defmodule Example do
+      def foo do
+        use #{inspect(@enum_use)}
+        #{slot.(:inside)}
+      end
+
+      def bar do
+        #{slot.(:sibling)}
+      end
+    end
+    """
+
+    project |> complete(source) |> Enum.filter(&String.starts_with?(&1.label, "map("))
   end
 end

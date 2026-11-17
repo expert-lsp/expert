@@ -218,7 +218,7 @@ defmodule Expert.Project.Reindex do
 
       {:error, reason} ->
         Logger.warning("Could not record search integrations: #{inspect(reason)}")
-        :ok
+        {:error, reason}
     end
   end
 
