@@ -1,9 +1,9 @@
 defmodule Expert.CodeIntelligence.Completion.Translations.Callback do
   alias Expert.CodeIntelligence.Completion.Builder
+  alias Expert.CodeIntelligence.Completion.Candidate.Callback
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate.Callback
   alias Forge.Document
   alias GenLSP.Enumerations.CompletionItemKind
 

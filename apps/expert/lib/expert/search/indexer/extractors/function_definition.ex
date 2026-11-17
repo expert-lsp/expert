@@ -1,5 +1,6 @@
 defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
   alias Expert.Search.Indexer.Analyzer
+  alias Expert.Search.Indexer.ArgumentNames
   alias Expert.Search.Indexer.Source.Reducer
   alias Expert.Search.Subject
   alias Forge.Ast
@@ -14,15 +15,16 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
          true <- valid_bodyless_head?(body, reducer.analysis, detail_range),
          {:ok, module} <- Analyzer.current_module(reducer.analysis, detail_range.start),
          {fun_name, arity} when is_atom(fun_name) <- fun_name_and_arity(def_ast) do
-      min_arity = arity - count_defaults(extract_args(def_ast))
+      args = extract_args(def_ast)
+      min_arity = arity - count_defaults(args)
       block_r = block_range(reducer.analysis, ast)
       fun_type = type(definition)
       app = Reducer.application(reducer, module)
 
       entries =
         for a <- min_arity..arity do
-          Entry.block_definition(
-            reducer.analysis.document.path,
+          reducer.analysis.document.path
+          |> Entry.block_definition(
             Reducer.current_block(reducer),
             Subject.mfa(module, fun_name, a),
             fun_type,
@@ -30,6 +32,7 @@ defmodule Expert.Search.Indexer.Extractors.FunctionDefinition do
             detail_range,
             app
           )
+          |> Entry.put_metadata(%{arguments: ArgumentNames.for_arity(args, a)})
         end
 
       args_and_guards =

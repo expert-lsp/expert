@@ -1,8 +1,8 @@
 defmodule Expert.CodeIntelligence.Completion.Translations.Callable do
   alias Expert.CodeIntelligence.Completion.Builder
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
 
   @callables [Candidate.Function, Candidate.Macro, Candidate.Callback, Candidate.Typespec]
@@ -71,7 +71,8 @@ defmodule Expert.CodeIntelligence.Completion.Translations.Callable do
       sort_text: sort_text(callable),
       filter_text: "#{callable.name}",
       documentation: build_docs(callable),
-      tags: tags
+      tags: tags,
+      data: resolve_data(callable, env)
     )
     |> maybe_boost(callable, env)
   end
@@ -88,7 +89,8 @@ defmodule Expert.CodeIntelligence.Completion.Translations.Callable do
         detail: "(Capture)",
         sort_text: sort_text(callable),
         filter_text: "#{callable.name}",
-        documentation: build_docs(callable)
+        documentation: build_docs(callable),
+        data: resolve_data(callable, env)
       )
       |> maybe_boost(callable, env)
 
@@ -100,7 +102,8 @@ defmodule Expert.CodeIntelligence.Completion.Translations.Callable do
         detail: "(Capture with arguments)",
         sort_text: sort_text(callable),
         filter_text: "#{callable.name}",
-        documentation: build_docs(callable)
+        documentation: build_docs(callable),
+        data: resolve_data(callable, env)
       )
       |> maybe_boost(callable, env)
 
@@ -216,6 +219,20 @@ defmodule Expert.CodeIntelligence.Completion.Translations.Callable do
   defp build_docs(_) do
     ""
   end
+
+  # Compiled functions get their docs when the client resolves the item.
+  defp resolve_data(%struct{} = callable, %Env{} = env)
+       when struct in [Candidate.Function, Candidate.Macro] and is_binary(callable.origin) do
+    %{
+      "uri" => env.document.uri,
+      "module" => callable.origin,
+      "name" => callable.name,
+      "arity" => callable.arity,
+      "kind" => Atom.to_string(callable.type)
+    }
+  end
+
+  defp resolve_data(_callable, _env), do: nil
 
   defp callback?(%_{name: name, metadata: metadata} = _callable) do
     Map.has_key?(metadata, :implementing) || name === "child_spec"

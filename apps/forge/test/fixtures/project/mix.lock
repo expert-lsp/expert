@@ -1,0 +1,3 @@
+%{
+  "sourceror": {:hex, :sourceror, "1.13.0", "96bec2d8e5b183979fb70bd4d461b69db47fdc90871da599fababe76f7dae493", [:mix], [], "hexpm", "d72dd66dd2b82cc8e818b54ba0ab2ef0314c83ffcf231b1ad2ade00fa2ee3375"},
+}

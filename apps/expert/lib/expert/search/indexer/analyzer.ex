@@ -170,6 +170,16 @@ defmodule Expert.Search.Indexer.Analyzer do
   end
 
   @doc """
+  Expands alias segments with the aliases returned by `Aliases.in_scope/2`.
+  """
+  @spec expand_alias_with(Ast.alias_segments(), Aliases.in_scope()) :: {:ok, module()} | :error
+  def expand_alias_with(segments, aliases) do
+    with {:ok, resolved} <- resolve_alias(segments, aliases) do
+      {:ok, Module.concat(resolved)}
+    end
+  end
+
+  @doc """
   Returns the current module at the given position in the analysis
   """
   def current_module(%Analysis{} = analysis, %Position{} = position) do

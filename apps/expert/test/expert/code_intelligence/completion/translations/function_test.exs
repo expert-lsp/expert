@@ -229,6 +229,25 @@ defmodule Expert.CodeIntelligence.Completion.Translations.FunctionTest do
              ]
     end
 
+    test "names the document's own arguments whose defaults hold backslashes",
+         %{project: project} do
+      source = ~q[
+        defmodule Joiner do
+          def join_sections(sections, joiner \\ "\n\n"), do: Enum.join(sections, joiner)
+
+          def run, do: join_sec|
+        end
+      ]
+
+      {:ok, [arity_1, arity_2]} =
+        project
+        |> complete(source)
+        |> fetch_completion(kind: CompletionItemKind.function())
+
+      assert apply_completion(arity_1) =~ "join_sections(${1:sections})"
+      assert apply_completion(arity_2) =~ "join_sections(${1:sections}, ${2:joiner})"
+    end
+
     test "captures include every supported arity", %{project: project} do
       completions = complete(project, "&Project.DefaultArgs.options|")
 

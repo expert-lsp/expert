@@ -225,6 +225,34 @@ defmodule Expert.Search.Indexer.ModuleRegistry do
     end
   end
 
+  @doc """
+  Returns a module's metadata by its name, as `Atom.to_string/1` writes it.
+  """
+  @spec lookup(Project.t(), String.t()) :: {:ok, module_metadata()} | :error
+  def lookup(%Project{} = project, module_name) when is_binary(module_name) do
+    case :ets.lookup(name(project), {:module, module_name}) do
+      [{_key, metadata}] -> {:ok, metadata}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Returns the names of the modules that start with `prefix`, as
+  `Atom.to_string/1` writes them.
+  """
+  @spec with_prefix(Project.t(), String.t()) :: [String.t()]
+  def with_prefix(%Project{} = project, prefix) when is_binary(prefix) do
+    size = byte_size(prefix)
+
+    :ets.select(name(project), [
+      {{{:module, :"$1"}, :_},
+       [
+         {:andalso, {:>=, {:byte_size, :"$1"}, size},
+          {:==, {:binary_part, :"$1", 0, size}, prefix}}
+       ], [:"$1"]}
+    ])
+  end
+
   def exunit_module?(nil, _module), do: false
 
   def exunit_module?(%Project{} = project, module),

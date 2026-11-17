@@ -2,9 +2,9 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   use Expert.Test.Expert.CompletionCase
   use Patch
 
-  alias Expert.EngineApi
+  alias Expert.CodeIntelligence.Completion.Candidate
+  alias Expert.CodeIntelligence.Completion.Candidates
   alias Expert.Integrations
-  alias Forge.Completion.Candidate
   alias GenLSP.Structures.CompletionList
 
   test "contextual completions override ordinary completion", %{project: project} do
@@ -15,7 +15,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
       []
     })
 
-    patch(EngineApi, :complete, [
+    patch(Candidates, :for_env, [
       %Candidate.Module{name: "OrdinaryModule", full_name: "OrdinaryModule", metadata: %{}}
     ])
 
@@ -31,7 +31,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
       [:wrap_list]
     })
 
-    patch(EngineApi, :complete, [
+    patch(Candidates, :for_env, [
       %Candidate.Module{name: "OrdinaryModule", full_name: "OrdinaryModule", metadata: %{}}
     ])
 
@@ -78,7 +78,7 @@ defmodule Expert.CodeIntelligence.Completion.ContextualTest do
   test "ignored contextual completion uses ordinary completion", %{project: project} do
     patch(Integrations, :complete, :ignore)
 
-    patch(EngineApi, :complete, [
+    patch(Candidates, :for_env, [
       %Candidate.Module{name: "OrdinaryModule", full_name: "OrdinaryModule", metadata: %{}}
     ])
 

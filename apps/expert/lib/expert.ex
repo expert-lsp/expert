@@ -192,6 +192,9 @@ defmodule Expert do
     true
   end
 
+  defp document_request?(%Structures.CompletionItem{data: %{"uri" => uri}}) when is_binary(uri),
+    do: true
+
   defp document_request?(_), do: false
 
   def handle_notification(%GenLSP.Notifications.Initialized{}, lsp) do
@@ -558,6 +561,9 @@ defmodule Expert do
 
       %Requests.TextDocumentCompletion{} ->
         {:ok, Handlers.Completion}
+
+      %Requests.CompletionItemResolve{} ->
+        {:ok, Handlers.CompletionResolve}
 
       %Requests.TextDocumentDeclaration{} ->
         {:ok, Handlers.GoToDeclaration}

@@ -1,11 +1,11 @@
 defmodule Expert.Integrations.Spark.Completion do
   @behaviour Expert.Integrations
 
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.Integrations.Spark.Common
   alias Expert.Integrations.Spark.Values
   alias Forge.Ast
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
 
   @impl Expert.Integrations
   def complete(%Env{} = env) do

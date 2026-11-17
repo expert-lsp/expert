@@ -89,6 +89,24 @@ defmodule Expert.CodeIntelligence.Completion.Translations.ModuleOrBehaviourTest 
       assert completion.kind == CompletionItemKind.module()
       assert apply_completion(completion) == ":erlang"
     end
+
+    test "the project's Erlang modules emit a completion", %{project: project} do
+      assert {:ok, completion} =
+               project
+               |> complete(":project_erl|")
+               |> fetch_completion(":project_erlang")
+
+      assert apply_completion(completion) == ":project_erlang"
+    end
+
+    test "the project's Erlang modules complete their functions", %{project: project} do
+      assert {:ok, completion} =
+               project
+               |> complete(":project_erlang.gr|")
+               |> fetch_completion("greet")
+
+      assert completion.label == "greet(arg_1)"
+    end
   end
 
   describe "struct references" do

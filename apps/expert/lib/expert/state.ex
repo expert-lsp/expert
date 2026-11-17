@@ -404,7 +404,8 @@ defmodule Expert.State do
 
     completion_options =
       %GenLSP.Structures.CompletionOptions{
-        trigger_characters: CodeIntelligence.Completion.trigger_characters()
+        trigger_characters: CodeIntelligence.Completion.trigger_characters(),
+        resolve_provider: true
       }
 
     server_capabilities =

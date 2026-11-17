@@ -1,14 +1,19 @@
 defmodule Expert.CodeIntelligence.Completion do
   alias Expert.CodeIntelligence.Completion.Builder
+  alias Expert.CodeIntelligence.Completion.Callables
+  alias Expert.CodeIntelligence.Completion.Candidate
+  alias Expert.CodeIntelligence.Completion.Candidates
+  alias Expert.CodeIntelligence.Completion.Context
+  alias Expert.CodeIntelligence.Completion.Modules
+  alias Expert.CodeIntelligence.Completion.StructFields
   alias Expert.CodeIntelligence.Completion.Translatable
+  alias Expert.CodeIntelligence.Completion.Variables
   alias Expert.CodeIntelligence.Hex
   alias Expert.Configuration
-  alias Expert.EngineApi
   alias Expert.Integrations
   alias Expert.Project.Intelligence
   alias Forge.Ast.Analysis
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias Forge.Document.Changes
   alias Forge.Document.Edit
   alias Forge.Document.Position
@@ -19,8 +24,6 @@ defmodule Expert.CodeIntelligence.Completion do
   alias GenLSP.Structures.CompletionList
 
   require Logger
-
-  @expert_deps Enum.map([:expert | Mix.Project.deps_apps()], &Atom.to_string/1)
 
   def trigger_characters do
     [".", "@", "&", "%", "^", ":", "!", "-", "~"]
@@ -38,14 +41,14 @@ defmodule Expert.CodeIntelligence.Completion do
       {:ok, env} ->
         hex_context =
           if Hex.project_file?(project, analysis.document) do
-            case Hex.Context.detect(analysis, position) do
+            case Hex.Context.detect(env.analysis, position) do
               {:ok, ctx} -> ctx
               :error -> nil
             end
           end
 
         hex_items = hex_items_for_context(hex_context, project, env)
-        {regular_items, contextual_incomplete?} = completions(project, env, context)
+        {regular_items, contextual_incomplete?} = completions(project, env, analysis, context)
         all = hex_items ++ regular_items
         log_candidates(all)
 
@@ -82,18 +85,28 @@ defmodule Expert.CodeIntelligence.Completion do
     Logger.info([log_iolist, "]"])
   end
 
-  defp completions(%Project{} = project, %Env{} = env, %CompletionContext{} = context) do
+  defp completions(
+         %Project{} = project,
+         %Env{} = env,
+         %Analysis{} = document_analysis,
+         %CompletionContext{} = context
+       ) do
     case Integrations.complete(env) do
       {:override, candidates, incomplete?, _transforms} ->
         {translate_contextual_candidates(candidates, env), incomplete?}
 
       {:augment, candidates, incomplete?, transforms} ->
         contextual_items = translate_contextual_candidates(candidates, env)
-        ordinary_items = project |> ordinary_completions(env, context) |> transform(transforms)
+
+        ordinary_items =
+          project
+          |> ordinary_completions(env, document_analysis, context)
+          |> transform(transforms)
+
         augment(contextual_items, ordinary_items, incomplete?)
 
       :ignore ->
-        {ordinary_completions(project, env, context), false}
+        {ordinary_completions(project, env, document_analysis, context), false}
     end
   end
 
@@ -125,7 +138,7 @@ defmodule Expert.CodeIntelligence.Completion do
     {Enum.uniq_by(items ++ ordinary_items, &{&1.label, &1.kind}), incomplete?}
   end
 
-  defp ordinary_completions(project, env, context) do
+  defp ordinary_completions(project, env, document_analysis, context) do
     prefix_tokens = Env.prefix_tokens(env, 1)
 
     cond do
@@ -144,15 +157,47 @@ defmodule Expert.CodeIntelligence.Completion do
         |> List.wrap()
 
       Env.in_context?(env, :struct_field_key) ->
-        project
-        |> EngineApi.complete_struct_fields(env.analysis, env.position)
+        env
+        |> Context.new(document_analysis)
+        |> StructFields.in_literal()
         |> Enum.map(&Translatable.translate(&1, Builder, env))
 
       true ->
-        project
-        |> EngineApi.complete(env)
+        env
+        |> Candidates.for_env(document_analysis)
+        |> Enum.concat(variables(document_analysis, env))
         |> to_completion_items(project, env, context)
     end
+  end
+
+  # A recovered environment contains only the prefix. Use the document AST to
+  # find bindings after that partial parse.
+  defp variables(%Analysis{} = document_analysis, %Env{} = env) do
+    analysis = if document_analysis.ast, do: document_analysis, else: env.analysis
+
+    if variable_position?(env) do
+      analysis
+      |> Variables.in_scope(env.position)
+      |> Enum.map(&%Candidate.Variable{name: Atom.to_string(&1)})
+    else
+      []
+    end
+  end
+
+  defp variable_position?(%Env{} = env) do
+    case Code.Fragment.cursor_context(env.prefix) do
+      {:local_or_var, _name} -> not bitstring_modifier?(env)
+      {:operator, operator} -> operator in [~c"^", ~c"&"]
+      _ -> false
+    end
+  end
+
+  defp bitstring_modifier?(%Env{} = env) do
+    Env.in_context?(env, :bitstring) and
+      match?(
+        [_name, {:operator, operator, _} | _] when operator in [:"::", :-],
+        Env.prefix_tokens(env, 2)
+      )
   end
 
   defp should_emit_completions?(%Env{} = env) do
@@ -233,10 +278,9 @@ defmodule Expert.CodeIntelligence.Completion do
          %CompletionContext{} = context
        ) do
     debug_local_completions(local_completions)
-    project_apps = EngineApi.project_apps(project)
 
     for result <- local_completions,
-        displayable?(project, project_apps, result),
+        displayable?(result),
         applies_to_context?(project, result, context),
         applies_to_env?(env, result),
         %CompletionItem{} = item <- to_completion_item(result, env) do
@@ -274,73 +318,18 @@ defmodule Expert.CodeIntelligence.Completion do
     |> List.wrap()
   end
 
-  defp displayable?(%Project{} = project, project_apps, result) do
-    suggested_module =
-      case result do
-        %_{full_name: full_name} when is_binary(full_name) -> full_name
-        %_{origin: origin} when is_binary(origin) -> origin
-        _ -> ""
-      end
+  # Hide internal namespaced modules from project completion results.
+  defp displayable?(result) do
+    case result do
+      %_{full_name: full_name} when is_binary(full_name) ->
+        not Forge.Namespace.Module.prefixed?(full_name)
 
-    cond do
-      Forge.Namespace.Module.prefixed?(suggested_module) ->
-        false
+      %_{origin: origin} when is_binary(origin) ->
+        not Forge.Namespace.Module.prefixed?(origin)
 
-      # If we're working on the dependency, we should include it!
-      Project.name(project) in @expert_deps ->
+      _ ->
         true
-
-      true ->
-        project_module?(project, project_apps, suggested_module, result)
     end
-  end
-
-  defp project_module?(_, _, "", _), do: true
-
-  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp project_module?(%Project{} = project, project_apps, suggested_module, result) do
-    module = module_string_to_atom(suggested_module)
-    module_app = Application.get_application(module)
-    project_app = Application.get_application(project.project_module)
-
-    metadata = Map.get(result, :metadata)
-
-    result_app = metadata[:app]
-
-    cond do
-      module_app in project_apps ->
-        true
-
-      # This is useful for some struct field completions, where
-      # a suggested module is not always part of the result struct,
-      # but the application is.
-      # If no application is set though, it's usually part of a result
-      # that is not part of any application yet.
-      result_app in project_apps or is_nil(metadata) ->
-        true
-
-      not is_nil(module_app) and module_app == project_app ->
-        true
-
-      is_nil(module_app) and not is_nil(project.project_module) and
-          module == project.project_module ->
-        true
-
-      true ->
-        # Results not belonging to an application or the project are most
-        # likely to be defined in a test or .exs file.
-        is_nil(module_app) and is_nil(project.project_module)
-    end
-  end
-
-  defp module_string_to_atom(""), do: nil
-
-  defp module_string_to_atom(module_string) do
-    Forge.Ast.Module.to_atom(module_string)
-  rescue
-    _e in ArgumentError ->
-      # Return nil if we can't safely convert the module string to an atom
-      nil
   end
 
   defp applies_to_env?(%Env{} = env, %struct_module{} = result) do
@@ -375,44 +364,32 @@ defmodule Expert.CodeIntelligence.Completion do
     end
   end
 
-  defp usable?(%Env{} = env, completion) do
-    # returns true if the given completion is or is a parent of
-    # a module that defines __using__
-    case completion do
-      %{full_name: full_name} ->
-        with_prefix =
-          EngineApi.modules_with_prefix(
-            env.project,
-            full_name,
-            {Kernel, :macro_exported?, [:__using__, 1]}
-          )
-
-        not Enum.empty?(with_prefix)
-
-      _ ->
-        false
-    end
+  # Accept a module after `use` when it or a nested module defines `__using__/1`.
+  defp usable?(%Env{} = env, %{full_name: full_name}) when is_binary(full_name) do
+    Enum.any?(in_tree(env.project, full_name), fn module ->
+      case Callables.exports(env.project, module) do
+        {:ok, exports} -> {"__using__", 1} in exports.macros
+        :error -> false
+      end
+    end)
   end
 
-  defp behaviour?(%Env{} = env, completion) do
-    # returns true if the given completion is or is a parent of
-    # a module that is a behaviour
+  defp usable?(_env, _completion), do: false
 
-    case completion do
-      %{full_name: full_name} ->
-        with_prefix =
-          EngineApi.modules_with_prefix(
-            env.project,
-            full_name,
-            {Kernel, :function_exported?, [:behaviour_info, 1]}
-          )
-
-        not Enum.empty?(with_prefix)
-
-      _ ->
-        false
-    end
+  # Accept a module after `@impl` when it or a nested module is a behaviour.
+  defp behaviour?(%Env{} = env, %{full_name: full_name}) when is_binary(full_name) do
+    Enum.any?(in_tree(env.project, full_name), fn module ->
+      case Modules.compiled(env.project, module) do
+        {:ok, compiled} -> :behaviour in compiled.kinds
+        :error -> false
+      end
+    end)
   end
+
+  defp behaviour?(_env, _completion), do: false
+
+  defp in_tree(project, full_name),
+    do: [full_name | Modules.with_prefix(project, full_name <> ".")]
 
   defp struct_reference_completion?(%Candidate.Struct{}, _) do
     true
@@ -436,13 +413,7 @@ defmodule Expert.CodeIntelligence.Completion do
   end
 
   defp typespec_or_type_candidate?(%Candidate.Function{} = function, %Env{} = env) do
-    case EngineApi.expand_alias(env.project, [:__MODULE__], env.analysis, env.position) do
-      {:ok, expanded} ->
-        expanded == function.origin
-
-      _error ->
-        false
-    end
+    function.origin == env.position_module
   end
 
   defp typespec_or_type_candidate?(_, _) do

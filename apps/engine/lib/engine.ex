@@ -36,12 +36,6 @@ defmodule Engine do
     to: CodeAction,
     as: :resolve_refactor
 
-  defdelegate complete(env), to: Engine.Completion, as: :elixir_sense_expand
-
-  defdelegate complete_struct_fields(analysis, position),
-    to: Engine.Completion,
-    as: :struct_fields
-
   defdelegate declaration(document, position), to: CodeIntelligence.Declaration
 
   defdelegate definition(document, position), to: CodeIntelligence.Definition

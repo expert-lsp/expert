@@ -1,10 +1,10 @@
 defmodule Expert.CodeIntelligence.Completion.Translations.ModuleAttribute do
+  alias Expert.CodeIntelligence.Completion.Candidate
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.CodeIntelligence.Completion.Translatable
   alias Expert.CodeIntelligence.Completion.Translations
   alias Forge.Ast
   alias Forge.Ast.Env
-  alias Forge.Completion.Candidate
   alias Forge.Document.Position
   alias GenLSP.Enumerations.CompletionItemKind
 

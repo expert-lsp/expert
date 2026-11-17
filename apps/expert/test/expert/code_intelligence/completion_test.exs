@@ -2,9 +2,10 @@ defmodule Expert.CodeIntelligence.CompletionTest do
   use Expert.Test.Expert.CompletionCase
   use Patch
 
+  alias Expert.CodeIntelligence.Completion.Candidate
+  alias Expert.CodeIntelligence.Completion.Candidates
   alias Expert.CodeIntelligence.Completion.SortScope
   alias Expert.EngineApi
-  alias Forge.Completion.Candidate
   alias GenLSP.Enumerations.CompletionItemKind
   alias GenLSP.Structures.CompletionItem
   alias GenLSP.Structures.CompletionList
@@ -173,7 +174,7 @@ defmodule Expert.CodeIntelligence.CompletionTest do
         origin: nil
       }
 
-      patch(EngineApi, :complete, [candidate])
+      patch(Candidates, :for_env, [candidate])
 
       [completion] = complete(project, " @type a|")
       assert completion.label == "any()"
@@ -181,7 +182,7 @@ defmodule Expert.CodeIntelligence.CompletionTest do
 
     test "typespecs with no full_name are completed", %{project: project} do
       candidate = %Candidate.Struct{full_name: nil, metadata: %{}, name: "Struct"}
-      patch(EngineApi, :complete, [candidate])
+      patch(Candidates, :for_env, [candidate])
 
       [completion] = complete(project, " %Stru|")
       assert completion.label == "Struct"
@@ -234,7 +235,7 @@ defmodule Expert.CodeIntelligence.CompletionTest do
       %Candidate.Variable{name: "#{name}-variable"}
     ]
 
-    patch(EngineApi, :complete, all_completions)
+    patch(Candidates, :for_env, all_completions)
     :ok
   end
 
