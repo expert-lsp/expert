@@ -14,11 +14,11 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   require Entry
   require Logger
 
-  @schema_version 11
+  @schema_version 12
   @database_file "source.index.sqlite3"
   @slow_query_threshold_ms 500
-  # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 7 params
-  # per entry. 4000 entries per batch is 28000 params per batch, below SQLite's
+  # NOTE(doorgan): SQLite has a variable limit of 32766. Entry batches use 8 params
+  # per entry. 4000 entries per batch is 32000 params per batch, below SQLite's
   # limit.
   @sqlite_variable_limit 32_766
   @insert_batch_size 4_000
@@ -28,7 +28,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   SELECT
     defs.id,
     files.path,
-    defs.subject,
+    modules.text || names.text,
     defs.caller,
     types.type,
     defs.block_id,
@@ -37,6 +37,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   JOIN def_blobs ON def_blobs.entry_key = defs.entry_key
   JOIN files ON files.id = defs.file_id
   JOIN types ON types.id = defs.type_id
+  JOIN names AS modules ON modules.id = defs.module_id
+  JOIN names ON names.id = defs.name_id
   """
   @refs_select """
   SELECT files.path, modules.text, names.text, types.type, callers.text, refs.occurrences
@@ -106,10 +108,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @impl Backend
-  def search_definitions(%Project{} = project, substring, type, excluded_roots) do
+  def search_definitions(%Project{} = project, term, type, excluded_roots) do
     GenServer.call(
       name(project),
-      {:search_definitions, substring, type, excluded_roots},
+      {:search_definitions, term, type, excluded_roots},
       :infinity
     )
   end
@@ -289,11 +291,11 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     do: reply(do_update_modules(state, modules, paths_to_clear), state)
 
   def handle_call(
-        {:search_definitions, substring, type, excluded_roots},
+        {:search_definitions, term, type, excluded_roots},
         _from,
         %State{} = state
       ),
-      do: reply(do_search_definitions(state, substring, type, excluded_roots), state)
+      do: reply(do_search_definitions(state, term, type, excluded_roots), state)
 
   def handle_call({:replace_all, replacement}, _from, %State{} = state),
     do: reply(do_replace_all(state, replacement), state)
@@ -393,37 +395,57 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end)
   end
 
-  def do_search_definitions(%State{} = state, substring, type, excluded_roots) do
-    literal = escape_like(substring)
+  def do_search_definitions(%State{} = state, term, type, excluded_roots) do
+    # A term with a dot is a qualified name, so we compare it with the whole subject.
+    searched =
+      if String.contains?(term, "."), do: "modules.text || names.text", else: "names.text"
+
+    literal = escape_like(term)
     last_segment = "%." <> literal
-    function_name = "%." <> literal <> "/%"
+    function_name = literal <> "/%"
+    in_order = term |> String.graphemes() |> Enum.map_join("%", &escape_like/1)
 
     {clauses, args} =
-      add_type_constraint(["defs.subject LIKE ? ESCAPE '\\'"], ["%" <> literal <> "%"], type)
+      add_type_constraint(["#{searched} LIKE ? ESCAPE '\\'"], ["%" <> in_order <> "%"], type)
 
     root_clauses = Enum.map(excluded_roots, fn _root -> "instr(files.path, ?) <> 1" end)
 
-    # LIKE ignores ASCII case and instr doesn't, so instr ranks the case that was typed higher.
     sql = """
     SELECT defs.id
     FROM defs
+    JOIN names ON names.id = defs.name_id
+    JOIN names AS modules ON modules.id = defs.module_id
     JOIN files ON files.id = defs.file_id
     WHERE #{Enum.join(clauses ++ root_clauses, " AND ")}
     ORDER BY
       CASE
-        WHEN defs.subject LIKE ? ESCAPE '\\'
-          OR defs.subject LIKE ? ESCAPE '\\'
-          OR defs.subject LIKE ? ESCAPE '\\' THEN 0
-        WHEN instr(defs.subject, ?) > 0 THEN 1
-        ELSE 2
+        -- for "cart": LIKE 'cart' OR LIKE '%.cart' OR LIKE 'cart/%'
+        WHEN #{searched} LIKE ? ESCAPE '\\'
+          OR #{searched} LIKE ? ESCAPE '\\'
+          OR #{searched} LIKE ? ESCAPE '\\' THEN 0
+        -- for "cart": LIKE '%cart%'
+        WHEN #{searched} LIKE ? ESCAPE '\\' THEN 1
+        -- for "cart": LIKE 'c%a%r%t%' OR LIKE '%.c%a%r%t%'
+        WHEN #{searched} LIKE ? ESCAPE '\\' OR #{searched} LIKE ? ESCAPE '\\' THEN 2
+        ELSE 3
       END,
-      length(defs.subject),
-      defs.subject,
+      length(#{searched}),
+      #{searched},
+      modules.text,
       defs.id
     LIMIT #{@search_limit}
     """
 
-    rank_args = [literal, last_segment, function_name, substring]
+    segment_start = in_order <> "%"
+
+    rank_args = [
+      literal,
+      last_segment,
+      function_name,
+      "%" <> literal <> "%",
+      segment_start,
+      "%." <> segment_start
+    ]
 
     case query(state, sql, args ++ excluded_roots ++ rank_args) do
       {:ok, rows} -> do_find_by_ids(state, Enum.map(rows, &hd/1), type, :definition)
@@ -498,9 +520,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_find_by_subject(%State{} = state, subject, type, subtype) do
-    {clauses, args} = subject_constraint(subject)
     selector = if subject == :_, do: :all, else: {:subject, subject_key(subject)}
-    find(state, selector, clauses, args, type, subtype)
+    find(state, selector, type, subtype)
   end
 
   def do_find_by_subjects(%State{} = state, subjects, type, subtype) when is_list(subjects) do
@@ -509,19 +530,10 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       |> Enum.map(&subject_key/1)
       |> Enum.uniq()
       # each subject is three arguments in the refs query: its module, its name
-      # and the module of calls to it
-      |> Stream.chunk_every(div(query_chunk_size(type, subtype), 3))
+      # and the module of calls to it, and four in the defs query
+      |> Stream.chunk_every(div(query_chunk_size(type, subtype), 4))
       |> Enum.reduce_while([], fn subjects, batches ->
-        selector = {:subjects, subjects}
-
-        case find(
-               state,
-               selector,
-               ["subject IN (#{placeholders(subjects)})"],
-               subjects,
-               type,
-               subtype
-             ) do
+        case find(state, {:subjects, subjects}, type, subtype) do
           entries when is_list(entries) -> {:cont, [entries | batches]}
           {:error, _} = error -> {:halt, error}
         end
@@ -534,30 +546,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   def do_find_by_caller(%State{} = state, caller, path, type, subtype) do
-    selector = {:caller, caller, path}
-
-    find(
-      state,
-      selector,
-      ["caller = ? AND file_id = #{@file_id_of_path}"],
-      [caller, path],
-      type,
-      subtype
-    )
+    find(state, {:caller, caller, path}, type, subtype)
   end
 
   def do_find_by_prefix(%State{} = state, prefix, type, subtype) do
-    {clauses, args} = prefix_constraint(prefix)
     selector = if prefix == :_, do: :all, else: {:prefix, subject_key(prefix)}
-    find(state, selector, clauses, args, type, subtype)
+    find(state, selector, type, subtype)
   end
 
-  # `clauses` and `args` only apply to `defs`. `refs` builds its own query from
-  # `selector`, and filters the decoded rows with it, since a prefix whose last
-  # byte cannot be incremented has no upper bound in SQL.
-  defp find(%State{} = state, selector, clauses, args, type, subtype) do
+  defp find(%State{} = state, selector, type, subtype) do
     Enum.reduce_while(tables_for(subtype), [], fn table, found ->
-      case table_entries(state, table, selector, clauses, args, type) do
+      case table_entries(state, table, selector, type) do
         entries when is_list(entries) -> {:cont, found ++ entries}
         {:error, _} = error -> {:halt, error}
       end
@@ -570,12 +569,15 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp tables_for(:integration), do: [:integrations]
   defp tables_for(_other), do: []
 
-  defp table_entries(%State{} = state, :defs, _selector, clauses, args, type) do
+  defp table_entries(%State{} = state, :defs, selector, type) do
+    {clauses, args} = defs_constraint(selector)
     {clauses, args} = add_type_constraint(clauses, args, type)
     state |> query_entries(where_clause(Enum.join(clauses, " AND ")), args) |> entries_result()
   end
 
-  defp table_entries(%State{} = state, :refs, selector, _clauses, _args, type) do
+  # `refs` also filters the decoded rows with `selector`, since a prefix whose
+  # last byte cannot be incremented has no upper bound in SQL.
+  defp table_entries(%State{} = state, :refs, selector, type) do
     {clauses, args} = refs_constraint(selector)
     {clauses, args} = refs_type_constraint(clauses, args, type)
     where = where_clause(Enum.join(clauses, " AND "))
@@ -586,7 +588,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     end
   end
 
-  defp table_entries(%State{} = state, :integrations, selector, clauses, args, type) do
+  defp table_entries(%State{} = state, :integrations, selector, type) do
+    {clauses, args} = integrations_constraint(selector)
     where = where_clause(Enum.join(clauses, " AND "))
 
     case query(state, "SELECT entry FROM integrations #{where}", args) do
@@ -599,6 +602,37 @@ defmodule Expert.Search.Store.Backends.Sqlite do
         error
     end
   end
+
+  defp defs_constraint(:all), do: {[], []}
+  defp defs_constraint({:subject, key}), do: defs_constraint({:subjects, [key]})
+
+  # Functions are stored as a module and a name and everything else whole. A
+  # subject doesn't say which it is, so we look for both.
+  defp defs_constraint({:subjects, keys}) do
+    pairs = Enum.flat_map(keys, &[split_subject(&1), {"", &1}])
+    values = Enum.map_join(pairs, ", ", fn _pair -> "(#{@name_id}, #{@name_id})" end)
+    {["(module_id, name_id) IN (VALUES #{values})"], Enum.flat_map(pairs, &Tuple.to_list/1)}
+  end
+
+  defp defs_constraint({:prefix, prefix}), do: prefix_constraint(prefix)
+
+  defp defs_constraint({:caller, caller, path}),
+    do: {["caller = ? AND file_id = #{@file_id_of_path}"], [caller, path]}
+
+  defp defs_constraint({:paths, paths}), do: paths_constraint(paths)
+
+  defp integrations_constraint(:all), do: {[], []}
+  defp integrations_constraint({:subject, key}), do: {["subject = ?"], [key]}
+
+  defp integrations_constraint({:subjects, keys}),
+    do: {["subject IN (#{placeholders(keys)})"], keys}
+
+  defp integrations_constraint({:prefix, prefix}) do
+    {clause, args} = starts_with("subject", prefix)
+    {[clause], args}
+  end
+
+  defp integrations_constraint({:paths, paths}), do: paths_constraint(paths)
 
   defp refs_type_constraint(clauses, args, :module) do
     clause = "type_id IN (SELECT id FROM types WHERE type IN (?, ?))"
@@ -626,10 +660,17 @@ defmodule Expert.Search.Store.Backends.Sqlite do
      ], Enum.flat_map(pairs, &Tuple.to_list/1) ++ modules}
   end
 
+  defp refs_constraint({:prefix, prefix}), do: prefix_constraint(prefix)
+
+  defp refs_constraint({:caller, caller, path}),
+    do: {["caller_id = #{@name_id} AND file_id = #{@file_id_of_path}"], [caller, path]}
+
+  defp refs_constraint({:paths, paths}), do: paths_constraint(paths)
+
   # Subjects starting with `prefix` either have a module starting with it, or
   # have `prefix` up to one of its dots as their module and a name starting
   # with the rest.
-  defp refs_constraint({:prefix, prefix}) do
+  defp prefix_constraint(prefix) do
     splits =
       for {at, 1} <- :binary.matches(prefix, ".") do
         {binary_part(prefix, 0, at + 1), binary_part(prefix, at + 1, byte_size(prefix) - at - 1)}
@@ -644,10 +685,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
     {["(" <> Enum.map_join(clauses, " OR ", &"(#{&1})") <> ")"], Enum.concat(args)}
   end
 
-  defp refs_constraint({:caller, caller, path}),
-    do: {["caller_id = #{@name_id} AND file_id = #{@file_id_of_path}"], [caller, path]}
-
-  defp refs_constraint({:paths, paths}),
+  defp paths_constraint(paths),
     do: {["file_id IN (SELECT id FROM files WHERE path IN (#{placeholders(paths)}))"], paths}
 
   defp in_module(module, name_prefix) do
@@ -949,7 +987,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
       entry_key INTEGER PRIMARY KEY,
       id INTEGER NOT NULL,
       file_id INTEGER NOT NULL,
-      subject TEXT NOT NULL,
+      module_id INTEGER NOT NULL,
+      name_id INTEGER NOT NULL,
       caller TEXT,
       type_id INTEGER NOT NULL,
       block_id INTEGER NOT NULL
@@ -1045,7 +1084,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   @indexes [
-    "defs_definitions_idx ON defs (subject, id, file_id, type_id)",
+    "defs_definitions_idx ON defs (module_id, name_id, id, file_id, type_id)",
     "defs_caller_idx ON defs (caller, file_id, type_id) WHERE caller IS NOT NULL",
     "defs_id_idx ON defs (id, type_id)",
     "defs_file_block_idx ON defs (file_id, block_id, id)",
@@ -1305,15 +1344,26 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp insert_entry_batch(%State{} = state, definitions) do
     rows = Enum.map(definitions, fn {_entry, row} -> row end)
 
+    texts =
+      Enum.flat_map(rows, fn {[_id, _path, module, name | _], _blob} -> [module, name] end)
+
     with {:ok, entry_key} <- next_entry_key(state),
          {:ok, file_ids} <- file_ids(state, Enum.map(rows, fn {[_id, path | _], _} -> path end)),
          {:ok, type_ids} <-
-           type_ids(state, Enum.map(rows, fn {[_, _, _, _, type | _], _} -> type end)) do
+           type_ids(state, Enum.map(rows, fn {[_, _, _, _, _, type | _], _} -> type end)),
+         {:ok, name_ids} <- name_ids(state, texts) do
       rows =
         rows
-        |> Enum.map(fn {[id, path, subject, caller, type, block_id], blob} ->
-          {[id, Map.get(file_ids, path), subject, caller, Map.get(type_ids, type), block_id],
-           blob}
+        |> Enum.map(fn {[id, path, module, name, caller, type, block_id], blob} ->
+          {[
+             id,
+             Map.get(file_ids, path),
+             Map.fetch!(name_ids, module),
+             Map.fetch!(name_ids, name),
+             caller,
+             Map.get(type_ids, type),
+             block_id
+           ], blob}
         end)
         |> Enum.with_index(entry_key)
 
@@ -1447,8 +1497,8 @@ defmodule Expert.Search.Store.Backends.Sqlite do
 
   defp insert_entry_rows(%State{} = state, rows) do
     sql = """
-    INSERT INTO defs (entry_key, id, file_id, subject, caller, type_id, block_id)
-    VALUES #{row_placeholders(rows, 7)}
+    INSERT INTO defs (entry_key, id, file_id, module_id, name_id, caller, type_id, block_id)
+    VALUES #{row_placeholders(rows, 8)}
     """
 
     args =
@@ -1534,10 +1584,21 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp entry_args(%Entry{} = entry) do
+    subject = subject_key(entry.subject)
+
+    # A function is named inside its module. Anything else, like a module, is
+    # named by its whole subject.
+    {module, name} =
+      case entry.type do
+        {kind, _} when kind in [:function, :macro] -> split_subject(subject)
+        _type -> {"", subject}
+      end
+
     [
       entry.id,
       entry.path,
-      subject_key(entry.subject),
+      module,
+      name,
       entry.caller,
       blob(entry.type),
       block_id_key(entry.block_id)
@@ -1639,14 +1700,7 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   end
 
   defp find_by_path_chunk(%State{} = state, paths, type, subtype) do
-    find(
-      state,
-      {:paths, paths},
-      ["file_id IN (SELECT id FROM files WHERE path IN (#{placeholders(paths)}))"],
-      paths,
-      type,
-      subtype
-    )
+    find(state, {:paths, paths}, type, subtype)
   end
 
   defp query_chunk_size(type, subtype) do
@@ -1673,24 +1727,6 @@ defmodule Expert.Search.Store.Backends.Sqlite do
   defp row_placeholders(rows, columns) do
     row = "(" <> placeholders(1..columns) <> ")"
     Enum.map_join(rows, ", ", fn _ -> row end)
-  end
-
-  defp subject_constraint(:_), do: {[], []}
-  defp subject_constraint(subject), do: {["subject = ?"], [subject_key(subject)]}
-
-  defp prefix_constraint(:_), do: {[], []}
-
-  # Range queries use the B-tree index directly and avoid escaping wildcards in LIKE.
-  defp prefix_constraint(prefix) do
-    prefix_key = subject_key(prefix)
-
-    case next_prefix(prefix_key) do
-      {:ok, next_key} ->
-        {["subject >= ? AND subject < ?"], [prefix_key, next_key]}
-
-      :overflow ->
-        {["subject >= ?"], [prefix_key]}
-    end
   end
 
   defp next_prefix(binary) when is_binary(binary) do

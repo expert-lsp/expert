@@ -127,12 +127,12 @@ defmodule Expert.Search.Store.State do
 
   def fuzzy(%__MODULE__{loaded?: false}, _subject, _constraints), do: {:error, :loading}
 
-  def fuzzy(%__MODULE__{} = state, substring, constraints) do
+  def fuzzy(%__MODULE__{} = state, term, constraints) do
     type = Keyword.get(constraints, :type, :_)
     subtype = Keyword.get(constraints, :subtype, :_)
 
     if subtype in [:_, :definition] do
-      case state.backend.search_definitions(state.project, substring, type, state.deps_roots) do
+      case state.backend.search_definitions(state.project, term, type, state.deps_roots) do
         l when is_list(l) -> {:ok, l}
         error -> error
       end

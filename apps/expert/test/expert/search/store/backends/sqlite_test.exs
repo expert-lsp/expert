@@ -263,7 +263,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       {:ok, conn} = Exqlite.Basic.open(database_path)
       result = Exqlite.Basic.exec(conn, "SELECT version FROM schema")
-      assert {:ok, [[11]], ["version"]} = Exqlite.Basic.rows(result)
+      assert {:ok, [[12]], ["version"]} = Exqlite.Basic.rows(result)
       assert :ok = Exqlite.Basic.close(conn)
     end
   end
@@ -659,7 +659,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
     end
 
     @tag :tmp_dir
-    test "finds subjects by any prefix, across their module and name", %{
+    test "finds definitions and references by any prefix, across their module and name", %{
       project: project,
       tmp_dir: tmp_dir
     } do
@@ -675,14 +675,20 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       path = Path.join(tmp_dir, "prefixes.ex")
 
       entries =
-        for {subject, id} <- Enum.with_index(subjects, 1) do
+        for {subject, id} <- Enum.with_index(subjects, 1),
+            subtype <- [:definition, :reference] do
           %Entry{
             id: id,
             path: path,
             range: range(id, 1, 7),
             subject: subject,
-            type: {:function, :usage},
-            subtype: :reference,
+            type:
+              case {subtype, String.contains?(subject, "/")} do
+                {:definition, false} -> :module
+                {:definition, true} -> {:function, :public}
+                {:reference, _} -> {:function, :usage}
+              end,
+            subtype: subtype,
             block_id: :root
           }
         end
@@ -703,15 +709,18 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
             "Kernel..",
             "Kernel...",
             "x"
-          ] do
+          ],
+          subtype <- [:definition, :reference, :_] do
         found =
           project
-          |> Sqlite.find_by_prefix(prefix, :_, :_)
+          |> Sqlite.find_by_prefix(prefix, :_, subtype)
           |> Enum.map(& &1.subject)
           |> Enum.sort()
 
-        assert found == subjects |> Enum.filter(&String.starts_with?(&1, prefix)) |> Enum.sort(),
-               prefix
+        expected = Enum.filter(subjects, &String.starts_with?(&1, prefix))
+        expected = if subtype == :_, do: expected ++ expected, else: expected
+
+        assert found == Enum.sort(expected), inspect({prefix, subtype})
       end
     end
   end
@@ -1639,7 +1648,7 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
     end
 
     @tag :tmp_dir
-    test "ranks equal names first, then the typed case, then shorter subjects", %{
+    test "ranks equal names first, then shorter names", %{
       project: project,
       tmp_dir: tmp_dir
     } do
@@ -1647,7 +1656,6 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       replace_definitions(project, [
         {"Shop.Carts", :module, path},
-        {"Shop.Cart.total/1", {:function, :public}, path},
         {"Shop.Orders.cart/1", {:function, :public}, path},
         {"Shop.Cart", :module, path},
         {"Cart", :module, path},
@@ -1656,11 +1664,91 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert matching_subjects(project, "cart") == [
                "Cart",
-               "Shop.Cart",
                "Shop.Orders.cart/1",
-               "Shop.Orders.add_cart_item/2",
+               "Shop.Cart",
                "Shop.Carts",
-               "Shop.Cart.total/1"
+               "Shop.Orders.add_cart_item/2"
+             ]
+    end
+
+    @tag :tmp_dir
+    test "leaves out functions that only match by their module", %{
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "lib/shop.ex")
+
+      replace_definitions(project, [
+        {"Shop.Cart.total/1", {:function, :public}, path},
+        {"Shop.Orders.cart/1", {:function, :public}, path}
+      ])
+
+      assert matching_subjects(project, "cart") == ["Shop.Orders.cart/1"]
+    end
+
+    @tag :tmp_dir
+    test "matches a module by any part of its name", %{project: project, tmp_dir: tmp_dir} do
+      replace_definitions(project, [{"Shop.Orders", :module, Path.join(tmp_dir, "lib/shop.ex")}])
+
+      assert matching_subjects(project, "shop") == ["Shop.Orders"]
+      assert matching_subjects(project, "shord") == ["Shop.Orders"]
+    end
+
+    @tag :tmp_dir
+    test "matches a term with a dot against whole subjects", %{
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "lib/shop.ex")
+
+      replace_definitions(project, [
+        {"Shop.Orders.cart/1", {:function, :public}, path},
+        {"Shop.Carts.cart/1", {:function, :public}, path},
+        {"Blog.Orders.cart/1", {:function, :public}, path},
+        {"Shop.Orders", :module, path}
+      ])
+
+      assert matching_subjects(project, "Orders.cart") == [
+               "Blog.Orders.cart/1",
+               "Shop.Orders.cart/1"
+             ]
+
+      assert matching_subjects(project, "Shop.Orders") == ["Shop.Orders", "Shop.Orders.cart/1"]
+    end
+
+    @tag :tmp_dir
+    test "matches the typed characters in order", %{project: project, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "lib/foo.ex")
+
+      replace_definitions(project, [
+        {"Foo.other/0", {:function, :public}, path},
+        {"Foo.toss/0", {:function, :public}, path}
+      ])
+
+      assert matching_subjects(project, "otr") == ["Foo.other/0"]
+    end
+
+    @tag :tmp_dir
+    test "ranks contiguous matches, then matches that start the name", %{
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      path = Path.join(tmp_dir, "lib/foo.ex")
+
+      replace_definitions(project, [
+        {"Foo.motor/0", {:function, :public}, path},
+        {"Deep.Nested.Module.other_thing/1", {:function, :public}, path},
+        {"Foo.motr/0", {:function, :public}, path},
+        {"Foo.MOTR", :module, path},
+        {"Bar.Outer", :module, path}
+      ])
+
+      assert matching_subjects(project, "otr") == [
+               "Foo.motr/0",
+               "Foo.MOTR",
+               "Bar.Outer",
+               "Deep.Nested.Module.other_thing/1",
+               "Foo.motor/0"
              ]
     end
 
@@ -1735,10 +1823,10 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
       assert :ok = Sqlite.replace_all(project, entries)
     end
 
-    defp matching_subjects(project, substring, opts \\ []) do
+    defp matching_subjects(project, term, opts \\ []) do
       project
       |> Sqlite.search_definitions(
-        substring,
+        term,
         Keyword.get(opts, :type, :_),
         Keyword.get(opts, :excluded_roots, [])
       )
@@ -1761,6 +1849,33 @@ defmodule Expert.Search.Store.Backends.SqliteTest do
 
       assert {:ok, :empty} = Sqlite.prepare(pid)
       assert [] = Sqlite.find_by_paths(project, paths, :module, :definition)
+    end
+  end
+
+  describe "find_by_subject/4" do
+    @tag :tmp_dir
+    test "finds only the definition with the given subject", %{
+      project: project,
+      runtime_versions: runtime_versions,
+      tmp_dir: tmp_dir
+    } do
+      pid =
+        start_supervised!(%{
+          id: :sqlite,
+          start: {Sqlite, :start_link, [project, [runtime_versions: runtime_versions]]}
+        })
+
+      assert {:ok, :empty} = Sqlite.prepare(pid)
+      path = Path.join(tmp_dir, "lib/foo.ex")
+
+      replace_definitions(project, [
+        {"Foo.Bar", :module, path},
+        {"Foo.Bar.baz/1", {:function, :public}, path},
+        {"Foo.Bar.Qux", :module, path}
+      ])
+
+      assert [%Entry{subject: "Foo.Bar", type: :module}] =
+               Sqlite.find_by_subject(project, "Foo.Bar", :_, :definition)
     end
   end
 

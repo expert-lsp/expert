@@ -47,7 +47,7 @@ defmodule Expert.Search.Store.StateTest do
     def replace_modules(_project, _modules), do: :ok
     def update_modules(_project, _modules, _paths_to_clear), do: :ok
     def search_definitions(_project, "Needle", :module, _excluded_roots), do: [entry(2)]
-    def search_definitions(_project, _substring, _type, _excluded_roots), do: []
+    def search_definitions(_project, _term, _type, _excluded_roots), do: []
     def siblings(_project, _entry), do: []
     def parent(_project, _entry), do: nil
     def structure_for_path(_project, _path), do: {:ok, %{}}
@@ -90,7 +90,7 @@ defmodule Expert.Search.Store.StateTest do
     def modules(_project), do: []
     def replace_modules(_project, _modules), do: :ok
     def update_modules(_project, _modules, _paths_to_clear), do: :ok
-    def search_definitions(_project, _substring, _type, _excluded_roots), do: []
+    def search_definitions(_project, _term, _type, _excluded_roots), do: []
     def siblings(_project, _entry), do: []
     def parent(_project, _entry), do: nil
     def structure_for_path(_project, _path), do: {:ok, %{}}
