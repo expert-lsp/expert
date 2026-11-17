@@ -345,6 +345,70 @@ defmodule Expert.Search.Indexer.BeamsTest do
       end
     end
 
+    test "indexes functions named nil, true and false", %{tmp_dir: tmp_dir} do
+      module = unique_module("LiteralNames")
+
+      %{entries: entries} =
+        index_source!(
+          tmp_dir,
+          """
+          defmodule #{inspect(module)} do
+            def unquote(true)(value \\\\ :ok), do: value
+            defmacro unquote(nil)(value), do: value
+            defdelegate unquote(false)(value), to: Kernel, as: :not
+            defdelegate trim(value), to: __MODULE__, as: true
+          end
+          """,
+          expected_modules: [module],
+          rewrite_source?: false
+        )
+
+      for {name, arity, type} <- [
+            {"true", 0, {:function, :public}},
+            {"true", 1, {:function, :public}},
+            {"nil", 1, {:macro, :public}},
+            {"false", 1, {:function, :delegate}},
+            {"trim", 1, {:function, :delegate}}
+          ] do
+        subject = Formats.mfa(module, name, arity)
+
+        assert [%Entry{type: ^type}] =
+                 Enum.filter(entries, &(&1.subject == subject and &1.subtype == :definition))
+      end
+
+      assert %Entry{metadata: %{original_mfa: original_mfa}} =
+               Enum.find(entries, &(&1.subject == Formats.mfa(module, "trim", 1)))
+
+      assert original_mfa == Formats.mfa(module, "true", 1)
+    end
+
+    test "indexes protocol functions named nil", %{tmp_dir: tmp_dir} do
+      protocol = unique_module("LiteralNamesProtocol")
+      macros = Module.concat(protocol, Macros)
+
+      %{entries: entries} =
+        index_source!(
+          tmp_dir,
+          """
+          defmodule #{inspect(macros)} do
+            defmacro def_nil, do: {:def, [], [{nil, [], [{:value, [], nil}]}]}
+          end
+
+          defprotocol #{inspect(protocol)} do
+            require #{inspect(macros)}
+            #{inspect(macros)}.def_nil()
+          end
+          """,
+          expected_modules: [macros, protocol],
+          rewrite_source?: false
+        )
+
+      subject = Formats.mfa(protocol, "nil", 1)
+
+      assert [%Entry{type: {:function, :public}}] =
+               Enum.filter(entries, &(&1.subject == subject and &1.subtype == :definition))
+    end
+
     test "does not import delegates for modules whose beams were not indexed", %{tmp_dir: tmp_dir} do
       indexed_module = unique_module("IndexedDelegate")
       skipped_module = unique_module("SkippedDelegate")
