@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/expert-lsp/expert/compare/v0.2.3...v0.2.4) (2026-11-17)
+
+
+### Bug Fixes
+
+* don't crash the index on functions named nil, true, false ([#1017](https://github.com/expert-lsp/expert/issues/1017)) ([56dd3f0](https://github.com/expert-lsp/expert/commit/56dd3f0bd98f608a460b757a3bf33c0c7b8fa82d))
+
 ## [0.2.3](https://github.com/expert-lsp/expert/compare/v0.2.2...v0.2.3) (2026-11-10)
 
 
