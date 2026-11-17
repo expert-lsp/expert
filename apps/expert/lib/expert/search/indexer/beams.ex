@@ -361,6 +361,8 @@ defmodule Expert.Search.Indexer.Beams do
         []
 
       true ->
+        name = function_name(name)
+
         name
         |> public_arities(
           arity,
@@ -517,6 +519,7 @@ defmodule Expert.Search.Indexer.Beams do
   defp delegate_specs({{name, arity}, "def", metadata, clauses}) do
     with true <- delegate_metadata?(metadata),
          {:ok, module, target_name, target_arity} <- delegate_target(clauses) do
+      name = function_name(name)
       defaults = meta(metadata, "defaults", 0)
 
       spec = %{
@@ -543,9 +546,9 @@ defmodule Expert.Search.Indexer.Beams do
   defp delegate_target([{_metadata, args, [], body}]) do
     with {{".", _dot_metadata, [module, name]}, _call_metadata, call_args} <- body,
          true <- is_binary(module),
-         true <- is_binary(name),
+         true <- is_binary(name) or is_atom(name),
          true <- same_variables?(args, call_args) do
-      {:ok, Subject.module(module), name, length(call_args)}
+      {:ok, Subject.module(module), function_name(name), length(call_args)}
     else
       _ -> :error
     end
@@ -604,8 +607,11 @@ defmodule Expert.Search.Indexer.Beams do
       _clause -> nil
     end)
     |> Enum.flat_map(fn
-      {name, arity} when is_binary(name) and is_integer(arity) -> [{name, arity}]
-      _function -> []
+      {name, arity} when (is_binary(name) or is_atom(name)) and is_integer(arity) ->
+        [{function_name(name), arity}]
+
+      _function ->
+        []
     end)
   end
 
@@ -625,6 +631,11 @@ defmodule Expert.Search.Indexer.Beams do
       arities
     end
   end
+
+  # The debug info decodes the atoms nil, true and false as themselves, and every
+  # other atom as a string.
+  defp function_name(name) when is_atom(name), do: Atom.to_string(name)
+  defp function_name(name), do: name
 
   defp definition_range(metadata, name) do
     range(meta(metadata, "line", 1), meta(metadata, "column", 1), String.length(name))
