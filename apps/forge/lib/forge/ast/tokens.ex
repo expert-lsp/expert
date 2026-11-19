@@ -62,6 +62,8 @@ defmodule Forge.Ast.Tokens do
     end
   end
 
+  # The tokenizer's return shapes differ across Elixir versions, so some clauses never match on the PLT's version
+  @dialyzer {:no_match, tokenize: 3}
   defp tokenize(line_text, line_number, context) do
     line_charlist = String.to_charlist(line_text)
     current_context = line_charlist ++ context
