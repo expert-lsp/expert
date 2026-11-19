@@ -86,6 +86,25 @@ defmodule Expert.Search.Indexer.Extractors.HeexTest do
       assert "render_item/1" = extract(doc, capture.range)
     end
 
+    test "a trailing comment doesn't hide code that follows on the same line" do
+      code = ~q[
+      defmodule Parent do
+        def render(assigns) do
+          ~H"""
+          <%= value(@a) # fallback %>{label(@x)}
+          """
+        end
+      end
+      ]
+
+      {:ok, references, doc} = index_functions(code)
+
+      assert [
+               {"Parent.value/1", "value(@a)"},
+               {"Parent.label/1", "label(@x)"}
+             ] = Enum.map(references, &{&1.subject, extract(doc, &1.range)})
+    end
+
     test "assigns aren't module attribute references" do
       code = ~q[
       defmodule Parent do
