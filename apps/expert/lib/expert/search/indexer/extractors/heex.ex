@@ -29,7 +29,8 @@ defmodule Expert.Search.Indexer.Extractors.Heex do
   defp code(events, template) do
     spans =
       for {type, code, start} <- events do
-        {type, Heex.document_code(template, code), Heex.to_document(template, start)}
+        code = template |> Heex.document_code(code) |> without_comments(type)
+        {type, code, Heex.to_document(template, start)}
       end
 
     case parse(spans) do
@@ -53,6 +54,28 @@ defmodule Expert.Search.Indexer.Extractors.Heex do
       _ -> :error
     end
   end
+
+  defp without_comments(code, type) when type in @standalone_types do
+    case Code.string_to_quoted_with_comments(code) do
+      {:ok, _ast, [_ | _] = comments} ->
+        comment_columns = Map.new(comments, &{&1.line, &1.column})
+
+        code
+        |> String.split("\n")
+        |> Enum.with_index(1)
+        |> Enum.map_join("\n", fn {line, number} ->
+          case Map.fetch(comment_columns, number) do
+            {:ok, column} -> line |> String.to_charlist() |> Enum.take(column - 1) |> to_string()
+            :error -> line
+          end
+        end)
+
+      _ ->
+        code
+    end
+  end
+
+  defp without_comments(code, _type), do: code
 
   defp masked_source(spans) do
     {source, _position} =
