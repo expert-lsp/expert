@@ -16,7 +16,6 @@ defmodule Expert.CodeIntelligence.Completion.Builder do
   alias Forge.Document.Edit
   alias Forge.Document.Position
   alias Forge.Document.Range
-  alias Future.Code, as: Code
   alias GenLSP.Enumerations.InsertTextFormat
   alias GenLSP.Enumerations.MarkupKind
   alias GenLSP.Structures.CompletionItem

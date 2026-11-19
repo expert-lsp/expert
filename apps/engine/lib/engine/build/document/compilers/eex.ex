@@ -92,7 +92,7 @@ defmodule Engine.Build.Document.Compilers.EEx do
   def do_eval_quoted(quoted_ast, path) do
     eval_heex_quoted? =
       quoted_ast
-      |> Future.Macro.path(&match?({:require, [context: Phoenix.LiveView.TagEngine], _}, &1))
+      |> Macro.path(&match?({:require, [context: Phoenix.LiveView.TagEngine], _}, &1))
       |> then(&(not is_nil(&1)))
 
     env =

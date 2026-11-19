@@ -66,11 +66,17 @@ defmodule Forge.Ast.Tokens do
     line_charlist = String.to_charlist(line_text)
     current_context = line_charlist ++ context
 
-    case :future_elixir_tokenizer.tokenize(current_context, line_number, 1, []) do
+    case :elixir_tokenizer.tokenize(current_context, line_number, 1, []) do
       {:ok, _, _, _, tokens, _} ->
         {:ok, tokens, ~c""}
 
+      {:ok, _, _, _, tokens} ->
+        {:ok, Enum.reverse(tokens), ~c""}
+
       {:error, {_, ~c"unexpected token: ", _}, _, _, _} ->
+        {:ok, [], ~c"\n" ++ current_context}
+
+      {:error, {_, _, ~c"unexpected token: ", _}, _, _, _} ->
         {:ok, [], ~c"\n" ++ current_context}
 
       {:error, _, _, _, tokens} ->

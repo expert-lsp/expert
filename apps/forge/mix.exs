@@ -11,7 +11,7 @@ defmodule Forge.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      compilers: [:yecc] ++ Mix.compilers(),
+      compilers: Mix.compilers(),
       dialyzer: Mix.Dialyzer.config(),
       test_ignore_filters: [&String.starts_with?(&1, "test/fixtures")]
     ]

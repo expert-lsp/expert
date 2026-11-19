@@ -7,8 +7,6 @@ defmodule Engine.Module.Loader do
 
   use Agent
 
-  alias Future.Code
-
   def start_link(_) do
     initialize = fn ->
       Map.new(:code.all_loaded(), fn {name, _} -> {:module, name} end)
