@@ -8,8 +8,6 @@ defmodule Forge.Completion.Candidate.ArgumentNames do
   rendering the results useful for completion.
   """
 
-  alias Future.Code, as: Code
-
   @type argument_names :: [String.t()]
   @default_specifier ~S(\\)
 

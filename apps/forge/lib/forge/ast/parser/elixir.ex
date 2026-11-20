@@ -1,8 +1,6 @@
 defmodule Forge.Ast.Parser.Elixir do
   @moduledoc false
 
-  alias Future.Code, as: Code
-
   defp opts do
     [
       literal_encoder: &{:ok, {:__block__, &2, [&1]}},
