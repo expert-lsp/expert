@@ -12,7 +12,6 @@ defmodule Engine.CodeIntelligence.Definition do
   alias Forge.Formats
   alias Forge.Search.Indexer.Entry
   alias Forge.Text
-  alias Future.Code
 
   require Logger
 

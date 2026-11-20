@@ -6,7 +6,6 @@ defmodule Engine.CodeIntelligence.Entity do
   alias Forge.Document.Position
   alias Forge.Document.Range
   alias Forge.Formats
-  alias Future.Code, as: Code
   alias Sourceror.Zipper
 
   require Logger

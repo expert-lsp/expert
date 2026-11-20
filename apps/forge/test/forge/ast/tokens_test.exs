@@ -32,6 +32,16 @@ defmodule Forge.Ast.TokensTest do
              ]
     end
 
+    test "does not crash on mixed-script identifiers" do
+      {position, document} = pop_cursor("# сx|", as: :document)
+
+      assert Enum.to_list(Tokens.prefix_stream(document, position)) != nil
+
+      {position, document} = pop_cursor("defmodule Foo do\n  сx|\nend", as: :document)
+
+      assert Enum.to_list(Tokens.prefix_stream(document, position)) != nil
+    end
+
     test "returns nothing when cursor is at start" do
       text = ~q[
         |defmodule Foo do
@@ -177,20 +187,23 @@ defmodule Forge.Ast.TokensTest do
       {position, document} = pop_cursor(text, as: :document)
       tokens = Tokens.prefix_stream(document, position)
 
-      assert Enum.to_list(tokens) == [
+      assert [
                {:interpolated_string,
                 [
                   {:literal, "foo", {{1, 1}, {1, 4}}},
                   {:interpolation,
                    [
                      {:%{}, {1, 7, nil}},
-                     {:"{", {1, 8, nil}},
+                     {:"{", {1, curly_column, nil}},
                      {:kw_identifier, {1, 9, ~c"key"}, :key},
                      {:identifier, {1, 14, ~c"value"}, :value},
                      {:"}", {1, 19, nil}}
                    ], {{1, 7}, {1, 20}}}
                 ], {1, 1}}
-             ]
+             ] = Enum.to_list(tokens)
+
+      # Elixir < 1.17 reports the `{` of `%{` at column 8, 1.17+ at column 7
+      assert curly_column in [7, 8]
     end
 
     test "handles interpolations starting with struct literal" do

@@ -4,7 +4,6 @@ defmodule Expert.CodeIntelligence.Completion.Translations.StructField do
   alias Expert.CodeIntelligence.Completion.Translations
   alias Forge.Ast.Env
   alias Forge.Completion.Candidate
-  alias Future.Code, as: Code
   alias GenLSP.Enumerations.CompletionItemKind
 
   defimpl Translatable, for: Candidate.StructField do
