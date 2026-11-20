@@ -20,7 +20,6 @@ defmodule Expert.Release do
     forge_sources =
       [
         "lib",
-        "src",
         "mix.exs",
         "config",
         "mix.lock"

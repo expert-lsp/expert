@@ -138,7 +138,7 @@ defmodule Expert.Integrations.Spark.Hover do
   end
 
   defp hover_name({context, chars})
-       when context in [:keyword, :local_call, :local_or_var, :unquoted_atom],
+       when context in [:key, :keyword, :local_call, :local_or_var, :unquoted_atom],
        do: to_string(chars)
 
   defp hover_name(_context), do: nil

@@ -71,7 +71,6 @@ defmodule Forge.Ast do
   alias Forge.Document.Edit
   alias Forge.Document.Position
   alias Forge.Document.Range
-  alias Future.Code, as: Code
   alias Sourceror.Zipper
 
   require Logger
@@ -336,7 +335,7 @@ defmodule Forge.Ast do
     case do_container_cursor_to_quoted(document_fragment) do
       {:ok, quoted} ->
         quoted
-        |> Future.Macro.path(&match?({:__cursor__, _, _}, &1))
+        |> Macro.path(&match?({:__cursor__, _, _}, &1))
         |> List.wrap()
 
       _ ->
@@ -845,7 +844,7 @@ defmodule Forge.Ast do
     default
   end
 
-  # Similar to `Future.Macro.path/3`, but returns the path to the innermost
+  # Similar to `Macro.path/3`, but returns the path to the innermost
   # node for which `fun` returns truthy instead of the path to the first node
   # that returns such.
   defp innermost_path(ast, acc, fun)
