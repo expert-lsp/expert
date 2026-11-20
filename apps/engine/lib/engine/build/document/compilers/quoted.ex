@@ -8,6 +8,14 @@ defmodule Engine.Build.Document.Compilers.Quoted do
   alias Forge.Document
 
   def compile(%Document{} = document, quoted_ast, compiler_name) do
+    if Engine.Mix.project_file?(document.path) do
+      {:ok, []}
+    else
+      compile_quoted_document(document, quoted_ast, compiler_name)
+    end
+  end
+
+  defp compile_quoted_document(%Document{} = document, quoted_ast, compiler_name) do
     prepare_compile(document.path)
 
     quoted_ast =
@@ -17,14 +25,14 @@ defmodule Engine.Build.Document.Compilers.Quoted do
         quoted_ast
       end
 
-    {status, diagnostics} =
+    result =
       if Features.with_diagnostics?() do
         do_compile(quoted_ast, document)
       else
         do_compile_and_capture_io(quoted_ast, document)
       end
 
-    {status, Enum.map(diagnostics, &replace_source(&1, compiler_name))}
+    replace_sources(result, compiler_name)
   end
 
   defp do_compile(quoted_ast, document) do
@@ -98,17 +106,8 @@ defmodule Engine.Build.Document.Compilers.Quoted do
     end
   end
 
-  defp prepare_compile(path) do
+  defp prepare_compile(_path) do
     if Engine.Mix.loaded?() do
-      # If we're compiling a mix.exs file, the after compile callback from
-      # `use Mix.Project` will blow up if we add the same project to the project stack
-      # twice. Preemptively popping it prevents that error from occurring.
-      if Path.basename(path) == "mix.exs" do
-        Engine.with_lock(Engine.Mix.StackMutation, fn ->
-          Mix.ProjectStack.pop()
-        end)
-      end
-
       Mix.Task.run(:loadconfig)
     else
       :ok
@@ -143,8 +142,8 @@ defmodule Engine.Build.Document.Compilers.Quoted do
     end)
   end
 
-  defp replace_source(result, source) do
-    Map.put(result, :source, source)
+  defp replace_sources({status, diagnostics}, source) do
+    {status, Enum.map(diagnostics, &Map.put(&1, :source, source))}
   end
 
   @doc false

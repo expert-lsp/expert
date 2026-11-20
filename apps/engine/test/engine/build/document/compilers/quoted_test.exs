@@ -1,5 +1,5 @@
 defmodule Engine.Build.Document.Compilers.QuotedTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   import Forge.Test.CodeSigil
 

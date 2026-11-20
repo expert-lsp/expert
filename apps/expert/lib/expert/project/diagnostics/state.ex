@@ -84,13 +84,14 @@ defmodule Expert.Project.Diagnostics.State do
   end
 
   @doc """
-  Only clear diagnostics if they've been synced to disk
-  It's possible that the diagnostic presented by typing is still correct, and the file
-  that exists on the disk is actually an older copy of the file in memory.
+  Clears project diagnostics for saved files, regardless of extension.
+  Keeps diagnostics for unsaved files and file diagnostics for open scripts.
   """
   def clear_all_flushed(%__MODULE__{} = state) do
-    entries_by_uri = clear_flushed(state.entries_by_uri)
-    file_entries_by_uri = clear_flushed(state.file_entries_by_uri)
+    entries_by_uri = clear_flushed(state.entries_by_uri, & &1.dirty?)
+
+    file_entries_by_uri =
+      clear_flushed(state.file_entries_by_uri, &keep_file_diagnostics?(&1, state.project))
 
     %__MODULE__{state | entries_by_uri: entries_by_uri, file_entries_by_uri: file_entries_by_uri}
   end
@@ -128,11 +129,11 @@ defmodule Expert.Project.Diagnostics.State do
     )
   end
 
-  defp clear_flushed(entries_by_uri) do
+  defp clear_flushed(entries_by_uri, keep_diagnostics?) do
     Map.new(entries_by_uri, fn {uri, %Entry{} = entry} ->
       with true <- Document.Store.open?(uri),
            {:ok, %Document{} = document} <- Document.Store.fetch(uri),
-           true <- keep_diagnostics?(document) do
+           true <- keep_diagnostics?.(document) do
         {uri, entry}
       else
         _ ->
@@ -141,10 +142,11 @@ defmodule Expert.Project.Diagnostics.State do
     end)
   end
 
-  defp keep_diagnostics?(%Document{} = document) do
-    # Keep any diagnostics for script files, which aren't compiled)
-    # or dirty files, which have been modified after compilation has occurrend
-    document.dirty? or script_file?(document)
+  defp keep_file_diagnostics?(%Document{} = document, project) do
+    project_file? =
+      Path.basename(document.path) == "mix.exs" or document.uri == project.mix_exs_uri
+
+    document.dirty? or (script_file?(document) and not project_file?)
   end
 
   defp script_file?(document) do
