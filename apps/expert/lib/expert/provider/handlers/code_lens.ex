@@ -13,6 +13,9 @@ defmodule Expert.Provider.Handlers.CodeLens do
   alias GenLSP.Structures
 
   @impl Expert.Provider.Handler
+  def requires_engine?, do: false
+
+  @impl Expert.Provider.Handler
   def handle(
         %Requests.TextDocumentCodeLens{params: %Structures.CodeLensParams{}},
         %Context{} = context

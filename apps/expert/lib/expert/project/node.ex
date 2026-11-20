@@ -8,6 +8,7 @@ defmodule Expert.Project.Node do
   alias Expert.EngineApi
   alias Expert.EngineNode
   alias Expert.Progress
+  alias Expert.Project.Store
   alias Forge.Project
 
   require Logger
@@ -85,6 +86,7 @@ defmodule Expert.Project.Node do
   @impl GenServer
   def handle_info({:nodedown, _}, %State{} = state) do
     Logger.warning("The node has died. Restarting after deleting the build directory")
+    Store.transition(state.project, :pending)
 
     case delete_build_artifacts(state.project) do
       :ok ->

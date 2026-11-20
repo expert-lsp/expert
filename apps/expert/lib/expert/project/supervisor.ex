@@ -1,14 +1,13 @@
 defmodule Expert.Project.Supervisor do
   use Supervisor
 
-  alias Expert.EngineSupervisor
+  alias Expert.Configuration
   alias Expert.Integrations.Cache
   alias Expert.Project.Diagnostics
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Indexer
-  alias Expert.Project.Intelligence
-  alias Expert.Project.Node
+  alias Expert.Project.MixProject
   alias Expert.Project.Reindex
-  alias Expert.Project.SearchListener
   alias Expert.Project.Store
   alias Expert.Search
   alias Expert.Search.Indexer.ModuleRegistry
@@ -17,25 +16,39 @@ defmodule Expert.Project.Supervisor do
   require Logger
 
   def start_link(%Project{} = project) do
-    Supervisor.start_link(__MODULE__, project, name: name(project))
+    with {:ok, versions} <- MixProject.runtime_versions(project),
+         {:ok, pid} <- Supervisor.start_link(__MODULE__, {project, versions}, name: name(project)) do
+      maybe_start_configured_engine(project)
+      {:ok, pid}
+    end
   end
 
-  def init(%Project{} = project) do
+  @impl Supervisor
+  def init({%Project{} = project, versions}) do
     children = [
-      {EngineSupervisor, project},
-      {Search.Store.backend(), project},
+      %{
+        id: {__MODULE__, :manager, Project.unique_name(project)},
+        start: {__MODULE__, :start_manager_supervisor, [project, versions]},
+        type: :supervisor
+      }
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  @doc false
+  def start_manager_supervisor(%Project{} = project, versions) do
+    children = [
+      {Search.Store.backend(), [project, runtime_versions: versions]},
       {Search.Store, [project]},
       {ModuleRegistry, project},
       {Cache, project},
-      {Indexer.Supervisor, project},
-      {Node, project},
       {Diagnostics, project},
-      {Intelligence, project},
       {Reindex, project},
-      {SearchListener, project}
+      {Indexer.Supervisor, project}
     ]
 
-    Supervisor.init(children, strategy: :rest_for_one)
+    Supervisor.start_link(children, strategy: :rest_for_one)
   end
 
   def start(%Project{} = project) do
@@ -43,61 +56,136 @@ defmodule Expert.Project.Supervisor do
   end
 
   def stop(%Project{} = project) do
-    pid =
-      project
-      |> name()
-      |> Process.whereis()
-
-    DynamicSupervisor.terminate_child(Expert.Project.DynamicSupervisor.name(), pid)
+    DynamicSupervisor.terminate_child(
+      Expert.Project.DynamicSupervisor.name(),
+      Process.whereis(name(project))
+    )
   end
 
-  def name(%Project{} = project) do
-    :"#{Project.unique_name(project)}::supervisor"
-  end
+  def name(%Project{} = project), do: :"#{Project.unique_name(project)}::supervisor"
 
-  def ensure_node_started(%Project{} = project) do
-    ensure_node_started(project, blocked?: true)
-  end
+  def ensure_node_started(%Project{} = project, opts \\ []) do
+    blocked? =
+      Keyword.get(opts, :blocked?, true) and Store.blocked?(project) and
+        Configuration.compilation_enabled?()
 
-  def ensure_node_started(%Project{} = project, opts) when is_list(opts) do
-    blocked? = Keyword.get(opts, :blocked?, true)
+    case start(project) do
+      {:ok, _pid} when blocked? ->
+        blocked(project)
 
-    if blocked? and Store.blocked?(project) do
-      Logger.info("Project node start blocked for #{Project.name(project)}")
-      {:error, :deps_error}
-    else
-      case start(project) do
-        {:ok, pid} ->
-          Store.transition(project, :ready)
-          Logger.info("Started project node for #{Project.name(project)}")
-          {:ok, pid}
+      {:ok, pid} ->
+        {:ok, pid}
 
-        {:error, {reason, pid}} when reason in [:already_started, :already_present] ->
-          Store.transition(project, :ready)
-          {:ok, pid}
+      {:error, {reason, _pid}} when reason in [:already_started, :already_present] and blocked? ->
+        blocked(project)
 
-        {:error, reason} ->
-          Logger.error(
-            "Failed to start project node for #{Project.name(project)}: #{inspect(reason, pretty: true)}"
-          )
+      {:error, {reason, pid}} when reason in [:already_started, :already_present] ->
+        with {:error, reason} <- set_engine_state(project) do
+          Logger.error("Failed to start Engine: #{inspect(reason)}")
+        end
 
-          {:error, reason}
-      end
+        {:ok, pid}
+
+      {:error, reason} = error ->
+        Logger.error("Failed to start project for #{Project.name(project)}: #{inspect(reason)}")
+        error
     end
+  end
+
+  defp blocked(project) do
+    Logger.info("Project start blocked for #{Project.name(project)}")
+    {:error, :deps_error}
   end
 
   def stop_node(%Project{} = project) do
-    stop(project)
     Store.transition(project, :pending)
-
-    Logger.info("Stopping project node for #{Project.name(project)}")
+    result = stop(project)
+    Logger.info("Stopping project #{Project.name(project)}")
+    result
   end
 
-  def restart_node(%Project{} = project, opts \\ []) when is_list(opts) do
-    if Process.whereis(name(project)) do
-      stop_node(project)
+  def restart_node(%Project{} = project, opts \\ []) do
+    if Process.whereis(name(project)), do: stop_node(project)
+    ensure_node_started(project, opts)
+  end
+
+  def start_engine(%Project{} = project) do
+    if Process.whereis(name(project)), do: start_engine_child(project), else: :ok
+  end
+
+  def stop_engine(%Project{} = project) do
+    if Process.whereis(name(project)), do: stop_engine_child(project), else: :ok
+  end
+
+  def restart_engine(%Project{} = project) do
+    with :ok <- stop_engine_child(project),
+         :ok <- start_engine_child(project) do
+      {:ok, Process.whereis(name(project))}
+    end
+  end
+
+  defp set_engine_state(project) do
+    if Configuration.compilation_enabled?() do
+      start_engine_child(project)
+    else
+      stop_engine_child(project)
+    end
+  end
+
+  defp start_engine_child(project) do
+    if Store.blocked?(project), do: :ok, else: do_start_engine_child(project)
+  end
+
+  defp do_start_engine_child(project) do
+    case Supervisor.start_child(name(project), {EngineRuntime, project}) do
+      {:ok, _pid} ->
+        Logger.info("Started Engine for #{Project.name(project)}")
+        stop_engine_if_disabled(project)
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, :already_present} ->
+        restart_engine_child(project)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp stop_engine_if_disabled(project) do
+    if Configuration.compilation_enabled?(), do: :ok, else: stop_engine_child(project)
+  end
+
+  defp stop_engine_child(project) do
+    Store.transition(project, :pending)
+
+    case Supervisor.terminate_child(name(project), EngineRuntime) do
+      :ok ->
+        :ok = Supervisor.delete_child(name(project), EngineRuntime)
+
+      {:error, :not_found} ->
+        :ok
     end
 
-    ensure_node_started(project, opts)
+    Indexer.refresh(project)
+  end
+
+  defp restart_engine_child(project) do
+    case Supervisor.restart_child(name(project), EngineRuntime) do
+      {:ok, _pid} -> stop_engine_if_disabled(project)
+      {:ok, _pid, _info} -> stop_engine_if_disabled(project)
+      {:error, :running} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_start_configured_engine(project) do
+    if Configuration.compilation_enabled?() and not Store.blocked?(project) do
+      case start_engine_child(project) do
+        :ok -> :ok
+        {:error, reason} -> Logger.error("Failed to start Engine: #{inspect(reason)}")
+      end
+    end
   end
 end

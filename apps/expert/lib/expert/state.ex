@@ -7,6 +7,7 @@ defmodule Expert.State do
   alias Expert.Document.Lookup
   alias Expert.EngineApi
   alias Expert.Project
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Store
   alias Expert.Provider.Handlers
   alias Forge.Document
@@ -64,6 +65,8 @@ defmodule Expert.State do
     event.capabilities
     |> Configuration.new(client_name)
     |> Configuration.set()
+
+    _ = Configuration.on_change(event.initialization_options)
 
     new_state = %__MODULE__{state | initialized?: true}
 
@@ -179,7 +182,7 @@ defmodule Expert.State do
            &Document.apply_content_changes(&1, version, params.content_changes)
          ) do
       {:ok, updated_source} ->
-        if Store.ready?(context.project) do
+        if EngineRuntime.available?(context.project) do
           updated_message =
             file_changed(
               uri: updated_source.uri,
@@ -193,6 +196,8 @@ defmodule Expert.State do
           if Configuration.compile_on_type?() do
             EngineApi.compile_document(context.project, updated_source)
           end
+        else
+          Expert.Project.Diagnostics.publish_parse_diagnostics(context.project, uri)
         end
 
         {:ok, state}
@@ -210,11 +215,15 @@ defmodule Expert.State do
       language_id: language_id
     } = did_open.params.text_document
 
-    start_project_for_uri(uri)
+    project = start_project_for_uri(uri)
 
     case Document.Store.open(uri, text, version, language_id) do
       :ok ->
         Logger.info("Opened #{uri}")
+
+        if !EngineRuntime.available?(project) do
+          Expert.Project.Diagnostics.publish_parse_diagnostics(project, uri)
+        end
 
         {:ok, state}
 
@@ -227,9 +236,14 @@ defmodule Expert.State do
 
   def apply(%__MODULE__{} = state, %GenLSP.Notifications.TextDocumentDidClose{params: params}) do
     uri = params.text_document.uri
+    context = Lookup.resolve(uri, Store.projects())
 
     case Document.Store.close(uri) do
       :ok ->
+        if !EngineRuntime.available?(context.project) do
+          Expert.Project.Diagnostics.clear_file_diagnostics(context.project, uri)
+        end
+
         {:ok, state}
 
       error ->
@@ -249,8 +263,10 @@ defmodule Expert.State do
       :ok ->
         case context do
           %Context{project: %Project{kind: :mix} = project} ->
-            if Store.ready?(project) do
+            if EngineRuntime.available?(project) do
               EngineApi.schedule_compile(project, false)
+            else
+              Expert.Project.Indexer.refresh(project)
             end
 
           %Context{project: %Project{kind: :bare}} ->
@@ -272,12 +288,21 @@ defmodule Expert.State do
   end
 
   def apply(%__MODULE__{} = state, %Notifications.WorkspaceDidChangeWatchedFiles{params: params}) do
-    for project <- Store.projects(),
-        change <- params.changes do
-      params = filesystem_event(project: project, uri: change.uri, event_type: change.type)
+    for project <- Store.projects() do
+      if EngineRuntime.available?(project) do
+        for change <- params.changes, Path.extname(change.uri) != ".beam" do
+          params = filesystem_event(project: project, uri: change.uri, event_type: change.type)
+          EngineApi.broadcast(project, params)
+        end
+      else
+        root_path = Project.root_path(project)
 
-      if Store.ready?(project) do
-        EngineApi.broadcast(project, params)
+        if Enum.any?(
+             params.changes,
+             &Forge.Path.contains?(Document.Path.ensure_path(&1.uri), root_path)
+           ) do
+          Expert.Project.Indexer.refresh(project)
+        end
       end
     end
 
@@ -305,7 +330,7 @@ defmodule Expert.State do
   become ready.
   """
   def propagate_elixir_source_path_for(%Project{} = project) do
-    if Store.ready?(project) do
+    if EngineRuntime.available?(project) do
       apply_elixir_source_path(project, Configuration.get())
     end
 
@@ -315,7 +340,7 @@ defmodule Expert.State do
   end
 
   defp propagate_elixir_source_path(%Configuration{} = config) do
-    for project <- Store.projects(), Store.ready?(project) do
+    for project <- Store.projects(), EngineRuntime.available?(project) do
       apply_elixir_source_path(project, config)
     end
   rescue
@@ -353,6 +378,30 @@ defmodule Expert.State do
     if runtime_executable_paths_changed?(old_config, config) do
       restart_runtime_projects()
     end
+
+    cond do
+      config.enable_compilation == old_config.enable_compilation ->
+        :ok
+
+      config.enable_compilation ->
+        Enum.each(Store.projects(), &start_project_engine/1)
+
+      true ->
+        Enum.each(Store.projects(), &Expert.Project.Supervisor.stop_engine/1)
+    end
+
+    :ok
+  end
+
+  defp start_project_engine(%Project{} = project) do
+    Task.Supervisor.start_child(:expert_task_queue, fn ->
+      result =
+        with :ok <- Expert.Project.Supervisor.start_engine(project) do
+          {:ok, Process.whereis(Expert.Project.Supervisor.name(project))}
+        end
+
+      send(Expert.get_lsp().pid, {:engine_initialized, project, result})
+    end)
   end
 
   defp runtime_executable_paths_changed?(%Configuration{} = old_config, %Configuration{} = config) do
@@ -456,7 +505,7 @@ defmodule Expert.State do
       end)
     end
 
-    :ok
+    project
   end
 
   defp removed_from_workspace?(%Project{} = project, removed_paths, removed_root_uris) do

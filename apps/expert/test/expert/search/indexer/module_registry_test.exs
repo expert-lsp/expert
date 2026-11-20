@@ -179,7 +179,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
 
   test "uses project runtime exports for implicit imports", %{project: project} do
     Expert.Project.Store.set_projects([project])
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
     start_supervised!({ModuleRegistry, project})
 
     stored = %{functions: [{"project_runtime", 0}], macros: []}
@@ -202,7 +202,7 @@ defmodule Expert.Search.Indexer.ModuleRegistryTest do
     assert :error = ModuleRegistry.module_exports(project, Example)
     refute_received :engine_lookup
 
-    Expert.Project.Store.transition(project, :ready)
+    patch(Expert.Project.EngineRuntime, :available?, fn _project -> true end)
     assert {:ok, %{functions: [{"run", 0}]}} = ModuleRegistry.module_exports(project, Example)
     assert_received :engine_lookup
 

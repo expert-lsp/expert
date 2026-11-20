@@ -25,9 +25,11 @@ defmodule Expert.Test.Expert.CompletionCase do
     start_supervised!({DynamicSupervisor, Expert.EngineBuild.DynamicSupervisor.options()})
     start_supervised!(Expert.EngineBuilds)
     start_supervised!({Expert.Project.Store, []})
+    Expert.Configuration.new() |> Expert.Configuration.set()
+    Expert.Project.Store.add_projects([project])
     start_supervised!({Forge.NodePortMapper, []})
     start_supervised!({DynamicSupervisor, Expert.Project.DynamicSupervisor.options()})
-    start_supervised!({Expert.Project.Supervisor, project})
+    assert {:ok, _pid} = Expert.Project.Supervisor.ensure_node_started(project)
 
     EngineApi.register_listener(project, self(), [
       project_compiled(),

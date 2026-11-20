@@ -8,6 +8,7 @@ defmodule Expert.Project.ReindexTest do
 
   alias Expert.EngineApi
   alias Expert.Progress
+  alias Expert.Project.EngineRuntime
   alias Expert.Project.Reindex
   alias Expert.Search.Indexer
   alias Expert.Search.Store
@@ -17,7 +18,6 @@ defmodule Expert.Project.ReindexTest do
   setup context do
     debounce_interval_millis = Map.get(context, :debounce_interval_millis, 0)
     project = project()
-    patch(EngineApi, :register_listener, :ok)
     patch(Progress, :begin, fn _title, _opts -> {:ok, System.unique_integer([:positive])} end)
     patch(Progress, :report, :ok)
     patch(Progress, :complete, :ok)
@@ -115,6 +115,7 @@ defmodule Expert.Project.ReindexTest do
     test "broadcasts success when refreshing the search index succeeds", %{project: project} do
       patch(Indexer, :create_index, fn ^project -> :ok end)
       patch(Indexer, :record_integrations, fn ^project -> :ok end)
+      patch(EngineRuntime, :available?, fn ^project -> true end)
 
       test_pid = self()
 
@@ -134,6 +135,7 @@ defmodule Expert.Project.ReindexTest do
     test "broadcasts the error when refreshing the search index fails", %{project: project} do
       patch(Indexer, :create_index, fn ^project -> {:error, :refresh_failed} end)
       patch(Indexer, :record_integrations, fn ^project -> :ok end)
+      patch(EngineRuntime, :available?, fn ^project -> true end)
 
       test_pid = self()
 
@@ -150,6 +152,16 @@ defmodule Expert.Project.ReindexTest do
                       project_reindexed(project: ^project, status: {:error, :refresh_failed})}
 
       refute_called(Indexer.record_integrations(project))
+    end
+
+    @tag reindex_fun: :default
+    test "rebuilds the local index while the Engine is unavailable", %{project: project} do
+      test_pid = self()
+      patch(EngineRuntime, :available?, fn ^project -> false end)
+      patch(Indexer, :warmup, fn ^project -> send(test_pid, :reindexed) end)
+
+      assert :ok = Reindex.perform(project)
+      assert_receive :reindexed
     end
   end
 

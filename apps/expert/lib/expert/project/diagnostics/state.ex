@@ -9,7 +9,7 @@ defmodule Expert.Project.Diagnostics.State do
     defstruct build_number: 0, diagnostics: []
 
     def new(build_number) when is_integer(build_number) do
-      %__MODULE__{build_number: build_number}
+      %__MODULE__{build_number: build_number, diagnostics: MapSet.new()}
     end
 
     def new(build_number, diagnostic) do
@@ -62,6 +62,14 @@ defmodule Expert.Project.Diagnostics.State do
       |> MapSet.union(MapSet.new(Map.keys(state.file_entries_by_uri)))
 
     Map.new(uris, &{&1, get(state, &1)})
+  end
+
+  def reset_build_numbers(%__MODULE__{} = state) do
+    %__MODULE__{
+      state
+      | entries_by_uri: reset_entry_build_numbers(state.entries_by_uri),
+        file_entries_by_uri: reset_entry_build_numbers(state.file_entries_by_uri)
+    }
   end
 
   def clear(%__MODULE__{} = state, source_uri) do
@@ -138,6 +146,12 @@ defmodule Expert.Project.Diagnostics.State do
         _ ->
           {uri, Entry.new(0)}
       end
+    end)
+  end
+
+  defp reset_entry_build_numbers(entries_by_uri) do
+    Map.new(entries_by_uri, fn {uri, %Entry{} = entry} ->
+      {uri, %Entry{entry | build_number: 0}}
     end)
   end
 
