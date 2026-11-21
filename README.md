@@ -82,6 +82,7 @@ Individuals can donate using GitHub sponsors. Team members are listed in the sid
 
 ## Other resources
 
+- [Contributing](CONTRIBUTING.md)
 - [Architecture](pages/architecture.md)
 - [Development Guide](pages/development.md)
 - [Glossary](pages/glossary.md)
