@@ -78,6 +78,21 @@ defmodule Engine.CodeMod.Format.Cache do
     end
   end
 
+  @spec formatter_opts(Path.t()) :: keyword()
+  def formatter_opts(file_path) do
+    case fetch_formatter(Engine.get_project(), file_path) do
+      {:ok, _formatter, opts} ->
+        [
+          locals_without_parens: opts[:locals_without_parens] || [],
+          line_length: opts[:line_length]
+        ]
+        |> Keyword.reject(fn {_k, v} -> is_nil(v) end)
+
+      :error ->
+        []
+    end
+  end
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end

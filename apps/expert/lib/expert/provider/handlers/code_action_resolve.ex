@@ -16,7 +16,7 @@ defmodule Expert.Provider.Handlers.CodeActionResolve do
   @behaviour Expert.Provider.Handler
 
   alias Expert.Document.Context
-  alias Expert.EngineApi
+  alias Expert.Refactor
   alias Forge.Document
   alias Forge.Document.Line
   alias Forge.Document.Position
@@ -60,7 +60,7 @@ defmodule Expert.Provider.Handlers.CodeActionResolve do
   defp check_version(_document, _version), do: {:error, :stale_code_action}
 
   defp resolve_changes(project, document, range, module_name) do
-    case EngineApi.resolve_code_action(project, document, range, module_name) do
+    case Refactor.CodeAction.resolve(project, document, range, module_name) do
       {:ok, changes} -> {:ok, changes}
       _ -> {:error, :refactoring_no_longer_available}
     end
