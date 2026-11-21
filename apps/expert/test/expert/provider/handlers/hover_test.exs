@@ -705,6 +705,77 @@ defmodule Expert.Provider.Handlers.HoverTest do
     end
   end
 
+  describe "hover without compiled modules" do
+    test "function with @doc and @spec defined in the document", %{project: project} do
+      code = ~q[
+        defmodule UncompiledHover do
+          @doc "Says hi."
+          @spec hello(String.t()) :: String.t()
+          def hello(name), do: "hi " <> name
+        end
+
+        UncompiledHover.hello("x")
+      ]
+
+      hovered = ~q[
+        defmodule UncompiledHover do
+          @doc "Says hi."
+          @spec hello(String.t()) :: String.t()
+          def hello(name), do: "hi " <> name
+        end
+
+        UncompiledHover.|hello("x")
+      ]
+
+      expected = """
+      ```elixir
+      UncompiledHover.hello(name)
+      @spec hello(String.t()) :: String.t()
+      ```
+
+      Says hi.\
+      """
+
+      with_indexed(project, code, fn ->
+        assert {:ok, %Structures.Hover{} = result} = hover(project, hovered)
+        assert result.contents.kind == "markdown"
+        assert result.contents.value == expected
+      end)
+    end
+
+    test "module with @moduledoc defined in the document", %{project: project} do
+      code = ~q[
+        defmodule UncompiledModuleHover do
+          @moduledoc "Greets people."
+        end
+
+        UncompiledModuleHover
+      ]
+
+      hovered = ~q[
+        defmodule UncompiledModuleHover do
+          @moduledoc "Greets people."
+        end
+
+        |UncompiledModuleHover
+      ]
+
+      expected = """
+      ```elixir
+      UncompiledModuleHover
+      ```
+
+      Greets people.\
+      """
+
+      with_indexed(project, code, fn ->
+        assert {:ok, %Structures.Hover{} = result} = hover(project, hovered)
+        assert result.contents.kind == "markdown"
+        assert result.contents.value == expected
+      end)
+    end
+  end
+
   describe "type hover" do
     test "with @typedoc", %{project: project} do
       code = ~q[
