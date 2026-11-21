@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.5](https://github.com/expert-lsp/expert/compare/v0.2.4...v0.2.5) (2026-11-21)
+
+
+### Features
+
+* index HEEx templates inside ~H sigils ([#1019](https://github.com/expert-lsp/expert/issues/1019)) ([0ea314b](https://github.com/expert-lsp/expert/commit/0ea314bd8edde97cccc6d4e6dad193f60fe68875))
+
+
+### Bug Fixes
+
+* comment handling in HEEx extractor ([#1026](https://github.com/expert-lsp/expert/issues/1026)) ([a240ea1](https://github.com/expert-lsp/expert/commit/a240ea17f07de2f69771ad08f3489328897d37ee))
+* **expert:** show hover docs for modules that have no compiled beam ([#1030](https://github.com/expert-lsp/expert/issues/1030)) ([1100292](https://github.com/expert-lsp/expert/commit/1100292fe4da774e7c71f121e8e7409e18cfd5f1))
+
 ## [0.2.4](https://github.com/expert-lsp/expert/compare/v0.2.3...v0.2.4) (2026-11-17)
 
 
