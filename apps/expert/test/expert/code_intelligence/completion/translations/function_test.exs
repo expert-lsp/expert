@@ -79,6 +79,15 @@ defmodule Expert.CodeIntelligence.Completion.Translations.FunctionTest do
       assert apply_completion(completion) == "Enum.dedup_by(${1:enumerable}, ${2:fun})"
     end
 
+    test "replace the operator they complete", %{project: project} do
+      {:ok, completion} =
+        project
+        |> complete("foo = -|")
+        |> fetch_completion("-(value)")
+
+      assert apply_completion(completion) == "foo = -(${1:value})"
+    end
+
     test "completes funs in locals_without_parens with a specific arity",
          %{project: project} do
       source = ~q[
@@ -212,6 +221,30 @@ defmodule Expert.CodeIntelligence.Completion.Translations.FunctionTest do
       assert is_map_key_args.detail == "(Capture with arguments)"
       assert is_map_key_args.insert_text_format == InsertTextFormat.snippet()
       assert apply_completion(is_map_key_args) == "&is_map_key(${1:map}, ${2:key})"
+    end
+
+    test "keep the capture operator when nothing is typed after it", %{project: project} do
+      source = ~q[
+        Enum.map(1..10, &|)
+      ]
+
+      [capture, args_capture] =
+        project
+        |> complete(source)
+        |> Enum.filter(fn completion ->
+          sort_text = completion.sort_text
+          # arity 1 and is is_map
+          String.ends_with?(sort_text, "001") and
+            String.contains?(sort_text, "is_map")
+        end)
+
+      assert apply_completion(capture) == ~q[
+        Enum.map(1..10, &is_map/1)
+      ]
+
+      assert apply_completion(args_capture) == ~q[
+        Enum.map(1..10, &is_map(${1:term}))
+      ]
     end
   end
 

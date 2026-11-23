@@ -30,13 +30,13 @@ defmodule Expert.CodeIntelligence.Completion.Builder do
 
   @spec snippet(Env.t(), String.t(), item_opts) :: CompletionItem.t()
   def snippet(%Env{} = env, text, options \\ []) do
-    range = prefix_range(env)
+    range = prefix_range(env, text)
     text_edit_snippet(env, text, range, options)
   end
 
   @spec plain_text(Env.t(), String.t(), item_opts) :: CompletionItem.t()
   def plain_text(%Env{} = env, text, options \\ []) do
-    range = prefix_range(env)
+    range = prefix_range(env, text)
     text_edit(env, text, range, options)
   end
 
@@ -105,14 +105,14 @@ defmodule Expert.CodeIntelligence.Completion.Builder do
 
   # private
 
-  defp prefix_range(%Env{} = env) do
+  defp prefix_range(%Env{} = env, text) do
     end_char = env.position.character
-    start_char = max(end_char - prefix_length(env), 1)
+    start_char = max(end_char - prefix_length(env, text), 1)
     {start_char, end_char}
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp prefix_length(%Env{} = env) do
+  defp prefix_length(%Env{} = env, text) do
     case Code.Fragment.cursor_context(env.prefix) do
       {:alias, alias_charlist} ->
         alias_charlist
@@ -151,7 +151,13 @@ defmodule Expert.CodeIntelligence.Completion.Builder do
         length(attr)
 
       {:operator, operator} ->
-        length(operator)
+        # the operator is only part of the prefix when the completion
+        # continues it, like `+` being completed to `++`
+        if String.starts_with?(text, List.to_string(operator)) do
+          length(operator)
+        else
+          0
+        end
 
       {:operator_arity, _} ->
         0

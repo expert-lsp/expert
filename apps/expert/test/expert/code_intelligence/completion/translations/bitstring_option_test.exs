@@ -67,6 +67,24 @@ defmodule Expert.CodeIntelligence.Completion.Translations.BitstringOptionsTest d
       assert apply_completion(completion) == "<<x::integer-size"
     end
 
+    test "keeps the :: when nothing is typed after it", %{project: project} do
+      assert {:ok, completion} =
+               project
+               |> complete("<<x::|")
+               |> fetch_completion("integer")
+
+      assert apply_completion(completion) == "<<x::integer"
+    end
+
+    test "keeps the dash when nothing is typed after it", %{project: project} do
+      assert {:ok, completion} =
+               project
+               |> complete("<<x::integer-|")
+               |> fetch_completion("size")
+
+      assert apply_completion(completion) == "<<x::integer-size"
+    end
+
     @tag :skip
     # Note: looks like elixir sense needs a context character in order to complete
     # after a dash. Bummer.

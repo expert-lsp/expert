@@ -44,4 +44,25 @@ defmodule Expert.CodeIntelligence.Completion.Translations.VariableTest do
     assert c1.label == "var_1"
     assert c2.label == "var_2"
   end
+
+  test "the pin operator is kept when nothing is typed after it", %{project: project} do
+    source = ~q[
+      def my_function(result) do
+        stinky = :smelly
+        {:ok, ^|} = result
+      end
+    ]
+
+    assert {:ok, completion} =
+             project
+             |> complete(source)
+             |> fetch_completion("stinky")
+
+    assert apply_completion(completion) == ~q[
+      def my_function(result) do
+        stinky = :smelly
+        {:ok, ^stinky} = result
+      end
+    ]
+  end
 end
