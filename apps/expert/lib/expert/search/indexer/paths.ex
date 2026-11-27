@@ -86,29 +86,47 @@ defmodule Expert.Search.Indexer.Paths do
 
     root
     |> Forge.Path.normalize()
-    |> source_files_in(excluded)
+    |> source_files_in(excluded, [])
     |> Enum.sort()
     |> Forge.Path.native_paths()
-    |> Enum.uniq()
   end
 
-  defp source_files_in(dir, excluded) do
+  defp source_files_in(dir, excluded, sources) do
     case File.ls(dir) do
       {:ok, entries} ->
-        Enum.flat_map(entries, fn
-          "." <> _ ->
-            []
+        Enum.reduce(entries, sources, fn
+          "." <> _, sources ->
+            sources
 
-          entry ->
+          entry, sources ->
             path = Path.join(dir, entry)
 
             if MapSet.member?(excluded, path),
-              do: [],
-              else: source_files_in(path, excluded)
+              do: sources,
+              else: add_source(path, excluded, sources)
         end)
 
       {:error, _} ->
-        if String.ends_with?(dir, @indexable_extensions), do: [dir], else: []
+        sources
+    end
+  end
+
+  defp add_source(path, excluded, sources) do
+    # Do not follow directory symlinks. They can reenter an excluded tree or an ancestor.
+    case File.lstat(path) do
+      {:ok, %{type: :directory}} ->
+        source_files_in(path, excluded, sources)
+
+      {:ok, %{type: :regular}} ->
+        if String.ends_with?(path, @indexable_extensions), do: [path | sources], else: sources
+
+      {:ok, %{type: :symlink}} ->
+        if String.ends_with?(path, @indexable_extensions) and File.regular?(path),
+          do: [path | sources],
+          else: sources
+
+      _ ->
+        sources
     end
   end
 
