@@ -95,6 +95,27 @@ defmodule Expert.Search.Indexer.PathsTest do
       assert paths.beam_paths == []
     end
 
+    if match?({:win32, _}, :os.type()), do: @tag(:skip)
+
+    @tag :tmp_dir
+    test "does not descend into directory symlinks or reenter excluded trees through aliases", %{
+      tmp_dir: root
+    } do
+      source = native_join([root, "lib", "source.ex"])
+      linked_source = native_join([root, "linked.ex"])
+      deps = Path.join(root, "deps")
+      write_file!(source, "fixture")
+      write_file!(Path.join(deps, "dependency.ex"), "fixture")
+      File.ln_s!(root, Path.join(root, "lib/ancestor"))
+      File.ln_s!(deps, Path.join(root, "also-deps.ex"))
+      File.ln_s!(source, linked_source)
+
+      project = root |> Forge.Document.Path.to_uri() |> Project.bare()
+      paths = Paths.for_project(%{project | kind: :mix}, fn _ -> {:error, :unavailable} end)
+
+      assert paths.source_paths == Enum.sort([source, linked_source])
+    end
+
     @tag :tmp_dir
     test "does not include project-local default build files", %{tmp_dir: tmp_dir} do
       with_env("MIX_BUILD_PATH", native_join([tmp_dir, ".expert", "build", "dev"]))

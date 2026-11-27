@@ -64,7 +64,7 @@ The indexer analyzes Elixir source files and stores entries in `Expert.Search.St
 3. The AST is traversed with `Macro.prewalk/3`, and a series of extractors emits `Forge.Search.Indexer.Entry` values.
 4. The search store persists those entries in the project's `.expert/indexes/` directory.
 
-On the first run, the indexer scans every `.ex` and `.exs` file outside the project's build directory. After that, it refreshes changed files and removes deleted files from the index. Dependency files are indexed for definitions only.
+On the first run, the indexer discovers project `.ex` and `.exs` files without descending into build directories or following directory symlinks. This keeps links from creating cycles or bringing excluded directories back into the scan. After that, it refreshes changed files and removes deleted files from the index. Dependency files are indexed for definitions only.
 
 The results of the indexer can be queried through `Expert.Search.Store`.
 
@@ -142,6 +142,8 @@ The manager code is also namespaced because it shares data structures with the e
 ## Manager-Engine Distribution
 
 Expert starts the engine node as a separate OS process and communicates with it through distributed Erlang RPC.
+
+On Unix, the manager's port owns the lifetime of the engine's process group. If the manager exits abruptly and the port closes, the wrapper stops the engine and any children that are still in that group.
 
 Some distributed Erlang setups rely on the Erlang Port Mapper Daemon (EPMD), but Expert uses an EPMDless setup. `Forge.EPMD` avoids the system EPMD daemon, and `Forge.NodePortMapper` lets project nodes register their distribution ports with the manager node. This prevents stale EPMD entries and prevents nodes from different Expert instances from discovering each other accidentally.
 

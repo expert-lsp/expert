@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 
-# Prevents zombie operating system processes
-# https://hexdocs.pm/elixir/Port.html#module-zombie-operating-system-processes
+# Give the engine and its descendants their own process group. The manager's
+# input belongs to the watcher, not the engine.
+set -m
+exec "$@" </dev/null &
+engine=$!
 
-# Start the program in the background
-exec "$@" &
-pid1=$!
-
-# Silence warnings from here on
-exec >/dev/null 2>&1
-
-# Read from stdin in the background and
-# kill running program when stdin closes
-exec 0<&0 $(
-    while read; do :; done
-    kill -KILL $pid1
+# EOF also arrives when the manager is killed and cannot close the port itself.
+(
+    while IFS= read -r; do :; done
+    kill -KILL -- "-$engine" 2>/dev/null
 ) &
-pid2=$!
+watcher=$!
 
-# Clean up
-wait $pid1
-ret=$?
-kill -KILL $pid2
-exit $ret
+cleanup() {
+    kill "$watcher" 2>/dev/null
+    kill -KILL -- "-$engine" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+}
+
+trap 'cleanup; exit 1' HUP INT TERM
+wait "$engine" 2>/dev/null
+status=$?
+cleanup
+exit "$status"
